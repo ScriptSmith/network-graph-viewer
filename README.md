@@ -32,7 +32,6 @@ pnpm format       # oxfmt
 ## Stack
 
 - [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript
-- [oxlint](https://oxc.rs/) and [oxfmt](https://oxc.rs/) for linting and formatting
 - [d3-force](https://d3js.org/d3-force), d3-zoom and d3-drag for simulation and interaction
 - [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
-- Deployed to GitHub Pages by a GitHub Action on every push to `main`
+- Deployed with GitHub Pages

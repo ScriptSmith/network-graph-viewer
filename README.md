@@ -4,6 +4,8 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 
 **Live app:** https://scriptsmith.github.io/network-graph-viewer/
 
+![The sample supervision network rendered as a force-directed graph, with nodes colored by department and a sidebar for data, filters, style, and layout](docs/screenshot.png)
+
 ## Features
 
 - Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser

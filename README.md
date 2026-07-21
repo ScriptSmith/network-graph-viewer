@@ -1,5 +1,8 @@
 # Network Graph Viewer
 
+> [!NOTE]
+> This project is AI-generated: the code, sample data, screenshot, and this README were written by [Claude Code](https://claude.com/claude-code).
+
 Turn a spreadsheet edge list into an interactive network graph, entirely in your browser.
 
 **Live app:** https://adamsm.com/network-graph-viewer/
@@ -35,7 +38,3 @@ pnpm format       # oxfmt
 - [d3-force](https://d3js.org/d3-force), d3-zoom and d3-drag for simulation and interaction
 - [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
 - Deployed with GitHub Pages
-
-## Note
-
-This project is AI-generated: the code, sample data, screenshot, and this README were written by [Claude Code](https://claude.com/claude-code).

@@ -1,9 +1,54 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Filters, Graph, Mapping, Row } from "../types";
 import { cellKey, componentCount, distinctValues } from "../lib/graph";
+import {
+  CENTRALITY_NAMES,
+  centralityValues,
+  networkMetrics,
+  type CentralityKind,
+} from "../lib/metrics";
 import { asNumber, isNumericColumn } from "../lib/parse";
 import { CATEGORICAL } from "../theme";
-import { formatNumber } from "../lib/format";
+import { formatMetric, formatNumber } from "../lib/format";
+
+const METRIC_HELP: { term: string; text: string }[] = [
+  {
+    term: "Density",
+    text: "The share of possible connections that actually exist. 1 means everyone connects directly to everyone else.",
+  },
+  {
+    term: "Components",
+    text: "Separate islands: groups of nodes with no connections between them.",
+  },
+  {
+    term: "Diameter",
+    text: "The longest shortest path: how many steps apart the two most distant reachable nodes are.",
+  },
+  {
+    term: "Avg path length",
+    text: "The typical number of steps between two nodes, averaged over every pair that can reach each other.",
+  },
+  {
+    term: "Clustering",
+    text: "How often two neighbors of the same node are also connected to each other, from 0 to 1. High values mean tight cliques.",
+  },
+  {
+    term: "Degree",
+    text: "The number of connections a node has. The simplest measure of importance.",
+  },
+  {
+    term: "Betweenness",
+    text: "How often a node sits on the shortest path between two others. High scorers are brokers and bottlenecks; removing them fragments the network.",
+  },
+  {
+    term: "Closeness",
+    text: "How few steps a node needs to reach everyone else. High scorers can spread information through the whole network fastest.",
+  },
+  {
+    term: "Eigenvector",
+    text: "Like degree, but connections to well-connected nodes count for more. High scorers have influence, not just volume.",
+  },
+];
 
 interface StatsPanelProps {
   rows: Row[];
@@ -93,12 +138,18 @@ export function StatsPanel({
   const bars = useMemo(() => pivot(rows, groupBy, measure), [rows, groupBy, measure]);
   const maxBar = Math.max(1e-9, ...bars.map((b) => b.value));
   const components = useMemo(() => componentCount(graph), [graph]);
+  const metrics = useMemo(() => networkMetrics(graph), [graph]);
 
-  const topNodes = useMemo(
-    () => [...graph.nodes].sort((a, b) => b.degree - a.degree).slice(0, 8),
-    [graph],
+  const [centralityKind, setCentralityKind] = useState<CentralityKind>("degree");
+  const centrality = useMemo(
+    () => centralityValues(graph, centralityKind),
+    [graph, centralityKind],
   );
-  const maxDegree = Math.max(1, ...topNodes.map((n) => n.degree));
+  const topNodes = useMemo(() => {
+    const score = (id: string) => centrality.get(id) ?? 0;
+    return [...graph.nodes].sort((a, b) => score(b.id) - score(a.id)).slice(0, 8);
+  }, [graph, centrality]);
+  const maxCentrality = Math.max(1e-9, ...topNodes.map((n) => centrality.get(n.id) ?? 0));
 
   const activeFilter = filters[groupBy];
   const isActiveBar = (key: string) =>
@@ -148,6 +199,43 @@ export function StatsPanel({
           <span className="stat-label">components</span>
         </div>
       </div>
+
+      <section className="insp-section">
+        <h4>Network metrics</h4>
+        <div className="metric-rows">
+          <div className="metric-row">
+            <span className="metric-name">Density</span>
+            <span className="metric-value">{formatMetric(metrics.density)}</span>
+          </div>
+          <div className="metric-row">
+            <span className="metric-name">Diameter</span>
+            <span className="metric-value">{formatMetric(metrics.diameter)}</span>
+          </div>
+          <div className="metric-row">
+            <span className="metric-name">Avg path length</span>
+            <span className="metric-value">{formatMetric(metrics.avgPathLength)}</span>
+          </div>
+          <div className="metric-row">
+            <span className="metric-name">Clustering</span>
+            <span className="metric-value">{formatMetric(metrics.clustering)}</span>
+          </div>
+        </div>
+        {metrics.approximate && (
+          <p className="note">Large graph: path measures estimated from sampled nodes.</p>
+        )}
+        <details className="metric-help">
+          <summary>What do these mean?</summary>
+          <dl>
+            {METRIC_HELP.map((h) => (
+              <div key={h.term}>
+                <dt>{h.term}</dt>
+                <dd>{h.text}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="note">All measures treat connections as undirected.</p>
+        </details>
+      </section>
 
       <section className="insp-section">
         <h4>Breakdown</h4>
@@ -217,7 +305,22 @@ export function StatsPanel({
 
       {topNodes.length > 0 && (
         <section className="insp-section">
-          <h4>Most connected</h4>
+          <h4>Top nodes</h4>
+          <label className="field">
+            <span className="field-label">Rank by</span>
+            <select
+              className="control"
+              value={centralityKind}
+              onChange={(e) => setCentralityKind(e.target.value as CentralityKind)}
+            >
+              {(Object.keys(CENTRALITY_NAMES) as CentralityKind[]).map((k) => (
+                <option key={k} value={k}>
+                  {CENTRALITY_NAMES[k]}
+                  {k === "degree" ? " (connections)" : " centrality"}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="bar-list">
             {topNodes.map((n) => (
               <button
@@ -229,12 +332,14 @@ export function StatsPanel({
               >
                 <span className="bar-head">
                   <span className="bar-name">{n.id}</span>
-                  <span className="bar-value">{n.degree}</span>
+                  <span className="bar-value">{formatMetric(centrality.get(n.id) ?? 0)}</span>
                 </span>
                 <span className="bar-track">
                   <span
                     className="bar-fill neutral"
-                    style={{ width: `${Math.max(1.5, (100 * n.degree) / maxDegree)}%` }}
+                    style={{
+                      width: `${Math.max(1.5, (100 * (centrality.get(n.id) ?? 0)) / maxCentrality)}%`,
+                    }}
                   />
                 </span>
               </button>

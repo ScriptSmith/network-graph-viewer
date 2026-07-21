@@ -16,7 +16,7 @@ import type { Graph, GraphLink, GraphNode, GraphStyle, LabelMode, LayoutId, Row 
 import { computeTargets } from "../lib/layouts";
 import { weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
-import { formatNumber } from "../lib/format";
+import { formatMetric } from "../lib/format";
 import {
   CATEGORICAL,
   EDGE,
@@ -320,7 +320,7 @@ export function GraphCanvas({
     const group = d.group ? `<div class="tip-sub">${escapeHtml(d.group)}</div>` : "";
     const value =
       graph.ranking && d.value !== null
-        ? `<div class="tip-sub">${escapeHtml(formatNumber(d.value))}</div>`
+        ? `<div class="tip-sub">${escapeHtml(formatMetric(d.value))}</div>`
         : "";
     return (
       `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}` +
@@ -392,7 +392,7 @@ export function GraphCanvas({
     const nodeLayer = root.select<SVGGElement>("[data-nodes]");
     const labelLayer = root.select<SVGGElement>("[data-labels]");
 
-    const linkKey = (l: GraphLink) => `${endpoint(l.source)} ${endpoint(l.target)}`;
+    const linkKey = (l: GraphLink) => `${endpoint(l.source)}\u001F${endpoint(l.target)}`;
 
     const link = linkLayer
       .selectAll<SVGPathElement, GraphLink>("path")

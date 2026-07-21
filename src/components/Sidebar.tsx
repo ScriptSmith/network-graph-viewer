@@ -270,14 +270,21 @@ export function Sidebar({
                   onChange={(e) => onStyleChange({ nodeColor: e.target.value })}
                 >
                   <option value="none">None (single color)</option>
-                  <option value="metric:degree">Connections (low to high)</option>
-                  {sheet.columns
-                    .filter((c) => c !== mapping.source && c !== mapping.target)
-                    .map((c) => (
-                      <option key={c} value={`column:${c}`}>
-                        {c}
-                      </option>
-                    ))}
+                  <optgroup label="Rank by network metric">
+                    <option value="metric:degree">Connections (degree)</option>
+                    <option value="metric:betweenness">Betweenness centrality</option>
+                    <option value="metric:closeness">Closeness centrality</option>
+                    <option value="metric:eigenvector">Eigenvector centrality</option>
+                  </optgroup>
+                  <optgroup label="By column">
+                    {sheet.columns
+                      .filter((c) => c !== mapping.source && c !== mapping.target)
+                      .map((c) => (
+                        <option key={c} value={`column:${c}`}>
+                          {c}
+                        </option>
+                      ))}
+                  </optgroup>
                 </select>
               </label>
               <label className="field">
@@ -291,13 +298,20 @@ export function Sidebar({
                   <option value="metric:in">Incoming connections</option>
                   <option value="metric:out">Outgoing connections</option>
                   <option value="metric:uniform">Uniform</option>
-                  {numericColumns
-                    .filter((c) => c !== mapping.source && c !== mapping.target)
-                    .map((c) => (
-                      <option key={c} value={`column:${c}`}>
-                        Sum of {c}
-                      </option>
-                    ))}
+                  <optgroup label="Network metric">
+                    <option value="metric:betweenness">Betweenness centrality</option>
+                    <option value="metric:closeness">Closeness centrality</option>
+                    <option value="metric:eigenvector">Eigenvector centrality</option>
+                  </optgroup>
+                  <optgroup label="Sum of column">
+                    {numericColumns
+                      .filter((c) => c !== mapping.source && c !== mapping.target)
+                      .map((c) => (
+                        <option key={c} value={`column:${c}`}>
+                          {c}
+                        </option>
+                      ))}
+                  </optgroup>
                 </select>
               </label>
               <label className="field">

@@ -6,7 +6,7 @@ import { parseFile, guessMapping, guessStyle } from "./lib/parse";
 import { applyFilters, buildGraph } from "./lib/graph";
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "./theme";
-import { formatNumber } from "./lib/format";
+import { formatMetric } from "./lib/format";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
@@ -201,8 +201,13 @@ export default function App() {
     return entries;
   }, [graph, edgeColors]);
 
-  const rankingLabel =
-    style.nodeColor === "metric:degree" ? "Connections" : (colorColumn ?? "Value");
+  const RANK_LABELS: Record<string, string> = {
+    "metric:degree": "Connections",
+    "metric:betweenness": "Betweenness",
+    "metric:closeness": "Closeness",
+    "metric:eigenvector": "Eigenvector",
+  };
+  const rankingLabel = RANK_LABELS[style.nodeColor] ?? colorColumn ?? "Value";
 
   const showLegend =
     graph !== null && (nodeLegend.length > 0 || edgeLegend.length > 0 || graph.ranking !== null);
@@ -297,8 +302,8 @@ export default function App() {
                       style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
                     />
                     <span>
-                      {rankingLabel} {formatNumber(graph.ranking.min)} to{" "}
-                      {formatNumber(graph.ranking.max)}
+                      {rankingLabel} {formatMetric(graph.ranking.min)} to{" "}
+                      {formatMetric(graph.ranking.max)}
                     </span>
                   </span>
                 )}

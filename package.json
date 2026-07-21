@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.3.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -36,5 +35,6 @@
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
-  }
+  },
+  "packageManager": "pnpm@11.3.0"
 }

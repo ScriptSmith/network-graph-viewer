@@ -1,0 +1,32 @@
+# Network Graph Viewer
+
+Turn a spreadsheet edge list into an interactive network graph, entirely in your browser.
+
+**Live app:** https://scriptsmith.github.io/network-graph-viewer/
+
+## Features
+
+- Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser
+- Pick which columns are the edge source and target, which column colors the nodes, which numeric column drives edge width, and which columns show up as edge details
+- Built-in sample dataset: a Supervisor to Supervisee network with edge attributes (department, cadence, meetings per month, years together)
+- Animated, interactive SVG graph: pan, zoom, drag nodes, hover to highlight neighborhoods, click a node for a detail inspector
+- Five layouts that morph into each other: force, hierarchy, radial, circle, grid
+- Export the current view as SVG or PNG
+
+## Development
+
+```sh
+pnpm install
+pnpm dev          # start the dev server
+pnpm build        # type-check and build to dist/
+pnpm lint         # oxlint
+pnpm format       # oxfmt
+```
+
+## Stack
+
+- [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript
+- [oxlint](https://oxc.rs/) and [oxfmt](https://oxc.rs/) for linting and formatting
+- [d3-force](https://d3js.org/d3-force), d3-zoom and d3-drag for simulation and interaction
+- [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
+- Deployed to GitHub Pages by a GitHub Action on every push to `main`

@@ -12,11 +12,23 @@ import { select, type Selection } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
 import { drag } from "d3-drag";
 import "d3-transition";
-import type { Graph, GraphLink, GraphNode, LabelMode, LayoutId, Row } from "../types";
+import type { Graph, GraphLink, GraphNode, GraphStyle, LabelMode, LayoutId, Row } from "../types";
 import { computeTargets } from "../lib/layouts";
 import { weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
-import { EDGE, EDGE_LIT, LABEL, LABEL_HALO, SELECT_RING, SURFACE, nodeColor } from "../theme";
+import { formatNumber } from "../lib/format";
+import {
+  CATEGORICAL,
+  EDGE,
+  EDGE_LIT,
+  LABEL,
+  LABEL_HALO,
+  NEUTRAL,
+  SELECT_RING,
+  SURFACE,
+  nodeColor,
+  sequentialColor,
+} from "../theme";
 
 export interface GraphCanvasHandle {
   fit: () => void;
@@ -28,7 +40,9 @@ interface GraphCanvasProps {
   graph: Graph;
   layout: LayoutId;
   labelMode: LabelMode;
+  style: GraphStyle;
   colors: Map<string, string>;
+  edgeColors: Map<string, string>;
   attrColumns: string[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
@@ -52,11 +66,21 @@ function escapeHtml(v: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Marker id matching an edge stroke color; markers are pre-defined per slot. */
+function markerFor(stroke: string): string {
+  if (stroke === EDGE_LIT) return "url(#arrow-lit)";
+  if (stroke === NEUTRAL) return "url(#arrow-cn)";
+  const slot = CATEGORICAL.indexOf(stroke);
+  return slot === -1 ? "url(#arrow-dim)" : `url(#arrow-c${slot})`;
+}
+
 export function GraphCanvas({
   graph,
   layout,
   labelMode,
+  style,
   colors,
+  edgeColors,
   attrColumns,
   selectedId,
   onSelect,
@@ -82,8 +106,41 @@ export function GraphCanvas({
   const edgeWidth = useMemo(() => weightScale(graph.links), [graph]);
 
   // Live values for callbacks created inside effects.
-  const liveRef = useRef({ layout, labelMode, selectedId, onSelect, colors, attrColumns, ambient });
-  liveRef.current = { layout, labelMode, selectedId, onSelect, colors, attrColumns, ambient };
+  const liveRef = useRef({
+    layout,
+    labelMode,
+    selectedId,
+    onSelect,
+    colors,
+    edgeColors,
+    attrColumns,
+    ambient,
+    style,
+  });
+  liveRef.current = {
+    layout,
+    labelMode,
+    selectedId,
+    onSelect,
+    colors,
+    edgeColors,
+    attrColumns,
+    ambient,
+    style,
+  };
+
+  const nodeFill = (d: GraphNode): string => {
+    if (graph.ranking) {
+      const span = graph.ranking.max - graph.ranking.min || 1;
+      return sequentialColor(((d.value ?? graph.ranking.min) - graph.ranking.min) / span);
+    }
+    return nodeColor(d.group, liveRef.current.colors);
+  };
+
+  const edgeBase = (d: GraphLink): string => {
+    if (d.colorValue === null) return EDGE;
+    return liveRef.current.edgeColors.get(d.colorValue) ?? NEUTRAL;
+  };
 
   const linkPath = (l: GraphLink): string => {
     const s = l.source as GraphNode;
@@ -110,7 +167,7 @@ export function GraphCanvas({
   const refreshStyles = () => {
     const sels = selsRef.current;
     if (!sels) return;
-    const { selectedId: sel } = liveRef.current;
+    const { selectedId: sel, style: st } = liveRef.current;
     const focus = hoverNodeRef.current ?? sel;
     const neighbors = focus ? adjacencyRef.current.get(focus) : null;
     const base = baseLabelsRef.current;
@@ -123,16 +180,17 @@ export function GraphCanvas({
     sels.link
       .attr("stroke", (d) => {
         const lit = neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus);
-        return lit ? EDGE_LIT : EDGE;
+        return lit ? EDGE_LIT : edgeBase(d);
       })
       .attr("opacity", (d) => {
-        if (!neighbors) return 0.85;
+        if (!neighbors) return d.colorValue === null ? 0.85 : 0.9;
         const touches = endpoint(d.source) === focus || endpoint(d.target) === focus;
         return touches ? 0.95 : 0.06;
       })
       .attr("marker-end", (d) => {
+        if (!st.arrows) return null;
         const lit = neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus);
-        return lit ? "url(#arrow-lit)" : "url(#arrow-dim)";
+        return markerFor(lit ? EDGE_LIT : edgeBase(d));
       });
 
     sels.label.attr("display", (d) => {
@@ -163,15 +221,16 @@ export function GraphCanvas({
     if (!sim) return;
     const nodes = nodesRef.current;
     const links = linksRef.current;
-    const { layout: current, ambient: amb } = liveRef.current;
+    const { layout: current, ambient: amb, style: st } = liveRef.current;
+    const spacing = amb ? 1 : st.spacing;
 
     const targets = amb ? null : computeTargets(current, graph);
     if (targets) {
       for (const n of nodes) {
         const t = targets.get(n.id);
         if (t) {
-          n.tx = t.x;
-          n.ty = t.y;
+          n.tx = t.x * spacing;
+          n.ty = t.y * spacing;
         }
         n.fx = null;
         n.fy = null;
@@ -191,14 +250,17 @@ export function GraphCanvas({
         .force(
           "link",
           forceLink<GraphNode, GraphLink>(links)
-            .distance((l) => 48 + (l.source as GraphNode).radius + (l.target as GraphNode).radius)
+            .distance(
+              (l) =>
+                (48 + (l.source as GraphNode).radius + (l.target as GraphNode).radius) * spacing,
+            )
             .strength(amb ? 0.5 : 0.35),
         )
         .force(
           "charge",
           forceManyBody<GraphNode>()
-            .strength(amb ? -120 : -260)
-            .distanceMax(700),
+            .strength((amb ? -120 : -260) * spacing * Math.sqrt(spacing))
+            .distanceMax(700 * spacing),
         )
         .force("x", forceX<GraphNode>(0).strength(amb ? 0.045 : 0.03))
         .force("y", forceY<GraphNode>(0).strength(amb ? 0.045 : 0.03))
@@ -256,8 +318,12 @@ export function GraphCanvas({
 
   const nodeTooltip = (d: GraphNode): string => {
     const group = d.group ? `<div class="tip-sub">${escapeHtml(d.group)}</div>` : "";
+    const value =
+      graph.ranking && d.value !== null
+        ? `<div class="tip-sub">${escapeHtml(formatNumber(d.value))}</div>`
+        : "";
     return (
-      `<div class="tip-title">${escapeHtml(d.id)}</div>${group}` +
+      `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}` +
       `<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
     );
   };
@@ -319,24 +385,24 @@ export function GraphCanvas({
     adjacencyRef.current = adjacency;
     hoverNodeRef.current = null;
 
-    const { colors: colorMap, ambient: amb } = liveRef.current;
+    const { ambient: amb, style: st } = liveRef.current;
     const root = select(viewport);
     const linkLayer = root.select<SVGGElement>("[data-links]");
     const hitLayer = root.select<SVGGElement>("[data-hits]");
     const nodeLayer = root.select<SVGGElement>("[data-nodes]");
     const labelLayer = root.select<SVGGElement>("[data-labels]");
 
-    const linkKey = (l: GraphLink) => `${endpoint(l.source)} ${endpoint(l.target)}`;
+    const linkKey = (l: GraphLink) => `${endpoint(l.source)} ${endpoint(l.target)}`;
 
     const link = linkLayer
       .selectAll<SVGPathElement, GraphLink>("path")
       .data(links, linkKey)
       .join("path")
       .attr("fill", "none")
-      .attr("stroke", EDGE)
+      .attr("stroke", (d) => edgeBase(d))
       .attr("stroke-width", (d) => edgeWidth(d))
       .attr("stroke-linecap", "round")
-      .attr("marker-end", amb ? null : "url(#arrow-dim)");
+      .attr("marker-end", (d) => (amb || !st.arrows ? null : markerFor(edgeBase(d))));
 
     const hit = hitLayer
       .selectAll<SVGPathElement, GraphLink>("path")
@@ -351,7 +417,7 @@ export function GraphCanvas({
           .filter((l) => l === d)
           .attr("stroke", EDGE_LIT)
           .attr("opacity", 1)
-          .attr("marker-end", "url(#arrow-lit)");
+          .attr("marker-end", liveRef.current.style.arrows ? "url(#arrow-lit)" : null);
       })
       .on("mousemove", (event: MouseEvent, d) => showTooltip(event, linkTooltip(d)))
       .on("mouseleave", () => {
@@ -365,7 +431,7 @@ export function GraphCanvas({
       .join("circle")
       .attr("data-id", (d) => d.id)
       .attr("r", (d) => d.radius)
-      .attr("fill", (d) => nodeColor(d.group, colorMap))
+      .attr("fill", (d) => nodeFill(d))
       .attr("stroke", SURFACE)
       .attr("stroke-width", 1.5)
       .style("cursor", amb ? "default" : "pointer");
@@ -478,7 +544,7 @@ export function GraphCanvas({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
 
-  // Layout switches morph the existing scene.
+  // Layout and spacing switches morph the existing scene.
   const firstLayoutRun = useRef(true);
   useEffect(() => {
     if (firstLayoutRun.current) {
@@ -489,12 +555,12 @@ export function GraphCanvas({
     const timer = window.setTimeout(() => fit(650), 700);
     return () => window.clearTimeout(timer);
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout]);
+  }, [layout, style.spacing]);
 
   useEffect(() => {
     computeBaseLabels();
     refreshStyles();
-  }, [labelMode, selectedId, graph]);
+  }, [labelMode, selectedId, graph, style.arrows]);
 
   // Pan and zoom.
   useEffect(() => {
@@ -552,30 +618,12 @@ export function GraphCanvas({
     <div className={ambient ? "graph-canvas ambient" : "graph-canvas"} ref={containerRef}>
       <svg ref={svgRef} className="graph-svg" role="img" aria-label="Network graph">
         <defs>
-          <marker
-            id="arrow-dim"
-            viewBox="0 -4 8 8"
-            refX="7"
-            refY="0"
-            markerWidth="9"
-            markerHeight="9"
-            markerUnits="userSpaceOnUse"
-            orient="auto"
-          >
-            <path d="M0,-4L8,0L0,4" fill={ARROW} />
-          </marker>
-          <marker
-            id="arrow-lit"
-            viewBox="0 -4 8 8"
-            refX="7"
-            refY="0"
-            markerWidth="9"
-            markerHeight="9"
-            markerUnits="userSpaceOnUse"
-            orient="auto"
-          >
-            <path d="M0,-4L8,0L0,4" fill={EDGE_LIT} />
-          </marker>
+          <Arrow id="arrow-dim" fill={ARROW} />
+          <Arrow id="arrow-lit" fill={EDGE_LIT} />
+          <Arrow id="arrow-cn" fill={NEUTRAL} />
+          {CATEGORICAL.map((c, i) => (
+            <Arrow key={c} id={`arrow-c${i}`} fill={c} />
+          ))}
         </defs>
         <g ref={viewportRef} data-viewport="">
           <g data-links="" />
@@ -586,5 +634,22 @@ export function GraphCanvas({
       </svg>
       {!ambient && <div className="graph-tooltip" ref={tooltipRef} />}
     </div>
+  );
+}
+
+function Arrow({ id, fill }: { id: string; fill: string }) {
+  return (
+    <marker
+      id={id}
+      viewBox="0 -4 8 8"
+      refX="7"
+      refY="0"
+      markerWidth="9"
+      markerHeight="9"
+      markerUnits="userSpaceOnUse"
+      orient="auto"
+    >
+      <path d="M0,-4L8,0L0,4" fill={fill} />
+    </marker>
   );
 }

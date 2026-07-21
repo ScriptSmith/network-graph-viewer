@@ -18,6 +18,18 @@ export const CATEGORICAL = [
   "#e66767", // red
 ];
 
+/**
+ * Sequential ramp for numeric rankings, one blue hue stepped light on the
+ * dark surface: low values recede, high values pop. The darkest step stays
+ * above the 2:1 ordinal floor so every node remains visible.
+ */
+export const SEQUENTIAL = ["#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb"];
+
+export function sequentialColor(t: number): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  return SEQUENTIAL[Math.min(SEQUENTIAL.length - 1, Math.floor(clamped * SEQUENTIAL.length))];
+}
+
 /** Nodes with no group value, and groups folded into "Other". */
 export const NEUTRAL = "#898781";
 

@@ -7,7 +7,10 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 ## Features
 
 - Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser
-- Pick which columns are the edge source and target, which column colors the nodes, which numeric column drives edge width, and which columns show up as edge details
+- Pick which columns are the edge source and target and which columns show up as edge details
+- Gephi-style appearance controls: color nodes by a categorical column or a numeric ranking (sequential ramp), size nodes by connections or a summed column, color edges by a column, width edges by a numeric column, toggle direction arrows, adjust spacing
+- Filter rows per column (value checkboxes for categories, min/max for numbers); the graph, legend, and stats all follow the filtered data
+- Pivot-style statistics panel: overview tiles (nodes, edges, average links, components), group-by breakdowns with count/sum/average measures, top connected nodes, and click-to-filter bars
 - Built-in sample dataset: a Supervisor to Supervisee network with edge attributes (department, cadence, meetings per month, years together)
 - Animated, interactive SVG graph: pan, zoom, drag nodes, hover to highlight neighborhoods, click a node for a detail inspector
 - Five layouts that morph into each other: force, hierarchy, radial, circle, grid

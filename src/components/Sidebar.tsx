@@ -1,14 +1,27 @@
 import { useMemo, useRef } from "react";
-import type { Dataset, Graph, LabelMode, LayoutId, Mapping, Sheet } from "../types";
+import type {
+  Dataset,
+  Filters,
+  Graph,
+  GraphStyle,
+  LabelMode,
+  LayoutId,
+  Mapping,
+  Sheet,
+} from "../types";
 import { LAYOUTS } from "../types";
 import { ACCEPTED_EXTENSIONS, isNumericColumn } from "../lib/parse";
+import { FilterPanel } from "./FilterPanel";
 
 interface SidebarProps {
   dataset: Dataset | null;
   sheetIndex: number;
   sheet: Sheet | null;
   mapping: Mapping | null;
+  style: GraphStyle;
+  filters: Filters;
   graph: Graph | null;
+  filteredRowCount: number;
   layout: LayoutId;
   labelMode: LabelMode;
   onFile: (file: File) => void;
@@ -16,6 +29,8 @@ interface SidebarProps {
   onClear: () => void;
   onSheetChange: (index: number) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
+  onStyleChange: (patch: Partial<GraphStyle>) => void;
+  onFiltersChange: (filters: Filters) => void;
   onLayoutChange: (layout: LayoutId) => void;
   onLabelModeChange: (mode: LabelMode) => void;
   onExport: (format: "svg" | "png") => void;
@@ -28,7 +43,10 @@ export function Sidebar({
   sheetIndex,
   sheet,
   mapping,
+  style,
+  filters,
   graph,
+  filteredRowCount,
   layout,
   labelMode,
   onFile,
@@ -36,6 +54,8 @@ export function Sidebar({
   onClear,
   onSheetChange,
   onMappingChange,
+  onStyleChange,
+  onFiltersChange,
   onLayoutChange,
   onLabelModeChange,
   onExport,
@@ -66,6 +86,8 @@ export function Sidebar({
       : [...mapping.attrs, column];
     onMappingChange({ attrs });
   };
+
+  const activeFilterCount = Object.keys(filters).length;
 
   return (
     <aside className="sidebar">
@@ -184,36 +206,6 @@ export function Sidebar({
                   skipped.
                 </p>
               )}
-              <label className="field">
-                <span className="field-label">Color nodes by</span>
-                <select
-                  className="control"
-                  value={mapping.color ?? ""}
-                  onChange={(e) => onMappingChange({ color: e.target.value || null })}
-                >
-                  <option value="">None (single color)</option>
-                  {sheet.columns
-                    .filter((c) => c !== mapping.source && c !== mapping.target)
-                    .map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Edge width from</span>
-                <select
-                  className="control"
-                  value={mapping.weight ?? ""}
-                  onChange={(e) => onMappingChange({ weight: e.target.value || null })}
-                >
-                  <option value="">Uniform width</option>
-                  {numericColumns
-                    .filter((c) => c !== mapping.source && c !== mapping.target)
-                    .map((c) => (
-                      <option key={c}>{c}</option>
-                    ))}
-                </select>
-              </label>
               {attrCandidates.length > 0 && (
                 <fieldset className="check-list">
                   <legend className="field-label">Edge details on hover</legend>
@@ -224,7 +216,7 @@ export function Sidebar({
                         checked={mapping.attrs.includes(c)}
                         onChange={() => toggleAttr(c)}
                       />
-                      <span>{c}</span>
+                      <span className="check-name">{c}</span>
                     </label>
                   ))}
                 </fieldset>
@@ -242,9 +234,139 @@ export function Sidebar({
         </div>
       </section>
 
+      <section className={sheet ? "step" : "step step-disabled"}>
+        <h2 className="step-head">
+          <span className="step-no">3</span> Filter
+          {activeFilterCount > 0 && <span className="step-badge">{activeFilterCount}</span>}
+        </h2>
+        <div className="step-body">
+          {sheet ? (
+            <>
+              {activeFilterCount > 0 && (
+                <p className="note">
+                  Showing {filteredRowCount} of {sheet.rows.length} rows.
+                </p>
+              )}
+              <FilterPanel sheet={sheet} filters={filters} onChange={onFiltersChange} />
+            </>
+          ) : (
+            <p className="note">Load data first.</p>
+          )}
+        </div>
+      </section>
+
+      <section className={sheet ? "step" : "step step-disabled"}>
+        <h2 className="step-head">
+          <span className="step-no">4</span> Style
+        </h2>
+        <div className="step-body">
+          {sheet && mapping ? (
+            <>
+              <label className="field">
+                <span className="field-label">Color nodes by</span>
+                <select
+                  className="control"
+                  value={style.nodeColor}
+                  onChange={(e) => onStyleChange({ nodeColor: e.target.value })}
+                >
+                  <option value="none">None (single color)</option>
+                  <option value="metric:degree">Connections (low to high)</option>
+                  {sheet.columns
+                    .filter((c) => c !== mapping.source && c !== mapping.target)
+                    .map((c) => (
+                      <option key={c} value={`column:${c}`}>
+                        {c}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">Size nodes by</span>
+                <select
+                  className="control"
+                  value={style.nodeSize}
+                  onChange={(e) => onStyleChange({ nodeSize: e.target.value })}
+                >
+                  <option value="metric:degree">Connections</option>
+                  <option value="metric:in">Incoming connections</option>
+                  <option value="metric:out">Outgoing connections</option>
+                  <option value="metric:uniform">Uniform</option>
+                  {numericColumns
+                    .filter((c) => c !== mapping.source && c !== mapping.target)
+                    .map((c) => (
+                      <option key={c} value={`column:${c}`}>
+                        Sum of {c}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">Color edges by</span>
+                <select
+                  className="control"
+                  value={style.edgeColor}
+                  onChange={(e) => onStyleChange({ edgeColor: e.target.value })}
+                >
+                  <option value="uniform">Uniform</option>
+                  {sheet.columns
+                    .filter(
+                      (c) =>
+                        c !== mapping.source && c !== mapping.target && !numericColumns.includes(c),
+                    )
+                    .map((c) => (
+                      <option key={c} value={`column:${c}`}>
+                        {c}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">Edge width from</span>
+                <select
+                  className="control"
+                  value={style.edgeWidth}
+                  onChange={(e) => onStyleChange({ edgeWidth: e.target.value })}
+                >
+                  <option value="uniform">Uniform width</option>
+                  {numericColumns
+                    .filter((c) => c !== mapping.source && c !== mapping.target)
+                    .map((c) => (
+                      <option key={c} value={`column:${c}`}>
+                        {c}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="check-item">
+                <input
+                  type="checkbox"
+                  checked={style.arrows}
+                  onChange={(e) => onStyleChange({ arrows: e.target.checked })}
+                />
+                <span className="check-name">Direction arrows</span>
+              </label>
+              <label className="field">
+                <span className="field-label">Labels</span>
+                <select
+                  className="control"
+                  value={labelMode}
+                  onChange={(e) => onLabelModeChange(e.target.value as LabelMode)}
+                >
+                  <option value="auto">Auto (declutter large graphs)</option>
+                  <option value="all">All nodes</option>
+                  <option value="none">None</option>
+                </select>
+              </label>
+            </>
+          ) : (
+            <p className="note">Load data first.</p>
+          )}
+        </div>
+      </section>
+
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">3</span> Layout
+          <span className="step-no">5</span> Layout
         </h2>
         <div className="step-body">
           <div className="radio-list" role="radiogroup" aria-label="Layout algorithm">
@@ -264,24 +386,24 @@ export function Sidebar({
             ))}
           </div>
           <label className="field">
-            <span className="field-label">Labels</span>
-            <select
-              className="control"
-              value={labelMode}
+            <span className="field-label">Spacing</span>
+            <input
+              type="range"
+              className="range"
+              min={0.6}
+              max={1.8}
+              step={0.1}
+              value={style.spacing}
               disabled={!graph}
-              onChange={(e) => onLabelModeChange(e.target.value as LabelMode)}
-            >
-              <option value="auto">Auto (declutter large graphs)</option>
-              <option value="all">All nodes</option>
-              <option value="none">None</option>
-            </select>
+              onChange={(e) => onStyleChange({ spacing: Number(e.target.value) })}
+            />
           </label>
         </div>
       </section>
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">4</span> Export
+          <span className="step-no">6</span> Export
         </h2>
         <div className="step-body btn-row">
           <button type="button" className="btn" disabled={!graph} onClick={() => onExport("svg")}>

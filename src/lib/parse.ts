@@ -1,4 +1,5 @@
-import type { CellValue, Dataset, Row, Sheet } from "../types";
+import type { CellValue, Dataset, GraphStyle, Mapping, Row, Sheet } from "../types";
+import { DEFAULT_STYLE } from "../types";
 
 export const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".ods"];
 
@@ -61,14 +62,8 @@ const SOURCE_SOFT = /source|from|supervisor|manager|parent/i;
 const TARGET_SOFT = /target|supervisee|report|child|dest/i;
 const GROUP_HINTS = /group|department|dept|team|type|category|role|org|unit/i;
 
-/** Guess a sensible column mapping from the header names. */
-export function guessMapping(sheet: Sheet): {
-  source: string;
-  target: string;
-  attrs: string[];
-  weight: null;
-  color: string | null;
-} {
+/** Guess the structural columns from the header names. */
+export function guessMapping(sheet: Sheet): Mapping {
   const cols = sheet.columns;
   const find = (re: RegExp, taken: string[]) => cols.find((c) => re.test(c) && !taken.includes(c));
 
@@ -79,7 +74,18 @@ export function guessMapping(sheet: Sheet): {
     target = cols.find((c) => c !== source) ?? cols[0];
   }
 
-  const color = find(GROUP_HINTS, [source, target]) ?? null;
   const attrs = cols.filter((c) => c !== source && c !== target);
-  return { source, target, attrs, weight: null, color };
+  return { source, target, attrs };
+}
+
+/** Guess appearance defaults: color nodes by a group-like column if present. */
+export function guessStyle(sheet: Sheet, mapping: Mapping): GraphStyle {
+  const candidate = sheet.columns.find(
+    (c) =>
+      c !== mapping.source &&
+      c !== mapping.target &&
+      GROUP_HINTS.test(c) &&
+      !isNumericColumn(sheet.rows, c),
+  );
+  return { ...DEFAULT_STYLE, nodeColor: candidate ? `column:${candidate}` : "none" };
 }

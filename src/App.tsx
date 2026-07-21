@@ -1,26 +1,33 @@
 import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
-import type { Dataset, LabelMode, LayoutId, Mapping } from "./types";
+import type { Dataset, Filters, GraphStyle, LabelMode, LayoutId, Mapping } from "./types";
+import { DEFAULT_STYLE, styleColumn } from "./types";
 import { SAMPLE_DATASET } from "./sample-data";
-import { parseFile, guessMapping } from "./lib/parse";
-import { buildGraph } from "./lib/graph";
+import { parseFile, guessMapping, guessStyle } from "./lib/parse";
+import { applyFilters, buildGraph } from "./lib/graph";
 import { downloadPng, downloadSvg } from "./lib/export";
-import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP } from "./theme";
+import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "./theme";
+import { formatNumber } from "./lib/format";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
+import { StatsPanel } from "./components/StatsPanel";
 
 const AMBIENT_SHEET = SAMPLE_DATASET.sheets[0];
 const AMBIENT_MAPPING: Mapping = guessMapping(AMBIENT_SHEET);
-const AMBIENT_GRAPH = buildGraph(AMBIENT_SHEET.rows, AMBIENT_MAPPING);
+const AMBIENT_STYLE: GraphStyle = guessStyle(AMBIENT_SHEET, AMBIENT_MAPPING);
+const AMBIENT_GRAPH = buildGraph(AMBIENT_SHEET.rows, AMBIENT_MAPPING, AMBIENT_STYLE);
 const AMBIENT_COLORS = groupColorMap(AMBIENT_GRAPH.groups);
 
 export default function App() {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [mapping, setMapping] = useState<Mapping | null>(null);
+  const [style, setStyle] = useState<GraphStyle>(DEFAULT_STYLE);
+  const [filters, setFilters] = useState<Filters>({});
   const [layout, setLayout] = useState<LayoutId>("force");
   const [labelMode, setLabelMode] = useState<LabelMode>("auto");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -28,19 +35,32 @@ export default function App() {
 
   const sheet = dataset?.sheets[sheetIndex] ?? null;
 
+  const filteredRows = useMemo(
+    () => (sheet ? applyFilters(sheet.rows, filters) : []),
+    [sheet, filters],
+  );
+
   const graph = useMemo(
-    () => (sheet && mapping ? buildGraph(sheet.rows, mapping) : null),
-    [sheet, mapping],
+    () => (sheet && mapping ? buildGraph(filteredRows, mapping, style) : null),
+    [sheet, mapping, filteredRows, style],
   );
   const colors = useMemo(
     () => (graph ? groupColorMap(graph.groups) : new Map<string, string>()),
     [graph],
   );
+  const edgeColors = useMemo(
+    () => (graph ? groupColorMap(graph.edgeGroups) : new Map<string, string>()),
+    [graph],
+  );
 
   const adoptDataset = useCallback((next: Dataset) => {
+    const firstSheet = next.sheets[0];
+    const nextMapping = guessMapping(firstSheet);
     setDataset(next);
     setSheetIndex(0);
-    setMapping(guessMapping(next.sheets[0]));
+    setMapping(nextMapping);
+    setStyle(guessStyle(firstSheet, nextMapping));
+    setFilters({});
     setSelectedId(null);
     setError(null);
   }, []);
@@ -61,15 +81,22 @@ export default function App() {
   const handleClear = useCallback(() => {
     setDataset(null);
     setMapping(null);
+    setStyle(DEFAULT_STYLE);
+    setFilters({});
     setSelectedId(null);
+    setStatsOpen(false);
     setError(null);
   }, []);
 
   const handleSheetChange = useCallback(
     (index: number) => {
       if (!dataset) return;
+      const nextSheet = dataset.sheets[index];
+      const nextMapping = guessMapping(nextSheet);
       setSheetIndex(index);
-      setMapping(guessMapping(dataset.sheets[index]));
+      setMapping(nextMapping);
+      setStyle(guessStyle(nextSheet, nextMapping));
+      setFilters({});
       setSelectedId(null);
     },
     [dataset],
@@ -79,14 +106,46 @@ export default function App() {
     (patch: Partial<Mapping>) => {
       if (!mapping) return;
       const next = { ...mapping, ...patch };
-      // Keep the extras coherent when endpoints move.
       next.attrs = next.attrs.filter((c) => c !== next.source && c !== next.target);
-      if (next.color === next.source || next.color === next.target) next.color = null;
-      if (next.weight === next.source || next.weight === next.target) next.weight = null;
       setMapping(next);
+      // Style choices that now point at a structural column stop making sense.
+      setStyle((s) => {
+        const fix = (token: string, fallback: string) => {
+          const col = styleColumn(token);
+          return col === next.source || col === next.target ? fallback : token;
+        };
+        return {
+          ...s,
+          nodeColor: fix(s.nodeColor, "none"),
+          nodeSize: fix(s.nodeSize, "metric:degree"),
+          edgeWidth: fix(s.edgeWidth, "uniform"),
+          edgeColor: fix(s.edgeColor, "uniform"),
+        };
+      });
     },
     [mapping],
   );
+
+  const handleStyleChange = useCallback((patch: Partial<GraphStyle>) => {
+    setStyle((s) => ({ ...s, ...patch }));
+  }, []);
+
+  const handleToggleValueFilter = useCallback((column: string, value: string) => {
+    setFilters((f) => {
+      const current = f[column];
+      const next = { ...f };
+      if (
+        current?.kind === "values" &&
+        current.selected.length === 1 &&
+        current.selected[0] === value
+      ) {
+        delete next[column];
+      } else {
+        next[column] = { kind: "values", selected: [value] };
+      }
+      return next;
+    });
+  }, []);
 
   const handleExport = useCallback(
     async (format: "svg" | "png") => {
@@ -116,8 +175,11 @@ export default function App() {
     [handleFile],
   );
 
-  const legendEntries = useMemo(() => {
-    if (!graph || !mapping?.color || graph.groups.length === 0) return [];
+  const colorColumn = styleColumn(style.nodeColor);
+  const edgeColorColumn = styleColumn(style.edgeColor);
+
+  const nodeLegend = useMemo(() => {
+    if (!graph || graph.ranking || graph.groups.length === 0) return [];
     const entries = graph.groups.slice(0, MAX_GROUPS).map((g) => ({
       name: g,
       color: colors.get(g) ?? NEUTRAL,
@@ -127,7 +189,23 @@ export default function App() {
       entries.push({ name: "Unassigned", color: NEUTRAL });
     }
     return entries;
-  }, [graph, mapping, colors]);
+  }, [graph, colors]);
+
+  const edgeLegend = useMemo(() => {
+    if (!graph || graph.edgeGroups.length === 0) return [];
+    const entries = graph.edgeGroups.slice(0, MAX_GROUPS).map((g) => ({
+      name: g,
+      color: edgeColors.get(g) ?? NEUTRAL,
+    }));
+    if (graph.edgeGroups.length > MAX_GROUPS) entries.push({ name: OTHER_GROUP, color: NEUTRAL });
+    return entries;
+  }, [graph, edgeColors]);
+
+  const rankingLabel =
+    style.nodeColor === "metric:degree" ? "Connections" : (colorColumn ?? "Value");
+
+  const showLegend =
+    graph !== null && (nodeLegend.length > 0 || edgeLegend.length > 0 || graph.ranking !== null);
 
   const pickAnyFile = () => {
     document.querySelector<HTMLInputElement>("input[type=file]")?.click();
@@ -150,7 +228,10 @@ export default function App() {
         sheetIndex={sheetIndex}
         sheet={sheet}
         mapping={mapping}
+        style={style}
+        filters={filters}
         graph={graph}
+        filteredRowCount={filteredRows.length}
         layout={layout}
         labelMode={labelMode}
         onFile={(f) => void handleFile(f)}
@@ -158,6 +239,8 @@ export default function App() {
         onClear={handleClear}
         onSheetChange={handleSheetChange}
         onMappingChange={handleMappingChange}
+        onStyleChange={handleStyleChange}
+        onFiltersChange={setFilters}
         onLayoutChange={setLayout}
         onLabelModeChange={setLabelMode}
         onExport={(f) => void handleExport(f)}
@@ -171,7 +254,9 @@ export default function App() {
               graph={graph}
               layout={layout}
               labelMode={labelMode}
+              style={style}
               colors={colors}
+              edgeColors={edgeColors}
               attrColumns={mapping.attrs}
               selectedId={selectedId}
               onSelect={setSelectedId}
@@ -193,12 +278,42 @@ export default function App() {
               >
                 Re-run
               </button>
+              <button
+                type="button"
+                className={statsOpen ? "tool-btn active" : "tool-btn"}
+                onClick={() => setStatsOpen((v) => !v)}
+                aria-pressed={statsOpen}
+                title="Show graph statistics"
+              >
+                Stats
+              </button>
             </div>
-            {legendEntries.length > 0 && (
-              <div className="legend" aria-label="Node colors">
-                {legendEntries.map((e) => (
-                  <span key={e.name} className="legend-item">
+            {showLegend && (
+              <div className="legend" aria-label="Legend">
+                {graph.ranking && (
+                  <span className="legend-item">
+                    <span
+                      className="legend-gradient"
+                      style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
+                    />
+                    <span>
+                      {rankingLabel} {formatNumber(graph.ranking.min)} to{" "}
+                      {formatNumber(graph.ranking.max)}
+                    </span>
+                  </span>
+                )}
+                {nodeLegend.map((e) => (
+                  <span key={`n${e.name}`} className="legend-item">
                     <span className="legend-dot" style={{ background: e.color }} />
+                    {e.name}
+                  </span>
+                ))}
+                {edgeLegend.length > 0 && edgeColorColumn && (
+                  <span className="legend-item legend-caption">{edgeColorColumn}:</span>
+                )}
+                {edgeLegend.map((e) => (
+                  <span key={`e${e.name}`} className="legend-item">
+                    <span className="legend-line" style={{ background: e.color }} />
                     {e.name}
                   </span>
                 ))}
@@ -207,7 +322,26 @@ export default function App() {
             <div className="status-chip">
               {graph.nodes.length} nodes · {graph.links.length} edges
             </div>
-            {selectedId && (
+            {graph.nodes.length === 0 && (
+              <div className="no-match">
+                <p>No rows match the current filters.</p>
+              </div>
+            )}
+            {statsOpen && sheet && (
+              <StatsPanel
+                rows={filteredRows}
+                totalRows={sheet.rows.length}
+                graph={graph}
+                mapping={mapping}
+                colorColumn={graph.ranking ? null : colorColumn}
+                colors={colors}
+                filters={filters}
+                onToggleValueFilter={handleToggleValueFilter}
+                onSelectNode={setSelectedId}
+                onClose={() => setStatsOpen(false)}
+              />
+            )}
+            {selectedId && !statsOpen && (
               <Inspector
                 graph={graph}
                 selectedId={selectedId}
@@ -224,7 +358,9 @@ export default function App() {
               graph={AMBIENT_GRAPH}
               layout="force"
               labelMode="none"
+              style={AMBIENT_STYLE}
               colors={AMBIENT_COLORS}
+              edgeColors={new Map()}
               attrColumns={[]}
               selectedId={null}
               onSelect={() => {}}
@@ -234,8 +370,37 @@ export default function App() {
               <div className="empty-card">
                 <h2 className="empty-title">Every spreadsheet hides a network.</h2>
                 <p className="empty-tag">
-                  Upload an edge list (one row per connection), pick your columns, and explore it as
-                  a living graph. Nothing leaves your browser.
+                  Upload an edge list, one row per connection: the first two columns you map become
+                  the arrows, everything else becomes detail you can style, filter, and chart.
+                </p>
+                <table className="example-table">
+                  <thead>
+                    <tr>
+                      <th>Supervisor</th>
+                      <th>Supervisee</th>
+                      <th>Meetings</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Alex Rivera</td>
+                      <td>Priya Sharma</td>
+                      <td>4</td>
+                    </tr>
+                    <tr>
+                      <td>Priya Sharma</td>
+                      <td>Grace Okafor</td>
+                      <td>4</td>
+                    </tr>
+                    <tr>
+                      <td>Grace Okafor</td>
+                      <td>Mei Chen</td>
+                      <td>2</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p className="example-caption">
+                  Any column names work; you pick which is which after loading.
                 </p>
                 <button type="button" className="dropzone" onClick={pickAnyFile}>
                   <strong>Drop a file here or click to browse</strong>

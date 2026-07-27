@@ -151,7 +151,7 @@ export function Sidebar({
             <>
               <button type="button" className="mini-drop" onClick={pickFile}>
                 <strong>Choose a file</strong>
-                <span>or drop it anywhere on the page</span>
+                <span>or drop a file or paste cells anywhere on the page</span>
               </button>
               <button type="button" className="btn" onClick={onSample}>
                 Load sample dataset

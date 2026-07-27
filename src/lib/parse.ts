@@ -32,6 +32,49 @@ export async function parseFile(file: File): Promise<Dataset> {
   return { fileName: file.name, sheets };
 }
 
+/**
+ * Parse text pasted from a spreadsheet into the same Dataset shape as an
+ * uploaded file. Excel and Google Sheets put copied cells on the clipboard
+ * as tab-separated text; SheetJS guesses the delimiter, so pasted CSV works
+ * too.
+ */
+export async function parsePastedText(text: string): Promise<Dataset> {
+  const { read, utils } = await import("xlsx");
+  const workbook = read(text.replace(/[\r\n]+$/, ""), { type: "string" });
+  const ws = workbook.Sheets[workbook.SheetNames[0]];
+  const grid = ws ? utils.sheet_to_json<CellValue[]>(ws, { header: 1, defval: null }) : [];
+
+  // Copied ranges often lack a header row. Real headers are distinct
+  // non-empty strings, so anything else means the first row is data and
+  // column names get synthesized instead of swallowing an edge.
+  const first = grid[0] ?? [];
+  const hasHeader =
+    first.length > 0 &&
+    first.every((v) => typeof v === "string" && v.trim() !== "") &&
+    new Set(first).size === first.length;
+
+  const width = grid.reduce((w, r) => Math.max(w, r.length), 0);
+  const columns = Array.from({ length: width }, (_, i) => {
+    const name = hasHeader ? first[i] : null;
+    return typeof name === "string" ? name.trim() : `Column ${utils.encode_col(i)}`;
+  });
+
+  const rows: Row[] = [];
+  for (const cells of hasHeader ? grid.slice(1) : grid) {
+    if (cells.every((v) => v === null || v === "")) continue;
+    const row: Row = {};
+    columns.forEach((c, i) => {
+      row[c] = cells[i] ?? null;
+    });
+    rows.push(row);
+  }
+
+  if (width < 2 || rows.length === 0) {
+    throw new Error("Pasted cells need at least two columns (source and target) and one data row.");
+  }
+  return { fileName: "Pasted data", sheets: [{ name: "Pasted", columns, rows }] };
+}
+
 /** True when at least 80% of the column's non-empty values parse as numbers. */
 export function isNumericColumn(rows: Row[], column: string): boolean {
   let seen = 0;

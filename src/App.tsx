@@ -1,8 +1,14 @@
-import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { Dataset, Filters, GraphStyle, LabelMode, LayoutId, Mapping } from "./types";
 import { DEFAULT_STYLE, styleColumn } from "./types";
 import { SAMPLE_DATASET } from "./sample-data";
-import { parseFile, guessMapping, guessStyle } from "./lib/parse";
+import {
+  ACCEPTED_EXTENSIONS,
+  parseFile,
+  parsePastedText,
+  guessMapping,
+  guessStyle,
+} from "./lib/parse";
 import { applyFilters, buildGraph } from "./lib/graph";
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "./theme";
@@ -75,6 +81,40 @@ export default function App() {
     },
     [adoptDataset],
   );
+
+  // Cells copied in Excel or Google Sheets arrive as tab-separated text, so
+  // pasting anywhere outside a form control loads them like a dropped file.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (
+        e.target instanceof HTMLElement &&
+        e.target.closest("input, textarea, select, [contenteditable]")
+      ) {
+        return;
+      }
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (text.trim()) {
+        e.preventDefault();
+        void (async () => {
+          try {
+            adoptDataset(await parsePastedText(text));
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Could not read the pasted cells.");
+          }
+        })();
+        return;
+      }
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) =>
+        ACCEPTED_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext)),
+      );
+      if (file) {
+        e.preventDefault();
+        void handleFile(file);
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [adoptDataset, handleFile]);
 
   const handleSample = useCallback(() => adoptDataset(SAMPLE_DATASET), [adoptDataset]);
 
@@ -411,6 +451,9 @@ export default function App() {
                   <strong>Drop a file here or click to browse</strong>
                   <span className="hint">.csv · .xlsx · .xls · .ods</span>
                 </button>
+                <p className="example-caption">
+                  Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
+                </p>
                 <button type="button" className="btn btn-primary" onClick={handleSample}>
                   Try the sample supervision network
                 </button>

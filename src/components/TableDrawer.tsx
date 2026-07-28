@@ -56,9 +56,12 @@ export function TableDrawer({
     edges: {},
   });
   const [columnsOpen, setColumnsOpen] = useState(false);
+  // Where the last Add row landed, so the table can keep it in sight.
+  const [addedIndex, setAddedIndex] = useState<number | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const table = target === "nodes" ? doc.nodes : doc.edges;
+  const addedRow = addedIndex === null ? null : (table.rows[addedIndex] ?? null);
 
   // The node table has no Row identity in the chain result, so visibility is
   // resolved through the id column instead.
@@ -120,7 +123,10 @@ export function TableDrawer({
     };
   }, []);
 
-  const shownCount = onlyVisible ? visible.size : table.rows.length;
+  // The added row is listed even when the filter chain dropped it, so it counts.
+  const shownCount = onlyVisible
+    ? visible.size + (addedRow && !visible.has(addedRow) ? 1 : 0)
+    : table.rows.length;
 
   return (
     <section className="drawer" style={{ height }} aria-label="Data table">
@@ -143,6 +149,7 @@ export function TableDrawer({
               onClick={() => {
                 onTargetChange(id);
                 setGroupBy("");
+                setAddedIndex(null);
               }}
             >
               {id === "edges" ? "Edges" : "Nodes"}
@@ -230,7 +237,15 @@ export function TableDrawer({
 
         <span className="drawer-count">{shownCount} rows</span>
 
-        <button type="button" className="drawer-btn" onClick={() => onAddRow(target)}>
+        <button
+          type="button"
+          className="drawer-btn"
+          onClick={() => {
+            // A row is always appended, so it lands at the current end.
+            setAddedIndex(table.rows.length);
+            onAddRow(target);
+          }}
+        >
           Add row
         </button>
         <button type="button" className="drawer-btn" onClick={onClose} aria-label="Close the table">
@@ -242,6 +257,7 @@ export function TableDrawer({
         table={table}
         visible={visible}
         onlyVisible={onlyVisible}
+        addedIndex={addedIndex}
         search={search}
         groupBy={groupBy}
         aggregation={aggregation}
@@ -250,7 +266,12 @@ export function TableDrawer({
         selectedRow={selectedRow}
         onSelectRow={handleSelectRow}
         onEditCell={(rowIndex, column, value) => onEditCell(target, rowIndex, column, value)}
-        onDeleteRow={(rowIndex) => onDeleteRow(target, rowIndex)}
+        onDeleteRow={(rowIndex) => {
+          // A delete shifts every index after it, so the pin can no longer be
+          // trusted to point at the row it was set for.
+          setAddedIndex(null);
+          onDeleteRow(target, rowIndex);
+        }}
       />
     </section>
   );

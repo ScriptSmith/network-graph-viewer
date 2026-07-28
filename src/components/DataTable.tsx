@@ -23,6 +23,12 @@ export interface DataTableProps {
   /** Rows currently surviving the filter chain; others are dimmed or hidden. */
   visible: ReadonlySet<Row>;
   onlyVisible: boolean;
+  /**
+   * Index of the row the Add row button just created. A fresh row is blank, so
+   * the filter chain and the search would both drop it; it stays listed anyway
+   * until the next add, so the user can see what they made.
+   */
+  addedIndex: number | null;
   search: string;
   groupBy: string;
   aggregation: Aggregation;
@@ -55,6 +61,7 @@ export function DataTable({
   table,
   visible,
   onlyVisible,
+  addedIndex,
   search,
   groupBy,
   aggregation,
@@ -72,9 +79,14 @@ export function DataTable({
   // The row's position in the document, which is what an edit needs.
   const indexOf = useMemo(() => new Map(table.rows.map((row, i) => [row, i])), [table]);
 
+  // Tracked by index, not identity: editing a cell replaces the row object,
+  // and the row has to stay pinned while it is being filled in.
+  const added = addedIndex === null ? null : (table.rows[addedIndex] ?? null);
+
   const data = useMemo(
-    () => (onlyVisible ? table.rows.filter((row) => visible.has(row)) : table.rows),
-    [table.rows, visible, onlyVisible],
+    () =>
+      onlyVisible ? table.rows.filter((row) => visible.has(row) || row === added) : table.rows,
+    [table.rows, visible, onlyVisible, added],
   );
 
   const columns = useMemo<ColumnDef<Row>[]>(
@@ -99,6 +111,7 @@ export function DataTable({
     onColumnVisibilityChange: (updater) =>
       onColumnVisibilityChange(typeof updater === "function" ? updater(columnVisibility) : updater),
     globalFilterFn: (row, _columnId, filterValue: string) => {
+      if (row.original === added) return true;
       const needle = String(filterValue).toLowerCase();
       return table.columns.some((c) =>
         String(row.original[c.name] ?? "")
@@ -129,6 +142,19 @@ export function DataTable({
     if (index >= 0) virtualizer.scrollToIndex(index, { align: "center" });
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow, rows.length]);
+
+  // A new row lands at the end of the table, which is rarely where the user is
+  // looking, so scroll to it and open its first cell. Keyed on the index alone:
+  // re-firing on every edit to the row would yank the cursor back.
+  useEffect(() => {
+    if (!added) return;
+    const index = rows.findIndex((r) => r.original === added);
+    if (index < 0) return;
+    virtualizer.scrollToIndex(index, { align: "center" });
+    const first = tableInstance.getVisibleLeafColumns()[0];
+    if (first) setEditing({ row: added, column: first.id });
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [addedIndex]);
 
   const items = virtualizer.getVirtualItems();
   const paddingTop = items.length > 0 ? items[0].start : 0;
@@ -241,9 +267,12 @@ export function DataTable({
             return (
               <tr
                 key={row.id}
-                className={["dt-row", dimmed ? "dimmed" : "", isSelected ? "selected" : ""].join(
-                  " ",
-                )}
+                className={[
+                  "dt-row",
+                  dimmed ? "dimmed" : "",
+                  isSelected ? "selected" : "",
+                  original === added ? "added" : "",
+                ].join(" ")}
                 onClick={() => onSelectRow(isSelected ? null : original)}
               >
                 <td className="dt-gutter">

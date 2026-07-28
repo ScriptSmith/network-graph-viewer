@@ -85,11 +85,6 @@ pnpm test         # vitest
 pnpm format       # oxfmt
 ```
 
-Every graph algorithm here is hand-written rather than pulled from a library,
-and the numeric ones are pinned by tests against graphs with known answers.
-`src/lib/graph.test.ts` additionally holds a golden snapshot of the core
-pipeline's output.
-
 ## Stack
 
 - [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript

@@ -62,8 +62,7 @@ Eight layouts that morph into one another rather than jumping:
 Metrics and layouts you write yourself, run in [QuickJS](https://bellard.org/quickjs/)
 compiled to WebAssembly inside a Web Worker. A script gets a 3 second deadline,
 a 64 MB ceiling, seeded randomness, and an empty global scope with no network
-access. That stops runaway loops and exfiltration; it is not a defence against
-a script you chose to paste and run.
+access.
 
 ### Getting data out
 

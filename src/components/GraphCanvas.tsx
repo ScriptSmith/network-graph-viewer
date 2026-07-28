@@ -1,4 +1,12 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type Ref } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type Ref,
+  type RefObject,
+} from "react";
 import {
   forceCollide,
   forceLink,
@@ -12,9 +20,17 @@ import { select, type Selection } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
 import { drag } from "d3-drag";
 import "d3-transition";
-import type { Graph, GraphLink, GraphNode, GraphStyle, LabelMode, LayoutId, Row } from "../types";
-import { computeTargets } from "../lib/layouts";
-import { weightScale } from "../lib/graph";
+import type { Graph, GraphLink, GraphNode, GraphStyle, LabelMode, Row } from "../types";
+import {
+  computeTargets,
+  forceAtlas2,
+  forceAtlas2Params,
+  layoutWeightColumn,
+  noverlap,
+  type LayoutId,
+  type LayoutParams,
+} from "../lib/layouts";
+import { endpointId as endpoint, weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { formatMetric } from "../lib/format";
 import {
@@ -33,12 +49,18 @@ import {
 export interface GraphCanvasHandle {
   fit: () => void;
   reheat: () => void;
+  /** Nudge overlapping nodes apart in place, leaving the layout otherwise alone. */
+  separate: () => void;
   buildExport: () => { svgText: string; box: ExportBox } | null;
 }
 
 interface GraphCanvasProps {
   graph: Graph;
   layout: LayoutId;
+  layoutParams: LayoutParams;
+  /** Targets for the "script" layout, produced by a user layout script. */
+  scriptedTargets?: Map<string, { x: number; y: number }> | null;
+  preventOverlap: boolean;
   labelMode: LabelMode;
   style: GraphStyle;
   colors: Map<string, string>;
@@ -46,6 +68,17 @@ interface GraphCanvasProps {
   attrColumns: string[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  /** Edit mode: adds the create, connect and delete affordances. */
+  editing?: boolean;
+  /**
+   * Positions to seed the next scene with, consumed once. Used when a node is
+   * dropped on the canvas and when a file arrives carrying a layout.
+   */
+  seedPositions?: RefObject<Map<string, { x: number; y: number }> | null>;
+  onAddNode?: (x: number, y: number) => void;
+  onConnect?: (source: string, target: string) => void;
+  onDeleteNode?: (id: string) => void;
+  onRenameNode?: (id: string) => void;
   ambient?: boolean;
   ref?: Ref<GraphCanvasHandle>;
 }
@@ -55,8 +88,6 @@ const ARROW = "#5d5c55";
 type NodeSel = Selection<SVGCircleElement, GraphNode, SVGGElement, unknown>;
 type LinkSel = Selection<SVGPathElement, GraphLink, SVGGElement, unknown>;
 type LabelSel = Selection<SVGTextElement, GraphNode, SVGGElement, unknown>;
-
-const endpoint = (e: string | GraphNode): string => (typeof e === "string" ? e : e.id);
 
 function escapeHtml(v: unknown): string {
   return String(v ?? "")
@@ -77,6 +108,9 @@ function markerFor(stroke: string): string {
 export function GraphCanvas({
   graph,
   layout,
+  layoutParams,
+  scriptedTargets,
+  preventOverlap,
   labelMode,
   style,
   colors,
@@ -84,6 +118,7 @@ export function GraphCanvas({
   attrColumns,
   selectedId,
   onSelect,
+  seedPositions,
   ambient = false,
   ref,
 }: GraphCanvasProps) {
@@ -108,6 +143,9 @@ export function GraphCanvas({
   // Live values for callbacks created inside effects.
   const liveRef = useRef({
     layout,
+    layoutParams,
+    scriptedTargets,
+    preventOverlap,
     labelMode,
     selectedId,
     onSelect,
@@ -119,6 +157,9 @@ export function GraphCanvas({
   });
   liveRef.current = {
     layout,
+    layoutParams,
+    scriptedTargets,
+    preventOverlap,
     labelMode,
     selectedId,
     onSelect,
@@ -221,10 +262,24 @@ export function GraphCanvas({
     if (!sim) return;
     const nodes = nodesRef.current;
     const links = linksRef.current;
-    const { layout: current, ambient: amb, style: st } = liveRef.current;
+    const {
+      layout: current,
+      layoutParams: params,
+      scriptedTargets: scripted,
+      preventOverlap: separate,
+      ambient: amb,
+      style: st,
+    } = liveRef.current;
     const spacing = amb ? 1 : st.spacing;
 
-    const targets = amb ? null : computeTargets(current, graph);
+    // Start from a clean slate so a layout never inherits the last one's forces.
+    for (const name of ["charge", "link", "x", "y", "collide", "fa2"]) sim.force(name, null);
+
+    const targets = amb
+      ? null
+      : current === "script"
+        ? (scripted ?? null)
+        : computeTargets(current, params, graph);
     if (targets) {
       for (const n of nodes) {
         const t = targets.get(n.id);
@@ -236,38 +291,45 @@ export function GraphCanvas({
         n.fy = null;
       }
       sim
-        .force("charge", null)
-        .force("link", null)
         .force("x", forceX<GraphNode>((d) => d.tx ?? 0).strength(0.3))
-        .force("y", forceY<GraphNode>((d) => d.ty ?? 0).strength(0.3))
-        .force("collide", null);
+        .force("y", forceY<GraphNode>((d) => d.ty ?? 0).strength(0.3));
     } else {
       for (const n of nodes) {
         n.fx = null;
         n.fy = null;
       }
-      sim
-        .force(
-          "link",
-          forceLink<GraphNode, GraphLink>(links)
-            .distance(
-              (l) =>
-                (48 + (l.source as GraphNode).radius + (l.target as GraphNode).radius) * spacing,
-            )
-            .strength(amb ? 0.5 : 0.35),
-        )
-        .force(
-          "charge",
-          forceManyBody<GraphNode>()
-            .strength((amb ? -120 : -260) * spacing * Math.sqrt(spacing))
-            .distanceMax(700 * spacing),
-        )
-        .force("x", forceX<GraphNode>(0).strength(amb ? 0.045 : 0.03))
-        .force("y", forceY<GraphNode>(0).strength(amb ? 0.045 : 0.03))
-        .force(
-          "collide",
-          forceCollide<GraphNode>((d) => d.radius + 4),
-        );
+      if (!amb && current === "forceatlas2") {
+        // ForceAtlas2 supplies its own repulsion, attraction and gravity, so
+        // it replaces the charge and link forces rather than joining them.
+        sim.force("fa2", forceAtlas2(links, forceAtlas2Params(params), layoutWeightColumn(params)));
+      } else {
+        sim
+          .force(
+            "link",
+            forceLink<GraphNode, GraphLink>(links)
+              .distance(
+                (l) =>
+                  (48 + (l.source as GraphNode).radius + (l.target as GraphNode).radius) * spacing,
+              )
+              .strength(amb ? 0.5 : 0.35),
+          )
+          .force(
+            "charge",
+            forceManyBody<GraphNode>()
+              .strength((amb ? -120 : -260) * spacing * Math.sqrt(spacing))
+              .distanceMax(700 * spacing),
+          )
+          .force("x", forceX<GraphNode>(0).strength(amb ? 0.045 : 0.03))
+          .force("y", forceY<GraphNode>(0).strength(amb ? 0.045 : 0.03))
+          .force(
+            "collide",
+            forceCollide<GraphNode>((d) => d.radius + 4),
+          );
+      }
+    }
+
+    if (!amb && separate && !sim.force("collide")) {
+      sim.force("collide", forceCollide<GraphNode>((d) => d.radius + 4).strength(0.9));
     }
     sim.alpha(kick).restart();
   };
@@ -352,15 +414,24 @@ export function GraphCanvas({
     if (!svg || !viewport) return;
 
     const previous = new Map(nodesRef.current.map((n) => [n.id, n]));
+    // A node the user just placed starts where they dropped it rather than on
+    // the seeding spiral, so it does not appear to jump away from the cursor;
+    // an imported layout arrives the same way.
+    const seeds = seedPositions?.current ?? null;
+    if (seedPositions) seedPositions.current = null;
     const nodes: GraphNode[] = graph.nodes.map((n, i) => {
       const old = previous.get(n.id);
       // Golden-angle spiral seeding: deterministic and roughly circular.
       const angle = i * 2.39996;
       const r = 24 * Math.sqrt(i + 1);
+      // A seeded position wins outright; otherwise keep where the node already
+      // was, and fall back to a golden-angle spiral for anything brand new.
+      const seed = seeds?.get(n.id);
+      const spiral = { x: r * Math.cos(angle), y: r * Math.sin(angle) };
       return {
         ...n,
-        x: old?.x ?? r * Math.cos(angle),
-        y: old?.y ?? r * Math.sin(angle),
+        x: seed?.x ?? old?.x ?? spiral.x,
+        y: seed?.y ?? old?.y ?? spiral.y,
         vx: old?.vx ?? 0,
         vy: old?.vy ?? 0,
       };
@@ -484,7 +555,7 @@ export function GraphCanvas({
           })
           .on("end", (event, d) => {
             simRef.current?.alphaTarget(0);
-            if (liveRef.current.layout === "force") {
+            if (liveRef.current.layout === "force" || liveRef.current.layout === "forceatlas2") {
               d.fx = null;
               d.fy = null;
             } else {
@@ -552,10 +623,16 @@ export function GraphCanvas({
       return;
     }
     applyLayoutForces(0.9);
-    const timer = window.setTimeout(() => fit(650), 700);
-    return () => window.clearTimeout(timer);
+    // Physics layouts are still spreading at 700ms, so fit once early for
+    // feedback and again once the simulation has actually settled.
+    const early = window.setTimeout(() => fit(650), 700);
+    const settled = window.setTimeout(() => fit(500), 2600);
+    return () => {
+      window.clearTimeout(early);
+      window.clearTimeout(settled);
+    };
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, style.spacing]);
+  }, [layout, layoutParams, preventOverlap, style.spacing]);
 
   useEffect(() => {
     computeBaseLabels();
@@ -605,6 +682,11 @@ export function GraphCanvas({
     fit: () => fit(600),
     reheat: () => {
       applyLayoutForces(0.9);
+    },
+    separate: () => {
+      noverlap(nodesRef.current);
+      simRef.current?.alpha(0.05).restart();
+      window.setTimeout(() => fit(500), 60);
     },
     buildExport: () => {
       const svg = svgRef.current;

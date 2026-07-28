@@ -3,15 +3,26 @@ import type { SimulationLinkDatum, SimulationNodeDatum } from "d3-force";
 export type CellValue = string | number | boolean | null;
 export type Row = Record<string, CellValue>;
 
-export interface Sheet {
+export type ColumnType = "text" | "number" | "bool";
+
+export interface Column {
   name: string;
-  columns: string[];
+  type: ColumnType;
+  /** Set on columns written by the metrics compute step. */
+  computed?: boolean;
+}
+
+/** A named grid of rows. Column types are inferred once, at import. */
+export interface Table {
+  name: string;
+  columns: Column[];
   rows: Row[];
 }
 
+/** Every table found in an imported file, before one is chosen as the edge list. */
 export interface Dataset {
   fileName: string;
-  sheets: Sheet[];
+  tables: Table[];
 }
 
 export interface Mapping {
@@ -19,6 +30,24 @@ export interface Mapping {
   target: string;
   /** Columns shown as edge details in tooltips and the inspector. */
   attrs: string[];
+}
+
+/**
+ * The working document: an edge list plus a node list that always exists, so
+ * nodes can carry their own attributes and outlive the edges that named them.
+ */
+export interface GraphDoc {
+  name: string;
+  edges: Table;
+  nodes: Table;
+  /** Column of `nodes` holding the node id, matched against the edge endpoints. */
+  nodeIdColumn: string;
+  mapping: Mapping;
+  /**
+   * False when the node table was derived from the edge endpoints and has never
+   * been edited. Drives whether isolated nodes show by default.
+   */
+  nodesDeclared: boolean;
 }
 
 /**
@@ -61,6 +90,8 @@ export type Filters = Record<string, ColumnFilter>;
 
 export interface GraphNode extends SimulationNodeDatum {
   id: string;
+  /** The node table row this node came from. */
+  row: Row;
   /** Partition value when nodes are colored by a categorical column. */
   group: string | null;
   /** Ranking value when nodes are colored by a numeric metric. */
@@ -87,26 +118,23 @@ export interface GraphLink extends SimulationLinkDatum<GraphNode> {
   curve: boolean;
 }
 
-export interface Graph {
+/** Structure only, before any appearance settings are applied. */
+export interface BaseGraph {
   nodes: GraphNode[];
   links: GraphLink[];
+  /** Edge rows behind the surviving links, in original order. */
+  rows: Row[];
+  /** Rows dropped for missing endpoints or self-loops. */
+  skippedRows: number;
+}
+
+export interface Graph extends BaseGraph {
   /** Distinct node partition values, most frequent first. */
   groups: string[];
   /** Distinct edge color values, most frequent first. */
   edgeGroups: string[];
   /** Present when node color is a numeric ranking; range of node.value. */
   ranking: { min: number; max: number } | null;
-  /** Rows dropped for missing endpoints or self-loops. */
-  skippedRows: number;
 }
 
-export type LayoutId = "force" | "hierarchy" | "radial" | "circle" | "grid";
 export type LabelMode = "auto" | "all" | "none";
-
-export const LAYOUTS: { id: LayoutId; name: string; blurb: string }[] = [
-  { id: "force", name: "Force", blurb: "Physics simulation, clusters emerge" },
-  { id: "hierarchy", name: "Hierarchy", blurb: "Layered top-down from the roots" },
-  { id: "radial", name: "Radial", blurb: "Rings by distance from the roots" },
-  { id: "circle", name: "Circle", blurb: "Everyone on one ring, grouped" },
-  { id: "grid", name: "Grid", blurb: "Rows and columns by connections" },
-];

@@ -1,4 +1,5 @@
 import type { Dataset, Row } from "./types";
+import { inferColumns } from "./lib/parse";
 
 /**
  * Sample dataset: a supervision network for a fictional ~30 person company.
@@ -69,5 +70,5 @@ const rows: Row[] = raw.map((r) => Object.fromEntries(columns.map((c, i) => [c, 
 
 export const SAMPLE_DATASET: Dataset = {
   fileName: "sample-supervision-network",
-  sheets: [{ name: "Supervision", columns, rows }],
+  tables: [{ name: "Supervision", columns: inferColumns(rows, columns), rows }],
 };

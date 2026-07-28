@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Filters, Graph, Mapping, Row } from "../types";
-import { cellKey, componentCount, distinctValues } from "../lib/graph";
+import type { Graph, GraphDoc, Row } from "../types";
+import type { FilterStep } from "../lib/filter";
+import { cellKey } from "../lib/cells";
+import { componentCount, distinctValues } from "../lib/graph";
 import {
   CENTRALITY_NAMES,
   centralityValues,
-  networkMetrics,
+  graphMetrics,
   type CentralityKind,
 } from "../lib/metrics";
-import { asNumber, isNumericColumn } from "../lib/parse";
+import { asNumber } from "../lib/parse";
 import { CATEGORICAL } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
 
@@ -51,20 +53,29 @@ const METRIC_HELP: { term: string; text: string }[] = [
 ];
 
 interface StatsPanelProps {
+  doc: GraphDoc;
   rows: Row[];
   totalRows: number;
   graph: Graph;
-  mapping: Mapping;
   /** The partition column currently coloring nodes, if any. */
   colorColumn: string | null;
   colors: Map<string, string>;
-  filters: Filters;
+  chain: FilterStep[];
   onToggleValueFilter: (column: string, value: string) => void;
   onSelectNode: (id: string) => void;
   onClose: () => void;
 }
 
 const MAX_BARS = 12;
+
+const RANK_OPTION_LABELS: Record<CentralityKind, string> = {
+  degree: "Degree (connections)",
+  betweenness: "Betweenness centrality",
+  closeness: "Closeness centrality",
+  eigenvector: "Eigenvector centrality",
+  harmonic: "Harmonic closeness",
+  pagerank: "PageRank",
+};
 
 interface PivotRow {
   key: string;
@@ -97,20 +108,25 @@ function pivot(rows: Row[], groupBy: string, measure: string): PivotRow[] {
 }
 
 export function StatsPanel({
+  doc,
   rows,
   totalRows,
   graph,
-  mapping,
   colorColumn,
   colors,
-  filters,
+  chain,
   onToggleValueFilter,
   onSelectNode,
   onClose,
 }: StatsPanelProps) {
+  const { mapping } = doc;
+
   const numericColumns = useMemo(
-    () => mapping.attrs.filter((c) => isNumericColumn(rows.length > 0 ? rows : [], c)),
-    [rows, mapping],
+    () =>
+      doc.edges.columns
+        .filter((c) => c.type === "number" && mapping.attrs.includes(c.name))
+        .map((c) => c.name),
+    [doc, mapping],
   );
 
   const groupable = useMemo(() => {
@@ -118,16 +134,21 @@ export function StatsPanel({
     return cols.filter((c) => distinctValues(rows, c).length <= Math.max(40, rows.length / 2));
   }, [rows, mapping]);
 
-  const [groupBy, setGroupBy] = useState<string>(colorColumn ?? groupable[0] ?? mapping.source);
+  // The color column can live on the node table, which these edge-row pivots
+  // know nothing about, so it only seeds the pivot when it is groupable here.
+  const defaultGroupBy =
+    colorColumn !== null && groupable.includes(colorColumn)
+      ? colorColumn
+      : (groupable[0] ?? mapping.source);
+
+  const [groupBy, setGroupBy] = useState<string>(defaultGroupBy);
   const [measure, setMeasure] = useState<string>("count");
 
   // Keep the selects valid when the dataset or mapping changes under us.
   useEffect(() => {
-    if (!groupable.includes(groupBy)) {
-      setGroupBy(colorColumn ?? groupable[0] ?? mapping.source);
-    }
+    if (!groupable.includes(groupBy)) setGroupBy(defaultGroupBy);
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupable, colorColumn]);
+  }, [groupable, defaultGroupBy]);
   useEffect(() => {
     if (measure !== "count" && !numericColumns.includes(measure.slice(4))) {
       setMeasure("count");
@@ -138,7 +159,7 @@ export function StatsPanel({
   const bars = useMemo(() => pivot(rows, groupBy, measure), [rows, groupBy, measure]);
   const maxBar = Math.max(1e-9, ...bars.map((b) => b.value));
   const components = useMemo(() => componentCount(graph), [graph]);
-  const metrics = useMemo(() => networkMetrics(graph), [graph]);
+  const metrics = useMemo(() => graphMetrics(graph), [graph]);
 
   const [centralityKind, setCentralityKind] = useState<CentralityKind>("degree");
   const centrality = useMemo(
@@ -151,11 +172,17 @@ export function StatsPanel({
   }, [graph, centrality]);
   const maxCentrality = Math.max(1e-9, ...topNodes.map((n) => centrality.get(n.id) ?? 0));
 
-  const activeFilter = filters[groupBy];
+  // A bar reads as active when the chain holds exactly the step clicking it adds.
   const isActiveBar = (key: string) =>
-    activeFilter?.kind === "values" &&
-    activeFilter.selected.length === 1 &&
-    activeFilter.selected[0] === key;
+    chain.some(
+      (step) =>
+        step.kind === "column" &&
+        step.table === "edges" &&
+        step.column === groupBy &&
+        step.op.kind === "values" &&
+        step.op.selected.length === 1 &&
+        step.op.selected[0] === key,
+    );
 
   const barColor = (key: string): string =>
     groupBy === colorColumn ? (colors.get(key) ?? CATEGORICAL[0]) : CATEGORICAL[0];
@@ -315,8 +342,7 @@ export function StatsPanel({
             >
               {(Object.keys(CENTRALITY_NAMES) as CentralityKind[]).map((k) => (
                 <option key={k} value={k}>
-                  {CENTRALITY_NAMES[k]}
-                  {k === "degree" ? " (connections)" : " centrality"}
+                  {RANK_OPTION_LABELS[k]}
                 </option>
               ))}
             </select>

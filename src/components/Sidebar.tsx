@@ -1,70 +1,108 @@
 import { useMemo, useRef } from "react";
-import type {
-  Dataset,
-  Filters,
-  Graph,
-  GraphStyle,
-  LabelMode,
-  LayoutId,
-  Mapping,
-  Sheet,
-} from "../types";
-import { LAYOUTS } from "../types";
-import { ACCEPTED_EXTENSIONS, isNumericColumn } from "../lib/parse";
-import { FilterPanel } from "./FilterPanel";
+import type { Dataset, Graph, GraphDoc, GraphStyle, LabelMode, Mapping } from "../types";
+import {
+  layoutDefinition,
+  LAYOUTS,
+  type LayoutId,
+  type LayoutParams,
+  type ParamValue,
+} from "../lib/layouts";
+import type { ChainStepResult, FilterStep } from "../lib/filter";
+import type { EditTarget } from "../lib/edit";
+import { ACCEPTED_EXTENSIONS } from "../lib/parse";
+import { edgeStyleColumns, nodeStyleColumns } from "../lib/doc";
+import type { MetricOptions } from "../lib/metrics";
+import type { MetricRun } from "../lib/metrics/runner";
+import { exportAs, type ExportFormat, type ExportInput } from "../lib/io";
+import { ComputePanel } from "./ComputePanel";
+import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
+import { GistPanel } from "./GistPanel";
+import { FilterChain } from "./FilterChain";
 
 interface SidebarProps {
   dataset: Dataset | null;
-  sheetIndex: number;
-  sheet: Sheet | null;
-  mapping: Mapping | null;
+  edgeTableIndex: number;
+  nodeTableIndex: number | null;
+  doc: GraphDoc | null;
   style: GraphStyle;
-  filters: Filters;
+  chain: FilterStep[];
+  chainResults: ChainStepResult[];
   graph: Graph | null;
-  filteredRowCount: number;
+  selectedId: string | null;
+  showIsolated: boolean;
   layout: LayoutId;
+  layoutParams: LayoutParams;
+  preventOverlap: boolean;
   labelMode: LabelMode;
   onFile: (file: File) => void;
   onSample: () => void;
   onClear: () => void;
-  onSheetChange: (index: number) => void;
+  onTableChange: (edgeIndex: number, nodeIndex: number | null) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
   onStyleChange: (patch: Partial<GraphStyle>) => void;
-  onFiltersChange: (filters: Filters) => void;
+  onChainChange: (chain: FilterStep[]) => void;
+  onShowIsolatedChange: (show: boolean) => void;
+  onCompute: (metrics: string[], options: MetricOptions) => Promise<MetricRun>;
+  onClearComputed: () => void;
+  onShowColumns: (target: EditTarget) => void;
+  onScript: (request: ScriptRunRequest) => Promise<string>;
   onLayoutChange: (layout: LayoutId) => void;
+  onLayoutParamChange: (key: string, value: ParamValue) => void;
+  onPreventOverlapChange: (value: boolean) => void;
+  onSeparate: () => void;
   onLabelModeChange: (mode: LabelMode) => void;
   onExport: (format: "svg" | "png") => void;
+  onExportData: (format: ExportFormat) => void;
+  onGist: (reference: string) => void;
+  exportInput: () => ExportInput | null;
 }
 
 const ACCEPT = ACCEPTED_EXTENSIONS.join(",");
 
 export function Sidebar({
   dataset,
-  sheetIndex,
-  sheet,
-  mapping,
+  edgeTableIndex,
+  nodeTableIndex,
+  doc,
   style,
-  filters,
+  chain,
+  chainResults,
   graph,
-  filteredRowCount,
+  selectedId,
+  showIsolated,
   layout,
+  layoutParams,
+  preventOverlap,
   labelMode,
   onFile,
   onSample,
   onClear,
-  onSheetChange,
+  onTableChange,
   onMappingChange,
   onStyleChange,
-  onFiltersChange,
+  onChainChange,
+  onShowIsolatedChange,
+  onCompute,
+  onClearComputed,
+  onShowColumns,
+  onScript,
   onLayoutChange,
+  onLayoutParamChange,
+  onPreventOverlapChange,
+  onSeparate,
   onLabelModeChange,
   onExport,
+  onExportData,
+  onGist,
+  exportInput,
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const numericColumns = useMemo(
-    () => (sheet ? sheet.columns.filter((c) => isNumericColumn(sheet.rows, c)) : []),
-    [sheet],
+  const nodeColumns = useMemo(() => (doc ? nodeStyleColumns(doc) : []), [doc]);
+  const edgeColumns = useMemo(() => (doc ? edgeStyleColumns(doc) : []), [doc]);
+  const nodeTableColumns = useMemo(
+    () => (doc ? doc.nodes.columns.filter((c) => c.name !== doc.nodeIdColumn) : []),
+    [doc],
   );
 
   const pickFile = () => fileInputRef.current?.click();
@@ -75,19 +113,16 @@ export function Sidebar({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const attrCandidates = sheet
-    ? sheet.columns.filter((c) => c !== mapping?.source && c !== mapping?.target)
-    : [];
-
   const toggleAttr = (column: string) => {
-    if (!mapping) return;
-    const attrs = mapping.attrs.includes(column)
-      ? mapping.attrs.filter((a) => a !== column)
-      : [...mapping.attrs, column];
+    if (!doc) return;
+    const attrs = doc.mapping.attrs.includes(column)
+      ? doc.mapping.attrs.filter((a) => a !== column)
+      : [...doc.mapping.attrs, column];
     onMappingChange({ attrs });
   };
 
-  const activeFilterCount = Object.keys(filters).length;
+  const activeFilterCount = chain.filter((s) => s.enabled).length;
+  const multiTable = (dataset?.tables.length ?? 0) > 1;
 
   return (
     <aside className="sidebar">
@@ -114,29 +149,53 @@ export function Sidebar({
           <span className="step-no">1</span> Data
         </h2>
         <div className="step-body">
-          {dataset ? (
+          {dataset && doc ? (
             <>
               <div className="file-chip" title={dataset.fileName}>
                 <span className="file-name">{dataset.fileName}</span>
                 <span className="file-meta">
-                  {sheet ? `${sheet.rows.length} rows · ${sheet.columns.length} columns` : ""}
+                  {doc.edges.rows.length} rows · {doc.edges.columns.length} columns
                 </span>
               </div>
-              {dataset.sheets.length > 1 && (
-                <label className="field">
-                  <span className="field-label">Sheet</span>
-                  <select
-                    className="control"
-                    value={sheetIndex}
-                    onChange={(e) => onSheetChange(Number(e.target.value))}
-                  >
-                    {dataset.sheets.map((s, i) => (
-                      <option key={s.name} value={i}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              {multiTable && (
+                <>
+                  <label className="field">
+                    <span className="field-label">Edge sheet</span>
+                    <select
+                      className="control"
+                      value={edgeTableIndex}
+                      onChange={(e) => onTableChange(Number(e.target.value), nodeTableIndex)}
+                    >
+                      {dataset.tables.map((t, i) => (
+                        <option key={t.name} value={i}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="field-label">Node attributes sheet</span>
+                    <select
+                      className="control"
+                      value={nodeTableIndex ?? ""}
+                      onChange={(e) =>
+                        onTableChange(
+                          edgeTableIndex,
+                          e.target.value === "" ? null : Number(e.target.value),
+                        )
+                      }
+                    >
+                      <option value="">None (derive from edges)</option>
+                      {dataset.tables.map((t, i) =>
+                        i === edgeTableIndex ? null : (
+                          <option key={t.name} value={i}>
+                            {t.name}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                </>
               )}
               <div className="btn-row">
                 <button type="button" className="btn" onClick={pickFile}>
@@ -158,32 +217,45 @@ export function Sidebar({
               </button>
             </>
           )}
+          <GistPanel
+            description={doc ? `${doc.name} — Network Graph Viewer` : "Network Graph Viewer"}
+            buildFiles={() => {
+              const input = exportInput();
+              if (!input) return null;
+              const workspace = exportAs("workspace", input);
+              const gexf = exportAs("gexf", input);
+              return gexf.content ? [workspace, gexf] : [workspace];
+            }}
+            onLoad={onGist}
+          />
         </div>
       </section>
 
-      <section className={sheet ? "step" : "step step-disabled"}>
+      <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
           <span className="step-no">2</span> Columns
         </h2>
         <div className="step-body">
-          {sheet && mapping ? (
+          {doc ? (
             <>
               <label className="field">
                 <span className="field-label">Edge source</span>
                 <select
                   className="control"
-                  value={mapping.source}
+                  value={doc.mapping.source}
                   onChange={(e) => onMappingChange({ source: e.target.value })}
                 >
-                  {sheet.columns.map((c) => (
-                    <option key={c}>{c}</option>
+                  {doc.edges.columns.map((c) => (
+                    <option key={c.name}>{c.name}</option>
                   ))}
                 </select>
               </label>
               <button
                 type="button"
                 className="btn btn-quiet swap"
-                onClick={() => onMappingChange({ source: mapping.target, target: mapping.source })}
+                onClick={() =>
+                  onMappingChange({ source: doc.mapping.target, target: doc.mapping.source })
+                }
                 title="Swap source and target"
               >
                 ⇅ swap
@@ -192,35 +264,47 @@ export function Sidebar({
                 <span className="field-label">Edge target</span>
                 <select
                   className="control"
-                  value={mapping.target}
+                  value={doc.mapping.target}
                   onChange={(e) => onMappingChange({ target: e.target.value })}
                 >
-                  {sheet.columns.map((c) => (
-                    <option key={c}>{c}</option>
+                  {doc.edges.columns.map((c) => (
+                    <option key={c.name}>{c.name}</option>
                   ))}
                 </select>
               </label>
-              {mapping.source === mapping.target && (
+              {doc.mapping.source === doc.mapping.target && (
                 <p className="warn">
                   Source and target are the same column, so every edge is a self-loop and gets
                   skipped.
                 </p>
               )}
-              {attrCandidates.length > 0 && (
+              {edgeColumns.length > 0 && (
                 <fieldset className="check-list">
                   <legend className="field-label">Edge details on hover</legend>
-                  {attrCandidates.map((c) => (
-                    <label key={c} className="check-item">
+                  {edgeColumns.map((c) => (
+                    <label key={c.name} className="check-item">
                       <input
                         type="checkbox"
-                        checked={mapping.attrs.includes(c)}
-                        onChange={() => toggleAttr(c)}
+                        checked={doc.mapping.attrs.includes(c.name)}
+                        onChange={() => toggleAttr(c.name)}
                       />
-                      <span className="check-name">{c}</span>
+                      <span className="check-name">{c.name}</span>
                     </label>
                   ))}
                 </fieldset>
               )}
+              <p className="note">
+                {doc.nodes.rows.length} nodes{" "}
+                {doc.nodesDeclared ? "from the node sheet" : "derived from the edge endpoints"}.
+              </p>
+              <label className="check-item">
+                <input
+                  type="checkbox"
+                  checked={showIsolated}
+                  onChange={(e) => onShowIsolatedChange(e.target.checked)}
+                />
+                <span className="check-name">Show nodes with no edges</span>
+              </label>
               {graph && graph.skippedRows > 0 && (
                 <p className="note">
                   {graph.skippedRows} {graph.skippedRows === 1 ? "row" : "rows"} skipped (empty
@@ -234,33 +318,58 @@ export function Sidebar({
         </div>
       </section>
 
-      <section className={sheet ? "step" : "step step-disabled"}>
+      <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">3</span> Filter
+          <span className="step-no">3</span> Compute
+        </h2>
+        <div className="step-body">
+          {doc && graph ? (
+            <ComputePanel
+              doc={doc}
+              nodeCount={graph.nodes.length}
+              edgeCount={graph.links.length}
+              onCompute={onCompute}
+              onClearComputed={onClearComputed}
+              onShowColumns={onShowColumns}
+            />
+          ) : (
+            <p className="note">Load data first.</p>
+          )}
+          {doc && graph && (
+            <details className="script-block">
+              <summary>Write your own</summary>
+              <ScriptPanel onRun={onScript} />
+            </details>
+          )}
+        </div>
+      </section>
+
+      <section className={doc ? "step" : "step step-disabled"}>
+        <h2 className="step-head">
+          <span className="step-no">4</span> Filter
           {activeFilterCount > 0 && <span className="step-badge">{activeFilterCount}</span>}
         </h2>
         <div className="step-body">
-          {sheet ? (
-            <>
-              {activeFilterCount > 0 && (
-                <p className="note">
-                  Showing {filteredRowCount} of {sheet.rows.length} rows.
-                </p>
-              )}
-              <FilterPanel sheet={sheet} filters={filters} onChange={onFiltersChange} />
-            </>
+          {doc ? (
+            <FilterChain
+              doc={doc}
+              chain={chain}
+              results={chainResults}
+              selectedId={selectedId}
+              onChange={onChainChange}
+            />
           ) : (
             <p className="note">Load data first.</p>
           )}
         </div>
       </section>
 
-      <section className={sheet ? "step" : "step step-disabled"}>
+      <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">4</span> Style
+          <span className="step-no">5</span> Style
         </h2>
         <div className="step-body">
-          {sheet && mapping ? (
+          {doc ? (
             <>
               <label className="field">
                 <span className="field-label">Color nodes by</span>
@@ -277,13 +386,11 @@ export function Sidebar({
                     <option value="metric:eigenvector">Eigenvector centrality</option>
                   </optgroup>
                   <optgroup label="By column">
-                    {sheet.columns
-                      .filter((c) => c !== mapping.source && c !== mapping.target)
-                      .map((c) => (
-                        <option key={c} value={`column:${c}`}>
-                          {c}
-                        </option>
-                      ))}
+                    {nodeColumns.map((c) => (
+                      <option key={c.name} value={`column:${c.name}`}>
+                        {c.name}
+                      </option>
+                    ))}
                   </optgroup>
                 </select>
               </label>
@@ -303,12 +410,12 @@ export function Sidebar({
                     <option value="metric:closeness">Closeness centrality</option>
                     <option value="metric:eigenvector">Eigenvector centrality</option>
                   </optgroup>
-                  <optgroup label="Sum of column">
-                    {numericColumns
-                      .filter((c) => c !== mapping.source && c !== mapping.target)
+                  <optgroup label="By number column">
+                    {nodeColumns
+                      .filter((c) => c.type === "number")
                       .map((c) => (
-                        <option key={c} value={`column:${c}`}>
-                          {c}
+                        <option key={c.name} value={`column:${c.name}`}>
+                          {c.name}
                         </option>
                       ))}
                   </optgroup>
@@ -322,14 +429,11 @@ export function Sidebar({
                   onChange={(e) => onStyleChange({ edgeColor: e.target.value })}
                 >
                   <option value="uniform">Uniform</option>
-                  {sheet.columns
-                    .filter(
-                      (c) =>
-                        c !== mapping.source && c !== mapping.target && !numericColumns.includes(c),
-                    )
+                  {edgeColumns
+                    .filter((c) => c.type !== "number")
                     .map((c) => (
-                      <option key={c} value={`column:${c}`}>
-                        {c}
+                      <option key={c.name} value={`column:${c.name}`}>
+                        {c.name}
                       </option>
                     ))}
                 </select>
@@ -342,11 +446,11 @@ export function Sidebar({
                   onChange={(e) => onStyleChange({ edgeWidth: e.target.value })}
                 >
                   <option value="uniform">Uniform width</option>
-                  {numericColumns
-                    .filter((c) => c !== mapping.source && c !== mapping.target)
+                  {edgeColumns
+                    .filter((c) => c.type === "number")
                     .map((c) => (
-                      <option key={c} value={`column:${c}`}>
-                        {c}
+                      <option key={c.name} value={`column:${c.name}`}>
+                        {c.name}
                       </option>
                     ))}
                 </select>
@@ -380,7 +484,7 @@ export function Sidebar({
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">5</span> Layout
+          <span className="step-no">6</span> Layout
         </h2>
         <div className="step-body">
           <div className="radio-list" role="radiogroup" aria-label="Layout algorithm">
@@ -399,6 +503,65 @@ export function Sidebar({
               </label>
             ))}
           </div>
+
+          {graph &&
+            layoutDefinition(layout).params.map((param) => {
+              if (param.kind === "number") {
+                const value = Number(layoutParams[param.key] ?? param.default);
+                return (
+                  <label key={param.key} className="field">
+                    <span className="field-label">
+                      {param.name} {param.step < 1 ? value.toFixed(1) : value}
+                    </span>
+                    <input
+                      type="range"
+                      className="range"
+                      min={param.min}
+                      max={param.max}
+                      step={param.step}
+                      value={value}
+                      onChange={(e) => onLayoutParamChange(param.key, Number(e.target.value))}
+                    />
+                  </label>
+                );
+              }
+              if (param.kind === "boolean") {
+                return (
+                  <label key={param.key} className="check-item" title={param.blurb}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(layoutParams[param.key] ?? param.default)}
+                      onChange={(e) => onLayoutParamChange(param.key, e.target.checked)}
+                    />
+                    <span className="check-name">{param.name}</span>
+                  </label>
+                );
+              }
+              // Node params read the node table directly, so only real node
+              // columns can appear; the empty option falls back to the colour.
+              const choices =
+                param.scope === "nodes"
+                  ? nodeTableColumns
+                  : edgeColumns.filter((c) => c.type === "number");
+              return (
+                <label key={param.key} className="field">
+                  <span className="field-label">{param.name}</span>
+                  <select
+                    className="control"
+                    value={String(layoutParams[param.key] ?? param.default)}
+                    onChange={(e) => onLayoutParamChange(param.key, e.target.value)}
+                  >
+                    <option value="">
+                      {param.scope === "nodes" ? "Whatever colours the nodes" : "None"}
+                    </option>
+                    {choices.map((c) => (
+                      <option key={c.name}>{c.name}</option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })}
+
           <label className="field">
             <span className="field-label">Spacing</span>
             <input
@@ -412,20 +575,72 @@ export function Sidebar({
               onChange={(e) => onStyleChange({ spacing: Number(e.target.value) })}
             />
           </label>
+          <label className="check-item">
+            <input
+              type="checkbox"
+              checked={preventOverlap}
+              disabled={!graph}
+              onChange={(e) => onPreventOverlapChange(e.target.checked)}
+            />
+            <span className="check-name">Keep nodes from overlapping</span>
+          </label>
+          <button type="button" className="btn" disabled={!graph} onClick={onSeparate}>
+            Fix overlaps now
+          </button>
         </div>
       </section>
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">6</span> Export
+          <span className="step-no">7</span> Export
         </h2>
-        <div className="step-body btn-row">
-          <button type="button" className="btn" disabled={!graph} onClick={() => onExport("svg")}>
-            Download SVG
-          </button>
-          <button type="button" className="btn" disabled={!graph} onClick={() => onExport("png")}>
-            Download PNG
-          </button>
+        <div className="step-body">
+          <div className="btn-row">
+            <button type="button" className="btn" disabled={!graph} onClick={() => onExport("svg")}>
+              SVG
+            </button>
+            <button type="button" className="btn" disabled={!graph} onClick={() => onExport("png")}>
+              PNG
+            </button>
+          </div>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn"
+              disabled={!graph}
+              onClick={() => onExportData("gexf")}
+              title="Gephi's format, including positions and colours"
+            >
+              GEXF
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!doc}
+              onClick={() => onExportData("graphml")}
+            >
+              GraphML
+            </button>
+          </div>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn"
+              disabled={!doc}
+              onClick={() => onExportData("workspace")}
+              title="Everything: both tables, filters, styling, layout and positions"
+            >
+              Workspace
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!doc}
+              onClick={() => onExportData("csv")}
+            >
+              CSV
+            </button>
+          </div>
         </div>
       </section>
 

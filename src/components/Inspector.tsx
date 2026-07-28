@@ -1,16 +1,16 @@
-import type { Graph, GraphLink, Row } from "../types";
+import type { Graph, GraphDoc, GraphLink, Row } from "../types";
+import { endpointId } from "../lib/graph";
 import { nodeColor } from "../theme";
+import { displayCell } from "../lib/format";
 
 interface InspectorProps {
+  doc: GraphDoc;
   graph: Graph;
   selectedId: string;
-  attrColumns: string[];
   colors: Map<string, string>;
   onSelect: (id: string) => void;
   onClose: () => void;
 }
-
-const endpoint = (e: GraphLink["source"]): string => (typeof e === "string" ? e : e.id);
 
 function EdgeCard({
   link,
@@ -23,7 +23,7 @@ function EdgeCard({
   attrColumns: string[];
   onSelect: (id: string) => void;
 }) {
-  const other = direction === "out" ? endpoint(link.target) : endpoint(link.source);
+  const other = direction === "out" ? endpointId(link.target) : endpointId(link.source);
   const row = link.rows[0] as Row | undefined;
   const details = row ? attrColumns.filter((c) => row[c] !== null && row[c] !== "") : [];
   return (
@@ -47,19 +47,17 @@ function EdgeCard({
   );
 }
 
-export function Inspector({
-  graph,
-  selectedId,
-  attrColumns,
-  colors,
-  onSelect,
-  onClose,
-}: InspectorProps) {
+export function Inspector({ doc, graph, selectedId, colors, onSelect, onClose }: InspectorProps) {
   const node = graph.nodes.find((n) => n.id === selectedId);
   if (!node) return null;
 
-  const outgoing = graph.links.filter((l) => endpoint(l.source) === selectedId);
-  const incoming = graph.links.filter((l) => endpoint(l.target) === selectedId);
+  const attrColumns = doc.mapping.attrs;
+  const outgoing = graph.links.filter((l) => endpointId(l.source) === selectedId);
+  const incoming = graph.links.filter((l) => endpointId(l.target) === selectedId);
+
+  const nodeAttrs = doc.nodes.columns.filter(
+    (c) => c.name !== doc.nodeIdColumn && node.row[c.name] !== null && node.row[c.name] !== "",
+  );
 
   return (
     <div className="inspector" role="dialog" aria-label={`Details for ${node.id}`}>
@@ -74,6 +72,19 @@ export function Inspector({
         {node.group ? `${node.group} · ` : ""}
         {incoming.length} in · {outgoing.length} out
       </p>
+      {nodeAttrs.length > 0 && (
+        <section className="insp-section">
+          <h4>Attributes</h4>
+          <dl className="edge-attrs">
+            {nodeAttrs.map((c) => (
+              <div key={c.name} className="edge-attr">
+                <dt>{c.name}</dt>
+                <dd>{displayCell(c, node.row[c.name])}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
       {outgoing.length > 0 && (
         <section className="insp-section">
           <h4>Outgoing</h4>

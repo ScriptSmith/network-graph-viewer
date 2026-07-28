@@ -1,31 +1,7 @@
-import type { Graph, GraphNode, LayoutId } from "../types";
+import type { Point } from "./index";
+import type { BaseGraph, GraphNode } from "../../types";
 
-export interface Point {
-  x: number;
-  y: number;
-}
-
-/**
- * Compute target positions for the static layouts, or null for the force
- * layout (which has no targets, only physics). Coordinates are centered on
- * the origin; the canvas fits the view afterwards.
- */
-export function computeTargets(layout: LayoutId, graph: Graph): Map<string, Point> | null {
-  switch (layout) {
-    case "force":
-      return null;
-    case "circle":
-      return circleLayout(graph);
-    case "grid":
-      return gridLayout(graph);
-    case "hierarchy":
-      return hierarchyLayout(graph);
-    case "radial":
-      return radialLayout(graph);
-  }
-}
-
-function linkEnds(graph: Graph): [string, string][] {
+function linkEnds(graph: BaseGraph): [string, string][] {
   return graph.links.map((l) => [
     typeof l.source === "string" ? l.source : l.source.id,
     typeof l.target === "string" ? l.target : l.target.id,
@@ -33,7 +9,7 @@ function linkEnds(graph: Graph): [string, string][] {
 }
 
 /** BFS depth from the roots, tolerating cycles and disconnected islands. */
-export function nodeDepths(graph: Graph): Map<string, number> {
+export function nodeDepths(graph: BaseGraph): Map<string, number> {
   const children = new Map<string, string[]>();
   for (const [s, t] of linkEnds(graph)) {
     const list = children.get(s) ?? [];
@@ -77,7 +53,7 @@ export function nodeDepths(graph: Graph): Map<string, number> {
   return depths;
 }
 
-function circleLayout(graph: Graph): Map<string, Point> {
+export function circleLayout(graph: BaseGraph): Map<string, Point> {
   const nodes = [...graph.nodes].sort(
     (a, b) => (a.group ?? "￿").localeCompare(b.group ?? "￿") || b.degree - a.degree,
   );
@@ -91,7 +67,7 @@ function circleLayout(graph: Graph): Map<string, Point> {
   return targets;
 }
 
-function gridLayout(graph: Graph): Map<string, Point> {
+export function gridLayout(graph: BaseGraph): Map<string, Point> {
   const nodes = [...graph.nodes].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id));
   const n = nodes.length;
   const cols = Math.ceil(Math.sqrt(n * 1.4));
@@ -109,7 +85,7 @@ function gridLayout(graph: Graph): Map<string, Point> {
   return targets;
 }
 
-function layerNodes(graph: Graph): GraphNode[][] {
+function layerNodes(graph: BaseGraph): GraphNode[][] {
   const depths = nodeDepths(graph);
   const layers: GraphNode[][] = [];
   for (const node of graph.nodes) {
@@ -120,7 +96,7 @@ function layerNodes(graph: Graph): GraphNode[][] {
 }
 
 /** One barycenter pass: order each layer by the mean index of its parents. */
-function sortByParents(layers: GraphNode[][], graph: Graph): void {
+function sortByParents(layers: GraphNode[][], graph: BaseGraph): void {
   const parents = new Map<string, string[]>();
   for (const [s, t] of linkEnds(graph)) {
     const list = parents.get(t) ?? [];
@@ -139,7 +115,7 @@ function sortByParents(layers: GraphNode[][], graph: Graph): void {
   }
 }
 
-function hierarchyLayout(graph: Graph): Map<string, Point> {
+export function hierarchyLayout(graph: BaseGraph): Map<string, Point> {
   const layers = layerNodes(graph);
   sortByParents(layers, graph);
   const targets = new Map<string, Point>();
@@ -157,7 +133,7 @@ function hierarchyLayout(graph: Graph): Map<string, Point> {
   return targets;
 }
 
-function radialLayout(graph: Graph): Map<string, Point> {
+export function radialLayout(graph: BaseGraph): Map<string, Point> {
   const layers = layerNodes(graph);
   sortByParents(layers, graph);
   const targets = new Map<string, Point>();

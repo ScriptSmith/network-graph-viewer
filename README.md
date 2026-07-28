@@ -1,7 +1,7 @@
 # Network Graph Viewer
 
 > [!NOTE]
-> This project is AI-generated: the code, sample data, screenshot, and this README were written by [Claude Code](https://claude.com/claude-code).
+> This project is AI-generated: the code, sample data, and this README were written by [Claude Code](https://claude.com/claude-code).
 
 Turn a spreadsheet edge list into an interactive network graph, entirely in your browser.
 
@@ -11,16 +11,68 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 
 ## Features
 
+### Getting data in
+
 - Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser
-- Pick which columns are the edge source and target and which columns show up as edge details
-- Gephi-style appearance controls: color nodes by a categorical column or a numeric ranking (sequential ramp), size nodes by connections or a summed column, color edges by a column, width edges by a numeric column, toggle direction arrows, adjust spacing
-- Filter rows per column (value checkboxes for categories, min/max for numbers); the graph, legend, and stats all follow the filtered data
-- Pivot-style statistics panel: overview tiles (nodes, edges, average links, components), group-by breakdowns with count/sum/average measures, top nodes, and click-to-filter bars
-- Network metrics with plain-language explanations: density, diameter, average path length, clustering coefficient, and degree/betweenness/closeness/eigenvector centrality, which can also rank the top-nodes list and drive node color and size
-- Built-in sample dataset: a Supervisor to Supervisee network with edge attributes (department, cadence, meetings per month, years together)
-- Animated, interactive SVG graph: pan, zoom, drag nodes, hover to highlight neighborhoods, click a node for a detail inspector
-- Five layouts that morph into each other: force, hierarchy, radial, circle, grid
-- Export the current view as SVG or PNG
+- Paste cells straight from Excel or Google Sheets
+- Import GEXF and GraphML, including node and edge attributes and Gephi's saved positions
+- Load from a public GitHub gist by URL or id, or share a `?gist=…` link that opens straight into the graph
+- A workbook with several sheets can use one as the edges and another as node attributes
+
+### Shaping the graph
+
+- Pick which columns are the edge source and target and which show up as edge details
+- Nodes are first-class: they keep their own attributes and can exist without any edges
+- A data table over both the node and edge tables: search, sort, group with count/sum/average/min/max, hide columns, add and delete rows, and edit any cell with the graph updating as you type
+
+### Filters that chain
+
+Filters apply in order, each one seeing the subgraph the last produced, so
+`two steps out from Alex` followed by `degree ≥ 2` measures degree _inside that
+neighbourhood_. Reordering the same two steps asks a different question.
+
+- Column values on either the nodes or the edges
+- Degree range, k-core, largest components, ego networks, reciprocated edges only
+- Disparity backbone: keep only the edges carrying more weight than their endpoints' other edges can explain
+
+### Measures
+
+Computed on demand and written back as ordinary columns, so every result can
+immediately drive colour and size, be filtered on, sorted in the table, and
+travel into an export.
+
+- Degree, in-degree, out-degree, PageRank, HITS hub and authority, betweenness, closeness, harmonic closeness, eigenvector
+- Louvain modularity classes, with a resolution control; deterministic, so a rerun gives the same communities
+- k-core, triangle counts, connected components
+- Edge measures: shared neighbours, Simmelian strength, disparity-filter significance
+- Whole-graph metrics with plain-language explanations: density, diameter, average path length, clustering
+
+### Layouts
+
+Eight layouts that morph into one another rather than jumping:
+
+- **ForceAtlas2** with repulsion, gravity, LinLog and edge-weight controls, Barnes-Hut accelerated
+- **Force**, **hierarchy**, **radial**, **circle**, **grid**
+- **Circle pack**, one disc per group
+- **Scripted**, positions from your own code
+- Plus an anti-overlap force and a one-shot Noverlap pass
+
+### Writing your own
+
+Metrics and layouts you write yourself, run in [QuickJS](https://bellard.org/quickjs/)
+compiled to WebAssembly inside a Web Worker. A script gets a 3 second deadline,
+a 64 MB ceiling, seeded randomness, and an empty global scope with no network
+access. That stops runaway loops and exfiltration; it is not a defence against
+a script you chose to paste and run.
+
+### Getting data out
+
+- SVG and PNG of the current view
+- GEXF including positions and colours, so Gephi opens it looking like it did here
+- GraphML with typed attribute keys
+- A `.ngv.json` workspace holding everything: both tables, the filter chain, styling, layout and node positions
+- CSV of the edge table
+- Save any of it to a GitHub gist with a personal access token
 
 ## Development
 
@@ -29,12 +81,21 @@ pnpm install
 pnpm dev          # start the dev server
 pnpm build        # type-check and build to dist/
 pnpm lint         # oxlint
+pnpm test         # vitest
 pnpm format       # oxfmt
 ```
+
+Every graph algorithm here is hand-written rather than pulled from a library,
+and the numeric ones are pinned by tests against graphs with known answers.
+`src/lib/graph.test.ts` additionally holds a golden snapshot of the core
+pipeline's output.
 
 ## Stack
 
 - [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript
-- [d3-force](https://d3js.org/d3-force), d3-zoom and d3-drag for simulation and interaction
+- [d3-force](https://d3js.org/d3-force), d3-zoom, d3-drag and d3-quadtree for simulation and interaction
 - [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
+- [TanStack Table](https://tanstack.com/table) and [TanStack Virtual](https://tanstack.com/virtual) for the data grid
+- [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) for the script sandbox
+- GEXF and GraphML are read and written with the platform's own `DOMParser`
 - Deployed with GitHub Pages

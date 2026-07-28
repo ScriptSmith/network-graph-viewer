@@ -320,33 +320,7 @@ export function Sidebar({
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">3</span> Compute
-        </h2>
-        <div className="step-body">
-          {doc && graph ? (
-            <ComputePanel
-              doc={doc}
-              nodeCount={graph.nodes.length}
-              edgeCount={graph.links.length}
-              onCompute={onCompute}
-              onClearComputed={onClearComputed}
-              onShowColumns={onShowColumns}
-            />
-          ) : (
-            <p className="note">Load data first.</p>
-          )}
-          {doc && graph && (
-            <details className="script-block">
-              <summary>Write your own</summary>
-              <ScriptPanel onRun={onScript} />
-            </details>
-          )}
-        </div>
-      </section>
-
-      <section className={doc ? "step" : "step step-disabled"}>
-        <h2 className="step-head">
-          <span className="step-no">4</span> Filter
+          <span className="step-no">3</span> Filter
           {activeFilterCount > 0 && <span className="step-badge">{activeFilterCount}</span>}
         </h2>
         <div className="step-body">
@@ -366,7 +340,7 @@ export function Sidebar({
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">5</span> Style
+          <span className="step-no">4</span> Style
         </h2>
         <div className="step-body">
           {doc ? (
@@ -484,7 +458,7 @@ export function Sidebar({
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">6</span> Layout
+          <span className="step-no">5</span> Layout
         </h2>
         <div className="step-body">
           <div className="radio-list" role="radiogroup" aria-label="Layout algorithm">
@@ -587,6 +561,32 @@ export function Sidebar({
           <button type="button" className="btn" disabled={!graph} onClick={onSeparate}>
             Fix overlaps now
           </button>
+        </div>
+      </section>
+
+      <section className={doc ? "step" : "step step-disabled"}>
+        <h2 className="step-head">
+          <span className="step-no">6</span> Compute
+        </h2>
+        <div className="step-body">
+          {doc && graph ? (
+            <ComputePanel
+              doc={doc}
+              nodeCount={graph.nodes.length}
+              edgeCount={graph.links.length}
+              onCompute={onCompute}
+              onClearComputed={onClearComputed}
+              onShowColumns={onShowColumns}
+            />
+          ) : (
+            <p className="note">Load data first.</p>
+          )}
+          {doc && graph && (
+            <details className="script-block">
+              <summary>Write your own</summary>
+              <ScriptPanel onRun={onScript} />
+            </details>
+          )}
         </div>
       </section>
 

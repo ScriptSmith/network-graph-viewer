@@ -20,7 +20,15 @@ import { select, type Selection } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
 import { drag } from "d3-drag";
 import "d3-transition";
-import type { Graph, GraphLink, GraphNode, GraphStyle, LabelMode, Row } from "../types";
+import type {
+  Graph,
+  GraphLink,
+  GraphNode,
+  GraphStyle,
+  LabelMode,
+  Row,
+  GraphSelection,
+} from "../types";
 import {
   computeTargets,
   forceAtlas2,
@@ -66,8 +74,8 @@ interface GraphCanvasProps {
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
   attrColumns: string[];
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
+  selection: GraphSelection | null;
+  onSelect: (next: GraphSelection | null) => void;
   /** Edit mode: adds the create, connect and delete affordances. */
   editing?: boolean;
   /**
@@ -116,12 +124,14 @@ export function GraphCanvas({
   colors,
   edgeColors,
   attrColumns,
-  selectedId,
+  selection,
   onSelect,
   seedPositions,
   ambient = false,
   ref,
 }: GraphCanvasProps) {
+  const selectedId = selection?.kind === "node" ? selection.id : null;
+  const selectedEdge = selection?.kind === "edge" ? selection : null;
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const viewportRef = useRef<SVGGElement>(null);
@@ -148,6 +158,7 @@ export function GraphCanvas({
     preventOverlap,
     labelMode,
     selectedId,
+    selectedEdge,
     onSelect,
     colors,
     edgeColors,
@@ -162,6 +173,7 @@ export function GraphCanvas({
     preventOverlap,
     labelMode,
     selectedId,
+    selectedEdge,
     onSelect,
     colors,
     edgeColors,
@@ -208,34 +220,46 @@ export function GraphCanvas({
   const refreshStyles = () => {
     const sels = selsRef.current;
     if (!sels) return;
-    const { selectedId: sel, style: st } = liveRef.current;
+    const { selectedId: sel, selectedEdge: edge, style: st } = liveRef.current;
     const focus = hoverNodeRef.current ?? sel;
     const neighbors = focus ? adjacencyRef.current.get(focus) : null;
     const base = baseLabelsRef.current;
+    const picked = (d: GraphLink) =>
+      edge !== null && endpoint(d.source) === edge.source && endpoint(d.target) === edge.target;
 
     sels.node
       .attr("opacity", (d) => (neighbors && !neighbors.has(d.id) ? 0.14 : 1))
       .attr("stroke", (d) => (d.id === sel ? SELECT_RING : SURFACE))
       .attr("stroke-width", (d) => (d.id === sel ? 2.5 : 1.5));
 
+    // A selected edge is lit the way a hovered one is, and keeps that whatever
+    // the neighbourhood dimming would otherwise have said about it.
     sels.link
       .attr("stroke", (d) => {
-        const lit = neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus);
+        const lit =
+          picked(d) ||
+          (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
         return lit ? EDGE_LIT : edgeBase(d);
       })
+      .attr("stroke-width", (d) => edgeWidth(d) * (picked(d) ? 2.2 : 1))
       .attr("opacity", (d) => {
+        if (picked(d)) return 1;
         if (!neighbors) return d.colorValue === null ? 0.85 : 0.9;
         const touches = endpoint(d.source) === focus || endpoint(d.target) === focus;
         return touches ? 0.95 : 0.06;
       })
       .attr("marker-end", (d) => {
         if (!st.arrows) return null;
-        const lit = neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus);
+        const lit =
+          picked(d) ||
+          (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
         return markerFor(lit ? EDGE_LIT : edgeBase(d));
       });
 
     sels.label.attr("display", (d) => {
       if (neighbors) return neighbors.has(d.id) ? null : "none";
+      // Selecting an edge names both of its ends, whatever the label mode.
+      if (edge && (d.id === edge.source || d.id === edge.target)) return null;
       return base.has(d.id) || d.id === sel ? null : "none";
     });
   };
@@ -482,6 +506,15 @@ export function GraphCanvas({
       .attr("fill", "none")
       .attr("stroke", "transparent")
       .attr("stroke-width", 11)
+      .style("cursor", "pointer")
+      .on("click", (event: MouseEvent, d) => {
+        event.stopPropagation();
+        liveRef.current.onSelect({
+          kind: "edge",
+          source: endpoint(d.source),
+          target: endpoint(d.target),
+        });
+      })
       .on("mouseenter", (event: MouseEvent, d) => {
         showTooltip(event, linkTooltip(d));
         link
@@ -538,7 +571,7 @@ export function GraphCanvas({
         })
         .on("click", (event: MouseEvent, d) => {
           event.stopPropagation();
-          liveRef.current.onSelect(d.id);
+          liveRef.current.onSelect({ kind: "node", id: d.id });
         });
 
       node.call(
@@ -637,7 +670,8 @@ export function GraphCanvas({
   useEffect(() => {
     computeBaseLabels();
     refreshStyles();
-  }, [labelMode, selectedId, graph, style.arrows]);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelMode, selection, graph, style.arrows]);
 
   // Pan and zoom.
   useEffect(() => {

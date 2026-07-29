@@ -1027,6 +1027,35 @@ body.resizing-y {
   overflow-wrap: anywhere;
 }
 
+/* Both ends of a selected edge are named, and each is a way to go there. */
+.insp-edge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* A flex row, so each end's dot has a box to be sized in, the way the node
+   card's does inside .insp-head. */
+.insp-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.insp-end:hover {
+  color: var(--accent);
+}
+
 .insp-close {
   background: none;
   border: none;
@@ -1614,17 +1643,45 @@ body.resizing-y {
   color: var(--ink-3);
 }
 
-.drawer-search {
+.drawer-find {
+  position: relative;
   flex: 1;
+  display: flex;
   min-width: 130px;
   max-width: 260px;
+}
+
+.drawer-search {
+  width: 100%;
   background: var(--raised);
   border: 1px solid var(--hairline);
   border-radius: 7px;
   color: var(--ink);
   font: inherit;
   font-size: 12px;
-  padding: 4px 9px;
+  padding: 4px 24px 4px 9px;
+}
+
+.drawer-search::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.drawer-search-clear {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  bottom: 0;
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 6px;
+}
+
+.drawer-search-clear:hover {
+  color: var(--ink);
 }
 
 .drawer-select {
@@ -1653,6 +1710,9 @@ body.resizing-y {
 }
 
 .drawer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   background: var(--raised);
   border: 1px solid var(--hairline);
   border-radius: 7px;
@@ -1662,9 +1722,25 @@ body.resizing-y {
   padding: 4px 10px;
 }
 
-.drawer-btn:hover {
+.drawer-btn:hover:not(:disabled) {
   color: var(--ink);
   border-color: var(--hairline-strong);
+}
+
+.drawer-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.drawer-undo {
+  display: flex;
+  gap: 3px;
+}
+
+.drawer-undo .drawer-btn {
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 8px;
 }
 
 .drawer-count {
@@ -1723,11 +1799,16 @@ body.resizing-y {
   white-space: nowrap;
 }
 
+.dt-head {
+  display: flex;
+  align-items: stretch;
+}
+
 .dt-sort {
   display: flex;
   align-items: center;
   gap: 5px;
-  width: 100%;
+  flex: 1;
   background: none;
   border: none;
   color: var(--ink-2);
@@ -1735,7 +1816,7 @@ body.resizing-y {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  padding: 7px 10px;
+  padding: 7px 4px 7px 10px;
   text-transform: uppercase;
 }
 
@@ -1746,6 +1827,74 @@ body.resizing-y {
 .dt-sort-mark {
   font-size: 8px;
   color: var(--accent);
+}
+
+/* Faint enough to stay out of the header's way, present enough that nobody has
+   to guess it is there; lit once it is actually holding something back. */
+.dt-funnel {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 8px 0 2px;
+  opacity: 0.35;
+}
+
+.dt-table th:hover .dt-funnel,
+.dt-funnel:focus-visible,
+.dt-funnel[aria-expanded="true"],
+.dt-funnel.on {
+  opacity: 1;
+}
+
+.dt-funnel:hover {
+  color: var(--ink);
+}
+
+.dt-funnel.on {
+  color: var(--accent);
+}
+
+/* Laid out against the viewport, not the header: the table scrolls both ways
+   inside a pane that is often two rows tall, which would clip this. */
+.dt-filter-pop {
+  position: fixed;
+  z-index: 40;
+  padding: 9px 10px 11px;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+}
+
+.dt-filter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.dt-filter-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dt-filter-head button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
 }
 
 .dt-table td {
@@ -1762,10 +1911,6 @@ body.resizing-y {
   text-align: right;
 }
 
-.dt-row {
-  cursor: pointer;
-}
-
 .dt-row:hover td {
   background: var(--raised);
 }
@@ -1777,6 +1922,22 @@ body.resizing-y {
 /* Rows the filter chain removed stay legible but clearly out of play. */
 .dt-row.dimmed {
   opacity: 0.4;
+}
+
+/* Rows the search did not match are pushed below the rule rather than taken
+   away, so a search never hides the thing next to what was being looked for. */
+.dt-row.unmatched {
+  opacity: 0.45;
+}
+
+.dt-split td {
+  background: var(--raised);
+  border-top: 1px solid var(--hairline-strong);
+  border-bottom: 1px solid var(--hairline-strong);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 4px 10px !important;
 }
 
 /* The row Add row just made, held in place even if the chain would drop it. */
@@ -1799,11 +1960,13 @@ body.resizing-y {
 }
 
 .dt-gutter {
-  width: 24px;
+  width: 44px;
   padding: 0 !important;
   text-align: center;
+  white-space: nowrap;
 }
 
+.dt-pick,
 .dt-delete,
 .dt-expand {
   background: none;
@@ -1812,7 +1975,7 @@ body.resizing-y {
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
-  padding: 4px;
+  padding: 4px 3px;
   opacity: 0;
 }
 
@@ -1820,7 +1983,55 @@ body.resizing-y {
   opacity: 1;
 }
 
+.dt-row:hover .dt-pick,
 .dt-row:hover .dt-delete {
+  opacity: 1;
+}
+
+/* The marker on the selected row stays out even when the pointer is elsewhere:
+   it is the table's answer to "which node is the graph showing". */
+.dt-pick[aria-pressed="true"] {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.dt-pick:disabled {
+  cursor: default;
+}
+
+.dt-row:hover .dt-pick:disabled {
+  opacity: 0.3;
+}
+
+.dt-pick:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+/* An endpoint cell keeps its value readable and puts the button after it, so
+   the text still truncates the way every other cell's does. */
+.dt-node-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dt-node-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Always out, so the cell reads the same whether or not the pointer is over
+   the row, and faint enough not to compete with the value beside it. */
+.dt-pick-cell {
+  flex: none;
+  padding: 0 1px;
+  opacity: 0.4;
+}
+
+.dt-row:hover .dt-pick-cell,
+.dt-pick-cell[aria-pressed="true"] {
   opacity: 1;
 }
 
@@ -2303,10 +2514,6 @@ body.resizing-y {
   height: 8px;
   border-radius: 4px;
   flex: none;
-}
-
-.legend-caption {
-  color: var(--ink-3);
 }
 
 .no-match {

@@ -159,9 +159,8 @@ export function Legend({
           colorColumn,
         ),
       )}
-      {edgeEntries.length > 0 && edgeColorColumn && (
-        <span className="legend-item legend-caption">{edgeColorColumn}:</span>
-      )}
+      {/* Edge entries are marked with a line rather than a dot, which says which
+          is which without a caption the node entries do not have. */}
       {edgeEntries.map((e) =>
         item(
           `e${e.name}`,

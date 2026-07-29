@@ -15,10 +15,11 @@ import type {
   LabelMode,
   Mapping,
   Corner,
+  GraphSelection,
   Overlay,
   Panel,
 } from "./types";
-import { DEFAULT_STYLE, OVERLAYS, PANELS, styleColumn } from "./types";
+import { DEFAULT_STYLE, OVERLAYS, PANELS, nodeSelection, selectedNode, styleColumn } from "./types";
 import { SAMPLE_DATASET } from "./sample-data";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
 import {
@@ -48,6 +49,7 @@ import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
 import { useCornerDrag } from "./useCornerDrag";
+import { useDocHistory } from "./useDocHistory";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
 import { StatsPanel } from "./components/StatsPanel";
@@ -92,7 +94,9 @@ export default function App() {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [edgeTableIndex, setEdgeTableIndex] = useState(0);
   const [nodeTableIndex, setNodeTableIndex] = useState<number | null>(null);
-  const [doc, setDoc] = useState<GraphDoc | null>(null);
+  // Every change to the document goes through the history, so an undo can
+  // never quietly discard one that was recorded nowhere.
+  const { doc, edit: editDoc, reset: resetDoc, undo, redo, undoLabel, redoLabel } = useDocHistory();
   const [style, setStyle] = useState<GraphStyle>(DEFAULT_STYLE);
   const [chain, setChain] = useState<FilterStep[]>([]);
   const [showIsolated, setShowIsolated] = useState(false);
@@ -103,7 +107,9 @@ export default function App() {
   // Positions from a layout script, used as targets by the "script" layout.
   const [scriptedTargets, setScriptedTargets] = useState<Map<string, Position> | null>(null);
   const [labelMode, setLabelMode] = useState<LabelMode>("auto");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // One selection covers both marks: a node, or an edge between two of them.
+  const [selection, setSelection] = useState<GraphSelection | null>(null);
+  const selectedId = selectedNode(selection);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -149,14 +155,17 @@ export default function App() {
     [graph],
   );
 
-  const adoptDoc = useCallback((next: GraphDoc, nextStyle: GraphStyle) => {
-    setDoc(next);
-    setStyle(nextStyle);
-    setChain([]);
-    setShowIsolated(next.nodesDeclared);
-    setSelectedId(null);
-    setError(null);
-  }, []);
+  const adoptDoc = useCallback(
+    (next: GraphDoc, nextStyle: GraphStyle) => {
+      resetDoc(next);
+      setStyle(nextStyle);
+      setChain([]);
+      setShowIsolated(next.nodesDeclared);
+      setSelection(null);
+      setError(null);
+    },
+    [resetDoc],
+  );
 
   const adoptImported = useCallback(
     (imported: ImportedGraph & { workspace?: import("./lib/io").Workspace }) => {
@@ -165,7 +174,7 @@ export default function App() {
       setEdgeTableIndex(0);
       setNodeTableIndex(null);
       seedPositionsRef.current = positions ?? null;
-      setDoc(next);
+      resetDoc(next);
       setStyle(workspace?.style ?? guessStyle(next.edges, next.mapping));
       setChain(workspace?.chain ?? []);
       setShowIsolated(workspace?.showIsolated ?? next.nodesDeclared);
@@ -177,10 +186,10 @@ export default function App() {
         }));
         setPreventOverlap(workspace.preventOverlap);
       }
-      setSelectedId(null);
+      setSelection(null);
       setError(null);
     },
-    [],
+    [resetDoc],
   );
 
   const adoptDataset = useCallback(
@@ -300,15 +309,21 @@ export default function App() {
   }, []);
 
   /**
-   * A selection is answered in the statistics panel, so picking a node brings
-   * that panel out from wherever it was put away.
+   * A selection is answered in the statistics panel, so picking a node or an
+   * edge brings that panel out from wherever it was put away.
    */
   const handleSelect = useCallback(
-    (id: string | null) => {
-      setSelectedId(id);
-      if (id !== null) setPanelOpen("stats", true);
+    (next: GraphSelection | null) => {
+      setSelection(next);
+      if (next !== null) setPanelOpen("stats", true);
     },
     [setPanelOpen],
+  );
+
+  /** The node-only form, for the panels that never point at an edge. */
+  const handleSelectNode = useCallback(
+    (id: string | null) => handleSelect(id === null ? null : nodeSelection(id)),
+    [handleSelect],
   );
 
   const anythingHidden = hiddenOverlays.size > 0 || collapsed.size > 0;
@@ -324,16 +339,28 @@ export default function App() {
 
   // H clears the window or puts it back and P does the same for the panels
   // alone; Escape only ever puts things back, so the way out is never hidden
-  // along with everything else.
+  // along with everything else. Ctrl+Z and its partners walk the document
+  // history, except inside a field, where they are the browser's to handle.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (
+      const inField =
         e.target instanceof HTMLElement &&
-        e.target.closest("input, textarea, select, [contenteditable]")
-      ) {
-        return;
+        e.target.closest("input, textarea, select, [contenteditable]") !== null;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !inField) {
+        const key = e.key.toLowerCase();
+        if (key === "z" && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+          return;
+        }
+        if ((key === "z" && e.shiftKey) || key === "y") {
+          e.preventDefault();
+          redo();
+          return;
+        }
       }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (inField) return;
       if (e.key === "h" || e.key === "H") {
         if (anythingHidden) showEverything();
         else hideEverything();
@@ -346,7 +373,16 @@ export default function App() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [anythingHidden, panelsHidden, hideEverything, showEverything, hidePanels, showPanels]);
+  }, [
+    anythingHidden,
+    panelsHidden,
+    hideEverything,
+    showEverything,
+    hidePanels,
+    showPanels,
+    undo,
+    redo,
+  ]);
 
   const handleSample = useCallback(() => adoptDataset(SAMPLE_DATASET), [adoptDataset]);
 
@@ -395,15 +431,15 @@ export default function App() {
     setDataset(null);
     setEdgeTableIndex(0);
     setNodeTableIndex(null);
-    setDoc(null);
+    resetDoc(null);
     setStyle(DEFAULT_STYLE);
     setChain([]);
     setShowIsolated(false);
-    setSelectedId(null);
+    setSelection(null);
     setCollapsed(new Set<Panel>());
     setHiddenOverlays(new Set());
     setError(null);
-  }, []);
+  }, [resetDoc]);
 
   /** Rebuild the document from a different pair of imported tables. */
   const handleTableChange = useCallback(
@@ -424,7 +460,7 @@ export default function App() {
       if (!doc) return;
       const mapping = { ...doc.mapping, ...patch };
       mapping.attrs = mapping.attrs.filter((c) => c !== mapping.source && c !== mapping.target);
-      setDoc((current) => (current ? reconcileNodes({ ...current, mapping }) : current));
+      editDoc("the column mapping", (current) => reconcileNodes({ ...current, mapping }));
       // Style choices that now point at a structural column stop making sense.
       setStyle((s) => {
         const fix = (token: string, fallback: string) => {
@@ -440,7 +476,7 @@ export default function App() {
         };
       });
     },
-    [doc],
+    [doc, editDoc],
   );
 
   const handleStyleChange = useCallback((patch: Partial<GraphStyle>) => {
@@ -470,27 +506,33 @@ export default function App() {
     async (metrics: string[], options: MetricOptions) => {
       if (!base) throw new Error("Load data before computing metrics.");
       const run = await computeMetrics(toMetricGraph(base, options.weightColumn), metrics, options);
-      setDoc((current) => (current ? applyComputedColumns(current, run.result) : current));
+      editDoc("computing metrics", (current) => applyComputedColumns(current, run.result));
       return run;
     },
-    [base],
+    [base, editDoc],
   );
 
   const handleEditCell = useCallback(
     (target: EditTarget, rowIndex: number, column: string, value: CellValue) => {
-      setDoc((current) => (current ? setCell(current, target, rowIndex, column, value) : current));
+      editDoc("the cell edit", (current) => setCell(current, target, rowIndex, column, value));
     },
-    [],
+    [editDoc],
   );
 
-  const handleAddRow = useCallback((target: EditTarget) => {
-    setDoc((current) => (current ? addRow(current, target) : current));
-    if (target === "nodes") setShowIsolated(true);
-  }, []);
+  const handleAddRow = useCallback(
+    (target: EditTarget) => {
+      editDoc("adding a row", (current) => addRow(current, target));
+      if (target === "nodes") setShowIsolated(true);
+    },
+    [editDoc],
+  );
 
-  const handleDeleteRow = useCallback((target: EditTarget, rowIndex: number) => {
-    setDoc((current) => (current ? deleteRows(current, target, [rowIndex]) : current));
-  }, []);
+  const handleDeleteRow = useCallback(
+    (target: EditTarget, rowIndex: number) => {
+      editDoc("deleting a row", (current) => deleteRows(current, target, [rowIndex]));
+    },
+    [editDoc],
+  );
 
   /**
    * Run a user script and route its result: a metric becomes a computed column
@@ -517,17 +559,17 @@ export default function App() {
         edgeColumns: mode === "edge" ? [{ name, type: "number" as const, values }] : [],
         summary: {},
       };
-      setDoc((current) => (current ? applyComputedColumns(current, runResult) : current));
+      editDoc(`writing "${name}"`, (current) => applyComputedColumns(current, runResult));
       // Send the user where the column actually landed.
       setTableTab(mode === "edge" ? "edges" : "nodes");
       return `Wrote "${name}" over ${Object.keys(values).length} rows in ${Math.round(elapsedMs)}ms.`;
     },
-    [base, doc],
+    [base, doc, editDoc],
   );
 
   const handleClearComputed = useCallback(() => {
-    setDoc((current) => (current ? clearComputedColumns(current) : current));
-  }, []);
+    editDoc("clearing the computed columns", clearComputedColumns);
+  }, [editDoc]);
 
   /** Open the data table on whichever tab holds the columns just written. */
   const handleShowColumns = useCallback(
@@ -753,7 +795,7 @@ export default function App() {
                 colors={colors}
                 edgeColors={edgeColors}
                 attrColumns={doc.mapping.attrs}
-                selectedId={selectedId}
+                selection={selection}
                 onSelect={handleSelect}
                 seedPositions={seedPositionsRef}
               />
@@ -849,7 +891,7 @@ export default function App() {
                 colors={AMBIENT_COLORS}
                 edgeColors={new Map()}
                 attrColumns={[]}
-                selectedId={null}
+                selection={null}
                 onSelect={() => {}}
                 ambient
               />
@@ -922,11 +964,17 @@ export default function App() {
             onTargetChange={setTableTab}
             visibleRows={visibleRows}
             visibleNodeIds={visibleNodeIds}
-            selectedId={selectedId}
-            onSelectNode={handleSelect}
+            selection={selection}
+            onSelect={handleSelect}
+            chain={chain}
+            onChainChange={setChain}
             onEditCell={handleEditCell}
             onAddRow={handleAddRow}
             onDeleteRow={handleDeleteRow}
+            onUndo={undo}
+            onRedo={redo}
+            undoLabel={undoLabel}
+            redoLabel={redoLabel}
             gripProps={drawer.handleProps}
           />
         )}
@@ -948,10 +996,11 @@ export default function App() {
             graph={graph}
             colorColumn={graph.ranking ? null : colorColumn}
             colors={colors}
+            edgeColors={edgeColors}
             chain={chain}
-            selectedId={selectedId}
+            selection={selection}
             onToggleValueFilter={handleToggleValueFilter}
-            onSelectNode={handleSelect}
+            onSelectNode={handleSelectNode}
             onClose={() => setPanelOpen("stats", false)}
           />
         </>

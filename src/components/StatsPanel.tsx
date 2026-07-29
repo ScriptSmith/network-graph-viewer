@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Graph, GraphDoc, Row } from "../types";
+import type { Graph, GraphDoc, GraphSelection, Row } from "../types";
 import { findValueStep, type FilterStep } from "../lib/filter";
 import { cellKey } from "../lib/cells";
 import { componentCount, distinctValues } from "../lib/graph";
@@ -13,6 +13,7 @@ import { asNumber } from "../lib/parse";
 import { CATEGORICAL } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
 import { NodeDetails } from "./NodeDetails";
+import { EdgeDetails } from "./EdgeDetails";
 
 const METRIC_HELP: { term: string; text: string }[] = [
   {
@@ -61,9 +62,10 @@ interface StatsPanelProps {
   /** The partition column currently coloring nodes, if any. */
   colorColumn: string | null;
   colors: Map<string, string>;
+  edgeColors: Map<string, string>;
   chain: FilterStep[];
-  /** The node whose details head the panel, if one is selected. */
-  selectedId: string | null;
+  /** The node or edge whose details head the panel, if anything is selected. */
+  selection: GraphSelection | null;
   onToggleValueFilter: (table: "nodes" | "edges", column: string, value: string) => void;
   onSelectNode: (id: string | null) => void;
   onClose: () => void;
@@ -117,8 +119,9 @@ export function StatsPanel({
   graph,
   colorColumn,
   colors,
+  edgeColors,
   chain,
-  selectedId,
+  selection,
   onToggleValueFilter,
   onSelectNode,
   onClose,
@@ -200,13 +203,25 @@ export function StatsPanel({
         </button>
       </header>
 
-      {selectedId !== null && (
+      {selection?.kind === "node" && (
         <NodeDetails
           doc={doc}
           graph={graph}
-          selectedId={selectedId}
+          selectedId={selection.id}
           colors={colors}
           onSelect={onSelectNode}
+        />
+      )}
+
+      {selection?.kind === "edge" && (
+        <EdgeDetails
+          doc={doc}
+          graph={graph}
+          edge={selection}
+          colors={colors}
+          edgeColors={edgeColors}
+          onSelectNode={onSelectNode}
+          onClear={() => onSelectNode(null)}
         />
       )}
 

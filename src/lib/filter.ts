@@ -108,6 +108,21 @@ export function findValueStep(
   );
 }
 
+/**
+ * The step a column header binds to: the first column step naming that column
+ * on that table. A header filter and a sidebar step are the same object, so
+ * setting one from either end has to find what the other already put there.
+ */
+export function findColumnStep(
+  chain: FilterStep[],
+  table: "nodes" | "edges",
+  column: string,
+): FilterStep | undefined {
+  return chain.find(
+    (step) => step.kind === "column" && step.table === table && step.column === column,
+  );
+}
+
 /** A condition that lets everything through, so a fresh step is a no-op. */
 export function neutralCondition(table: Table, columnName: string): ColumnFilter {
   const column = table.columns.find((c) => c.name === columnName);
@@ -338,6 +353,17 @@ function intersect(
     if (current.has(id)) out.add(id);
   }
   return out;
+}
+
+/**
+ * Whether a condition actually takes anything out. A values condition with
+ * every value ticked and a range with neither end set both let the whole table
+ * through, so a control showing itself as "on" for either would be lying.
+ */
+export function narrows(rows: Row[], column: string, filter: ColumnFilter): boolean {
+  if (filter.kind === "range") return filter.min !== null || filter.max !== null;
+  const selected = new Set(filter.selected);
+  return distinctValues(rows, column).some((v) => !selected.has(v.key));
 }
 
 /** Whether one row satisfies a column condition. */

@@ -137,6 +137,28 @@ export interface Graph extends BaseGraph {
   ranking: { min: number; max: number } | null;
 }
 
+/**
+ * What the canvas and the tables are pointed at. A link merges every row with
+ * the same pair of endpoints, so an edge selection names the pair rather than
+ * one row, and more than one row can answer to it.
+ */
+export type GraphSelection =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; source: string; target: string };
+
+export const nodeSelection = (id: string): GraphSelection => ({ kind: "node", id });
+
+/** The selected node, or null when nothing or an edge is selected. */
+export function selectedNode(selection: GraphSelection | null): string | null {
+  return selection?.kind === "node" ? selection.id : null;
+}
+
+export function sameSelection(a: GraphSelection | null, b: GraphSelection | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind === "node") return b.kind === "node" && a.id === b.id;
+  return b.kind === "edge" && a.source === b.source && a.target === b.target;
+}
+
 export type LabelMode = "auto" | "all" | "none";
 
 /**

@@ -7,7 +7,7 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 
 **Live app:** https://adamsm.com/network-graph-viewer/
 
-![The sample supervision network rendered as a force-directed graph, with nodes colored by department and a sidebar for data, filters, style, and layout](docs/screenshot.png)
+![The sample supervision network as a force-directed graph, nodes coloured by department, with the sidebar for data, filters, style and layout on the left, a statistics panel of network metrics and top nodes on the right, and the edge table below](docs/screenshot.png)
 
 ## Features
 

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { SAMPLE_DATASET } from "../sample-data";
+import { SAMPLE_DATASET } from "../samples";
 import { guessStyle } from "./parse";
 import { buildDoc } from "./doc";
 import { applyStyle, buildBaseGraph } from "./graph";

@@ -20,7 +20,7 @@ import type {
   Panel,
 } from "./types";
 import { DEFAULT_STYLE, OVERLAYS, PANELS, nodeSelection, selectedNode, styleColumn } from "./types";
-import { SAMPLE_DATASET } from "./sample-data";
+import { SAMPLE_DATASET, SAMPLES, type SampleNetwork } from "./samples";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
 import {
   detectFormat,
@@ -52,6 +52,7 @@ import { useCornerDrag } from "./useCornerDrag";
 import { useDocHistory } from "./useDocHistory";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
+import { SampleList } from "./components/SampleList";
 import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
 import { Legend } from "./components/Legend";
@@ -193,13 +194,15 @@ export default function App() {
   );
 
   const adoptDataset = useCallback(
-    (next: Dataset) => {
+    (next: Dataset, options: { nodeTable?: number; style?: Partial<GraphStyle> } = {}) => {
       const edges = next.tables[0];
-      const nextDoc = buildDoc(next.fileName, edges);
+      const nodeIndex = options.nodeTable ?? null;
+      const nodes = nodeIndex === null ? undefined : next.tables[nodeIndex];
+      const nextDoc = buildDoc(next.fileName, edges, { nodes });
       setDataset(next);
       setEdgeTableIndex(0);
-      setNodeTableIndex(null);
-      adoptDoc(nextDoc, guessStyle(edges, nextDoc.mapping));
+      setNodeTableIndex(nodeIndex);
+      adoptDoc(nextDoc, { ...guessStyle(edges, nextDoc.mapping), ...options.style });
     },
     [adoptDoc],
   );
@@ -384,7 +387,11 @@ export default function App() {
     redo,
   ]);
 
-  const handleSample = useCallback(() => adoptDataset(SAMPLE_DATASET), [adoptDataset]);
+  const handleSample = useCallback(
+    (network: SampleNetwork) =>
+      adoptDataset(network.dataset, { nodeTable: network.nodeTable, style: network.style }),
+    [adoptDataset],
+  );
 
   /**
    * Load a gist by id or URL. Multi-file gists pick the first file that looks
@@ -939,9 +946,15 @@ export default function App() {
                   <p className="example-caption">
                     Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
                   </p>
-                  <button type="button" className="btn btn-primary" onClick={handleSample}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => handleSample(SAMPLES[0])}
+                  >
                     Try the sample supervision network
                   </button>
+                  <p className="example-caption">Or one of these:</p>
+                  <SampleList onPick={handleSample} />
                 </div>
               </div>
             </>

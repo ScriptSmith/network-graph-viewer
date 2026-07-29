@@ -945,16 +945,21 @@ body.resizing-y {
 
 /* ---- Empty state ---- */
 
+/* Flex rather than grid so the card's max-height resolves against the stage
+   and it scrolls inside itself on a short window. */
 .empty {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
 }
 
 .empty-card {
   width: min(430px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
   background: #161615ee;
   border: 1px solid var(--hairline-strong);
   border-radius: 16px;
@@ -1008,6 +1013,46 @@ body.resizing-y {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-3);
+}
+
+/* ---- Sample picker ---- */
+
+.sample-links {
+  display: flex;
+  flex-direction: column;
+}
+
+.sample-link {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+  border: none;
+  border-top: 1px solid var(--hairline);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sample-link:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.sample-link-name {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.sample-link:hover .sample-link-name {
+  color: var(--accent);
+}
+
+.sample-link-size {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 /* ---- Node details ---- */

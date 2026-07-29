@@ -18,6 +18,8 @@ import { ComputePanel } from "./ComputePanel";
 import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
 import { GistPanel } from "./GistPanel";
 import { FilterChain } from "./FilterChain";
+import { SampleList } from "./SampleList";
+import { SAMPLES, type SampleNetwork } from "../samples";
 
 interface SidebarProps {
   dataset: Dataset | null;
@@ -35,7 +37,7 @@ interface SidebarProps {
   preventOverlap: boolean;
   labelMode: LabelMode;
   onFile: (file: File) => void;
-  onSample: () => void;
+  onSample: (network: SampleNetwork) => void;
   onClear: () => void;
   onTableChange: (edgeIndex: number, nodeIndex: number | null) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
@@ -212,9 +214,13 @@ export function Sidebar({
                 <strong>Choose a file</strong>
                 <span>or drop a file or paste cells anywhere on the page</span>
               </button>
-              <button type="button" className="btn" onClick={onSample}>
+              <button type="button" className="btn" onClick={() => onSample(SAMPLES[0])}>
                 Load sample dataset
               </button>
+              <div className="field">
+                <span className="field-label">Other samples</span>
+                <SampleList onPick={onSample} />
+              </div>
             </>
           )}
           <GistPanel

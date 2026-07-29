@@ -1,11 +1,10 @@
-import type { Dataset, Row } from "./types";
-import { inferColumns } from "./lib/parse";
+import { sample, table } from "./build";
 
 /**
- * Sample dataset: a supervision network for a fictional ~30 person company.
- * Each row is one Supervisor -> Supervisee edge with attributes on the edge.
- * A few people have a second, dotted-line supervisor so the graph is a true
- * network rather than a clean tree.
+ * A supervision network for a fictional ~30 person company. Each row is one
+ * Supervisor -> Supervisee edge with attributes on the edge. A few people have
+ * a second, dotted-line supervisor so the graph is a true network rather than
+ * a clean tree.
  */
 const columns = [
   "Supervisor",
@@ -66,9 +65,13 @@ const raw: [string, string, string, string, string, number, number][] = [
   ['Sofia Lindqvist', 'Josh Kim', 'Product', 'Dotted line', 'Monthly', 1, 1],
 ]
 
-const rows: Row[] = raw.map((r) => Object.fromEntries(columns.map((c, i) => [c, r[i]])));
-
-export const SAMPLE_DATASET: Dataset = {
-  fileName: "sample-supervision-network",
-  tables: [{ name: "Supervision", columns: inferColumns(rows, columns), rows }],
-};
+export const SUPERVISION = sample({
+  id: "supervision",
+  name: "Supervision network",
+  blurb:
+    "Who reports to whom at a fictional company. Mostly a tree, until the dotted lines cross teams and make it a network.",
+  dataset: {
+    fileName: "sample-supervision-network",
+    tables: [table("Supervision", columns, raw)],
+  },
+});

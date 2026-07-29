@@ -5,7 +5,7 @@
  * and XMLSerializer, so these tests need a DOM. Only this file pays for it.
  */
 import { expect, test } from "vitest";
-import { SAMPLE_DATASET } from "../../sample-data";
+import { SAMPLE_DATASET } from "../../samples";
 import { DEFAULT_STYLE, type Graph, type GraphDoc, type Column, type Row } from "../../types";
 import { buildDoc } from "../doc";
 import { applyStyle, buildBaseGraph } from "../graph";

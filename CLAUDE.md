@@ -60,6 +60,10 @@ way to change data is the data table, which edits the underlying rows.
   re-joins only when `graph` changes.
 - `src/theme.ts` - color tokens. The categorical palette is CVD-validated;
   slot order matters, don't reorder it.
+- `src/samples/` - the shipped networks, one file each, listed in `index.ts`.
+  Each is a different shape at a different size; `sample()` counts them for the
+  picker. The first, supervision, is also the graph drifting behind the empty
+  state and the fixture behind `graph.test.ts`, so its rows are frozen.
 
 ## Constraints
 

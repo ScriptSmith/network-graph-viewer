@@ -1,0 +1,38 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the citation network is generated the same way every time 1`] = `1766`;
+
+exports[`the citation network is generated the same way every time 2`] = `
+[
+  {
+    "Cited paper": "BIO-001",
+    "Citing paper": "LNG-002",
+    "Same field": false,
+    "Year gap": 0,
+  },
+  {
+    "Cited paper": "BIO-001",
+    "Citing paper": "THY-003",
+    "Same field": false,
+    "Year gap": 0,
+  },
+  {
+    "Cited paper": "LNG-002",
+    "Citing paper": "THY-003",
+    "Same field": false,
+    "Year gap": 0,
+  },
+  {
+    "Cited paper": "THY-003",
+    "Citing paper": "BIO-004",
+    "Same field": false,
+    "Year gap": 0,
+  },
+  {
+    "Cited paper": "THY-003",
+    "Citing paper": "VIS-005",
+    "Same field": false,
+    "Year gap": 0,
+  },
+]
+`;

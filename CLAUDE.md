@@ -47,7 +47,10 @@ way to change data is the data table, which edits the underlying rows.
 - `src/lib/layouts/` - `positions: "physics" | "computed" | "external"` says
   where a layout's coordinates come from. ForceAtlas2 is a custom d3 force with
   Barnes-Hut repulsion via `d3-quadtree`.
-- `src/lib/io/` - GEXF, GraphML, the native `.ngv.json` workspace, and gists.
+- `src/lib/io/` - GEXF, GraphML, the native `.ngv.json` workspace, gists, and
+  `url.ts`, which packs a workspace into a link's fragment and reads one back.
+  Links put the data in the fragment, never the query: fragments are not sent
+  with the request, so a shared graph stays as private as a dropped file.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
   table's cell edits, row adds and row deletes.
 - `src/lib/script/` - the QuickJS sandbox and the payload it receives.

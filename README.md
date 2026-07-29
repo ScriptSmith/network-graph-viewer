@@ -16,6 +16,7 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 - Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser
 - Paste cells straight from Excel or Google Sheets
 - Import GEXF and GraphML, including node and edge attributes and Gephi's saved positions
+- Open a `#data=…` link and the graph it carries is already there; nothing is fetched
 - Load from a public GitHub gist by URL or id, or share a `?gist=…` link that opens straight into the graph
 - A workbook with several sheets can use one as the edges and another as node attributes
 
@@ -71,7 +72,8 @@ access.
 - GraphML with typed attribute keys
 - A `.ngv.json` workspace holding everything: both tables, the filter chain, styling, layout and node positions
 - CSV of the edge table
-- Save any of it to a GitHub gist with a personal access token
+- A link with the whole workspace deflated into its fragment, so sharing the graph is sharing a URL and the data still never reaches a server
+- Save any of it to a GitHub gist with a personal access token, which puts the gist's id in the address bar for a link that stays short whatever the graph weighs
 
 ## Development
 

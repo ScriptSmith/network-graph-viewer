@@ -23,18 +23,24 @@ import { DEFAULT_STYLE, OVERLAYS, PANELS, nodeSelection, selectedNode, styleColu
 import { SAMPLE_DATASET, SAMPLES, type SampleNetwork } from "./samples";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
 import {
+  decodePayload,
   detectFormat,
   downloadText,
   exportAs,
   extractGistFileHint,
   extractGistId,
   fetchGist,
+  gistLink,
   matchesFileHint,
   parseText,
+  readUrlSource,
   TEXT_EXTENSIONS,
+  withoutUrlSource,
+  writeDataLink,
   type ExportFormat,
   type ImportedGraph,
   type Position,
+  type UrlSource,
 } from "./lib/io";
 import { applyComputedColumns, buildDoc, clearComputedColumns, reconcileNodes } from "./lib/doc";
 import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
@@ -91,8 +97,15 @@ const STATS_SIZE: PanelSizeOptions = {
   max: () => Math.max(280, Math.min(680, window.innerWidth - 480)),
 };
 
+/** Names a URL source, so a link the app wrote is not read straight back in. */
+function sourceKey(source: UrlSource): string {
+  return source.kind === "gist" ? `gist:${source.reference}` : `data:${source.payload}`;
+}
+
 export default function App() {
   const [dataset, setDataset] = useState<Dataset | null>(null);
+  // The gist the graph on screen came from, so a save offers to update it.
+  const [gistId, setGistId] = useState<string | null>(null);
   const [edgeTableIndex, setEdgeTableIndex] = useState(0);
   const [nodeTableIndex, setNodeTableIndex] = useState<number | null>(null);
   // Every change to the document goes through the history, so an undo can
@@ -156,6 +169,27 @@ export default function App() {
     [graph],
   );
 
+  // What the address bar last pointed at, so a link this app wrote is not
+  // mistaken for one the user just pasted in.
+  const urlSourceRef = useRef<string | null>(null);
+
+  /** Point the address bar somewhere without reloading, and remember where. */
+  const rewriteUrl = useCallback((href: string) => {
+    const source = readUrlSource(href);
+    urlSourceRef.current = source === null ? null : sourceKey(source);
+    window.history.replaceState(null, "", href);
+  }, []);
+
+  /**
+   * Data has arrived from somewhere other than the link in the address bar, so
+   * take the link out rather than leave one that would reload into something
+   * else entirely.
+   */
+  const forgetUrlSource = useCallback(() => {
+    setGistId(null);
+    if (urlSourceRef.current !== null) rewriteUrl(withoutUrlSource());
+  }, [rewriteUrl]);
+
   const adoptDoc = useCallback(
     (next: GraphDoc, nextStyle: GraphStyle) => {
       resetDoc(next);
@@ -214,16 +248,21 @@ export default function App() {
         if (TEXT_EXTENSIONS.some((ext) => lowered.endsWith(ext))) {
           const text = await file.text();
           const imported = await parseText(text, file.name);
+          // Only once the file has actually read: a link is worth keeping
+          // until something has arrived to replace what it points at.
+          forgetUrlSource();
           if (imported.dataset) adoptDataset(imported.dataset);
           else adoptImported(imported);
           return;
         }
-        adoptDataset(await parseFile(file));
+        const parsed = await parseFile(file);
+        forgetUrlSource();
+        adoptDataset(parsed);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not read that file.");
       }
     },
-    [adoptDataset, adoptImported],
+    [adoptDataset, adoptImported, forgetUrlSource],
   );
 
   // Cells copied in Excel or Google Sheets arrive as tab-separated text, so
@@ -242,6 +281,7 @@ export default function App() {
         void (async () => {
           try {
             const imported = await parseText(text, "Pasted data");
+            forgetUrlSource();
             if (imported.dataset) adoptDataset(imported.dataset);
             else adoptImported(imported);
           } catch (err) {
@@ -260,7 +300,7 @@ export default function App() {
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [adoptDataset, adoptImported, handleFile]);
+  }, [adoptDataset, adoptImported, handleFile, forgetUrlSource]);
 
   const setOverlayVisible = useCallback((key: Overlay, visible: boolean) => {
     setHiddenOverlays((current) => {
@@ -388,9 +428,11 @@ export default function App() {
   ]);
 
   const handleSample = useCallback(
-    (network: SampleNetwork) =>
-      adoptDataset(network.dataset, { nodeTable: network.nodeTable, style: network.style }),
-    [adoptDataset],
+    (network: SampleNetwork) => {
+      forgetUrlSource();
+      adoptDataset(network.dataset, { nodeTable: network.nodeTable, style: network.style });
+    },
+    [adoptDataset, forgetUrlSource],
   );
 
   /**
@@ -416,25 +458,66 @@ export default function App() {
         const imported = await parseText(file.content, file.name);
         if (imported.dataset) adoptDataset(imported.dataset);
         else adoptImported(imported);
+        // Whatever was pasted, the address bar ends up holding the plain id, so
+        // the page's own URL is the link worth sharing.
+        setGistId(id);
+        rewriteUrl(gistLink(id));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load that gist.");
       }
     },
-    [adoptDataset, adoptImported],
+    [adoptDataset, adoptImported, rewriteUrl],
   );
 
-  // A ?gist= link loads straight away; only gists, so a crafted link cannot
-  // point the browser at an arbitrary host.
-  const gistLoaded = useRef(false);
+  /**
+   * Open whatever a link names: a graph packed into the fragment, or a gist to
+   * go and fetch. Nothing else is followed, so a crafted link cannot point the
+   * browser at an arbitrary host.
+   */
+  const handleUrlSource = useCallback(
+    async (source: UrlSource) => {
+      urlSourceRef.current = sourceKey(source);
+      if (source.kind === "gist") {
+        await handleGist(source.reference);
+        return;
+      }
+      setGistId(null);
+      try {
+        const text = await decodePayload(source.payload);
+        const imported = await parseText(text, "Shared graph");
+        if (imported.dataset) adoptDataset(imported.dataset);
+        else adoptImported(imported);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not read the graph in that link.");
+      }
+    },
+    [adoptDataset, adoptImported, handleGist],
+  );
+
+  // A link with a graph in it opens straight into that graph.
+  const urlConsumed = useRef(false);
   useEffect(() => {
-    if (gistLoaded.current) return;
-    const reference = new URLSearchParams(window.location.search).get("gist");
-    if (!reference) return;
-    gistLoaded.current = true;
-    void handleGist(reference);
-  }, [handleGist]);
+    if (urlConsumed.current) return;
+    urlConsumed.current = true;
+    const source = readUrlSource();
+    if (source) void handleUrlSource(source);
+  }, [handleUrlSource]);
+
+  // Pasting a link into the address bar of a tab that is already open changes
+  // only the fragment, which never reloads the page; without this it would do
+  // nothing at all.
+  useEffect(() => {
+    const onHashChange = () => {
+      const source = readUrlSource();
+      if (source === null || sourceKey(source) === urlSourceRef.current) return;
+      void handleUrlSource(source);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [handleUrlSource]);
 
   const handleClear = useCallback(() => {
+    forgetUrlSource();
     setDataset(null);
     setEdgeTableIndex(0);
     setNodeTableIndex(null);
@@ -446,7 +529,7 @@ export default function App() {
     setCollapsed(new Set<Panel>());
     setHiddenOverlays(new Set());
     setError(null);
-  }, [resetDoc]);
+  }, [resetDoc, forgetUrlSource]);
 
   /** Rebuild the document from a different pair of imported tables. */
   const handleTableChange = useCallback(
@@ -627,6 +710,22 @@ export default function App() {
     };
   }, [doc, graph, style, colors, chain, layout, layoutParams, showIsolated, preventOverlap]);
 
+  /** The current session as a link, built on demand because packing costs. */
+  const buildLink = useCallback(async () => {
+    const input = exportInput();
+    if (!input) return null;
+    return writeDataLink(input);
+  }, [exportInput]);
+
+  /** A gist just written is now where this graph lives; say so in the address bar. */
+  const handleGistSaved = useCallback(
+    (id: string) => {
+      setGistId(id);
+      rewriteUrl(gistLink(id));
+    },
+    [rewriteUrl],
+  );
+
   const handleExportData = useCallback(
     (format: ExportFormat) => {
       const input = exportInput();
@@ -740,6 +839,9 @@ export default function App() {
         onExport={(f) => void handleExport(f)}
         onExportData={handleExportData}
         onGist={(reference) => void handleGist(reference)}
+        onGistSaved={handleGistSaved}
+        gistId={gistId}
+        buildLink={buildLink}
         exportInput={exportInput}
       />
 

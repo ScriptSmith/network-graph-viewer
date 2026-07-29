@@ -16,7 +16,8 @@ import type { MetricRun } from "../lib/metrics/runner";
 import { exportAs, type ExportFormat, type ExportInput } from "../lib/io";
 import { ComputePanel } from "./ComputePanel";
 import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
-import { GistPanel } from "./GistPanel";
+import { GistLoad } from "./GistLoad";
+import { SharePanel } from "./SharePanel";
 import { FilterChain } from "./FilterChain";
 import { SampleList } from "./SampleList";
 import { SAMPLES, type SampleNetwork } from "../samples";
@@ -56,6 +57,9 @@ interface SidebarProps {
   onExport: (format: "svg" | "png") => void;
   onExportData: (format: ExportFormat) => void;
   onGist: (reference: string) => void;
+  onGistSaved: (id: string) => void;
+  gistId: string | null;
+  buildLink: () => Promise<string | null>;
   exportInput: () => ExportInput | null;
 }
 
@@ -96,6 +100,9 @@ export function Sidebar({
   onExport,
   onExportData,
   onGist,
+  onGistSaved,
+  gistId,
+  buildLink,
   exportInput,
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -223,17 +230,7 @@ export function Sidebar({
               </div>
             </>
           )}
-          <GistPanel
-            description={doc ? `${doc.name} — Network Graph Viewer` : "Network Graph Viewer"}
-            buildFiles={() => {
-              const input = exportInput();
-              if (!input) return null;
-              const workspace = exportAs("workspace", input);
-              const gexf = exportAs("gexf", input);
-              return gexf.content ? [workspace, gexf] : [workspace];
-            }}
-            onLoad={onGist}
-          />
+          <GistLoad onLoad={onGist} />
         </div>
       </section>
 
@@ -647,6 +644,21 @@ export function Sidebar({
               CSV
             </button>
           </div>
+          <span className="field-label export-share-label">Share</span>
+          <SharePanel
+            ready={doc !== null}
+            buildLink={buildLink}
+            buildFiles={() => {
+              const input = exportInput();
+              if (!input) return null;
+              const workspace = exportAs("workspace", input);
+              const gexf = exportAs("gexf", input);
+              return gexf.content ? [workspace, gexf] : [workspace];
+            }}
+            description={doc ? `${doc.name} — Network Graph Viewer` : "Network Graph Viewer"}
+            loadedGistId={gistId}
+            onSaved={onGistSaved}
+          />
         </div>
       </section>
 

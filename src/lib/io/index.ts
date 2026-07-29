@@ -5,6 +5,7 @@ import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
 import { looksLikeWorkspace, parseWorkspace, writeWorkspace, type WorkspaceInput } from "./ngv";
 import type { ImportedGraph } from "./types";
+import { dataLink, encodePayload } from "./url";
 
 export type { ImportedGraph, Position } from "./types";
 export type { Workspace, WorkspaceInput } from "./ngv";
@@ -13,6 +14,15 @@ export { parseWorkspace, looksLikeWorkspace } from "./ngv";
 export { writeGexf } from "./gexf";
 export { writeGraphml } from "./graphml";
 export * from "./gist";
+export * from "./url";
+
+/**
+ * The whole session packed into a link. Compact JSON rather than the file
+ * writer's indented form: an address bar has to carry every byte of this.
+ */
+export async function writeDataLink(input: WorkspaceInput, href?: string): Promise<string> {
+  return dataLink(await encodePayload(writeWorkspace(input, { pretty: false })), href);
+}
 
 export const TEXT_EXTENSIONS = [".gexf", ".graphml", ".xml", ".json", ".csv", ".tsv", ".txt"];
 

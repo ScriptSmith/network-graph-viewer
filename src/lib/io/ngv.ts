@@ -40,7 +40,12 @@ export interface WorkspaceInput {
   scripts?: Record<string, string>;
 }
 
-export function writeWorkspace(input: WorkspaceInput): string {
+export interface WriteWorkspaceOptions {
+  /** Off for links, where every byte is one the address bar has to carry. */
+  pretty?: boolean;
+}
+
+export function writeWorkspace(input: WorkspaceInput, options: WriteWorkspaceOptions = {}): string {
   const positions: Record<string, Position> = {};
   for (const node of input.graph?.nodes ?? []) {
     if (node.x !== undefined && node.y !== undefined) {
@@ -60,7 +65,7 @@ export function writeWorkspace(input: WorkspaceInput): string {
     positions,
     scripts: input.scripts,
   };
-  return JSON.stringify(workspace, null, 2);
+  return JSON.stringify(workspace, null, options.pretty === false ? undefined : 2);
 }
 
 export function looksLikeWorkspace(text: string): boolean {

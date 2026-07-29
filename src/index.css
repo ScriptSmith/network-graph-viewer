@@ -1553,11 +1553,15 @@ body.resizing-y {
   padding: 4px 0;
 }
 
-.script-save-row,
-.gist-load {
+.script-save-row {
   display: flex;
   gap: 5px;
   margin-bottom: 6px;
+}
+
+.gist-load {
+  display: flex;
+  gap: 5px;
 }
 
 .script-save-row .control,
@@ -1601,18 +1605,33 @@ body.resizing-y {
   color: var(--danger);
 }
 
-/* ---- Gist panel ---- */
+/* ---- Sharing: links and gists ---- */
 
-.gist {
+.share {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 6px;
 }
 
-.gist code {
+.share code {
   font-family: var(--font-mono);
   font-size: 10.5px;
+}
+
+/* The link is long by nature, so it gets a field of its own to sit in and
+   select from rather than being wrapped into the note beside it. */
+.share-url {
+  background-image: none;
+  cursor: text;
+  padding-right: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.export-share-label {
+  border-top: 1px solid var(--hairline);
+  padding-top: 10px;
+  margin-top: 2px;
 }
 
 /* ---- Data drawer ---- */

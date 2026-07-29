@@ -14,9 +14,11 @@ import type {
   GraphStyle,
   LabelMode,
   Mapping,
+  Corner,
   Overlay,
+  Panel,
 } from "./types";
-import { DEFAULT_STYLE, OVERLAYS, styleColumn } from "./types";
+import { DEFAULT_STYLE, OVERLAYS, PANELS, styleColumn } from "./types";
 import { SAMPLE_DATASET } from "./sample-data";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
 import {
@@ -34,8 +36,8 @@ import {
   type Position,
 } from "./lib/io";
 import { applyComputedColumns, buildDoc, clearComputedColumns, reconcileNodes } from "./lib/doc";
-import { applyStyle, buildBaseGraph } from "./lib/graph";
-import { applyChain, newStepId, type FilterStep } from "./lib/filter";
+import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
+import { applyChain, findValueStep, newStepId, type FilterStep } from "./lib/filter";
 import { defaultParams, type LayoutId, type LayoutParams, type ParamValue } from "./lib/layouts";
 import { addRow, deleteRows, setCell, type EditTarget } from "./lib/edit";
 import { toMetricGraph, type MetricOptions } from "./lib/metrics";
@@ -43,15 +45,15 @@ import { computeMetrics, runScriptInWorker } from "./lib/metrics/runner";
 import { interpretResult, normalizeEdgeKeys, toScriptGraph } from "./lib/script/payload";
 import type { ScriptRunRequest } from "./components/ScriptPanel";
 import { downloadPng, downloadSvg } from "./lib/export";
-import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "./theme";
-import { formatMetric } from "./lib/format";
+import { groupColorMap } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
+import { useCornerDrag } from "./useCornerDrag";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
-import { Inspector } from "./components/Inspector";
 import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
-import { OverlayMenu } from "./components/OverlayMenu";
+import { Legend } from "./components/Legend";
+import { ViewMenu } from "./components/ViewMenu";
 
 const AMBIENT_TABLE = SAMPLE_DATASET.tables[0];
 const AMBIENT_DOC = buildDoc(SAMPLE_DATASET.fileName, AMBIENT_TABLE);
@@ -61,7 +63,7 @@ const AMBIENT_COLORS = groupColorMap(AMBIENT_GRAPH.groups);
 
 const SIDEBAR_SIZE: PanelSizeOptions = {
   storageKey: "ngv:sidebar-width",
-  axis: "x",
+  edge: "right",
   fallback: 316,
   min: 250,
   max: () => 680,
@@ -69,11 +71,21 @@ const SIDEBAR_SIZE: PanelSizeOptions = {
 
 const DRAWER_SIZE: PanelSizeOptions = {
   storageKey: "ngv:drawer-height",
-  axis: "y",
+  edge: "top",
   fallback: 200,
   min: 120,
   // Whatever the window allows, less enough graph to still aim at.
   max: () => Math.max(120, window.innerHeight - 160),
+};
+
+const STATS_SIZE: PanelSizeOptions = {
+  storageKey: "ngv:stats-width",
+  edge: "left",
+  fallback: 340,
+  min: 280,
+  // Narrower than the sidebar's ceiling: this one is the second panel taking
+  // width off the graph, so it yields first on a small window.
+  max: () => Math.max(280, Math.min(680, window.innerWidth - 480)),
 };
 
 export default function App() {
@@ -92,7 +104,6 @@ export default function App() {
   const [scriptedTargets, setScriptedTargets] = useState<Map<string, Position> | null>(null);
   const [labelMode, setLabelMode] = useState<LabelMode>("auto");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [statsOpen, setStatsOpen] = useState(false);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -100,13 +111,19 @@ export default function App() {
   // screenshotted clean. Nothing underneath changes: showing them again brings
   // each one back as it was.
   const [hiddenOverlays, setHiddenOverlays] = useState<ReadonlySet<Overlay>>(() => new Set());
-  // Both panels are only ever hidden with CSS, never unmounted, so a collapse
-  // does not throw away a half-written script, an unsaved gist token, or the
-  // search and grouping set up over the table.
-  const { size: sidebarWidth, handleProps: sidebarHandle } = usePanelSize(SIDEBAR_SIZE);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const { size: drawerHeight, handleProps: drawerHandle } = usePanelSize(DRAWER_SIZE);
-  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  // Both stage overlays can be dragged between corners, so either can be moved
+  // off whatever part of the graph it happens to be sitting on.
+  const [toolbarCorner, setToolbarCorner] = useState<Corner>("top-left");
+  const [legendCorner, setLegendCorner] = useState<Corner>("bottom-left");
+  // Panels are only ever hidden with CSS, never unmounted, so a collapse does
+  // not throw away a half-written script, an unsaved gist token, or the search
+  // and grouping set up over the table.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<Panel>>(() => new Set<Panel>());
+  const sidebar = usePanelSize(SIDEBAR_SIZE);
+  const drawer = usePanelSize(DRAWER_SIZE);
+  const stats = usePanelSize(STATS_SIZE);
+  const resizing = sidebar.resizing || drawer.resizing || stats.resizing;
+  const toolbarDrag = useCornerDrag(toolbarCorner, setToolbarCorner);
 
   const canvasRef = useRef<GraphCanvasHandle>(null);
   // Positions handed to the canvas on its next rebuild: a node just dropped,
@@ -242,14 +259,72 @@ export default function App() {
     });
   }, []);
 
-  const hideAllOverlays = useCallback(() => setHiddenOverlays(new Set(OVERLAYS)), []);
-
-  const showAllOverlays = useCallback(() => {
-    setHiddenOverlays((current) => (current.size === 0 ? current : new Set()));
+  /**
+   * One switch for the whole window: the overlays go out and the panels fold
+   * away, leaving the graph alone on the screen. Nothing underneath changes,
+   * so showing everything again brings it all back as it was.
+   */
+  const hideEverything = useCallback(() => {
+    setHiddenOverlays(new Set(OVERLAYS));
+    setCollapsed(new Set(PANELS));
   }, []);
 
-  // H clears the stage or puts it back; Escape only ever puts it back, so the
-  // way out is never hidden along with everything else.
+  const showEverything = useCallback(() => {
+    setHiddenOverlays((current) => (current.size === 0 ? current : new Set()));
+    setCollapsed((current) => (current.size === 0 ? current : new Set()));
+  }, []);
+
+  /** The same switch for the panels alone, leaving the overlays where they are. */
+  const hidePanels = useCallback(() => setCollapsed(new Set(PANELS)), []);
+
+  const showPanels = useCallback(() => {
+    setCollapsed((current) => (current.size === 0 ? current : new Set()));
+  }, []);
+
+  const setPanelOpen = useCallback((key: Panel, open: boolean) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (open) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const togglePanel = useCallback((key: Panel) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /**
+   * A selection is answered in the statistics panel, so picking a node brings
+   * that panel out from wherever it was put away.
+   */
+  const handleSelect = useCallback(
+    (id: string | null) => {
+      setSelectedId(id);
+      if (id !== null) setPanelOpen("stats", true);
+    },
+    [setPanelOpen],
+  );
+
+  const anythingHidden = hiddenOverlays.size > 0 || collapsed.size > 0;
+  const panelsHidden = collapsed.size === PANELS.length;
+
+  // Whenever a panel changes how much room the graph has, the view is fitted
+  // to what is left, the way it is after a layout runs. A drag waits for the
+  // pointer to come up: re-fitting on every frame of one would be a fight.
+  useEffect(() => {
+    if (resizing) return;
+    canvasRef.current?.fit();
+  }, [collapsed, resizing, sidebar.size, drawer.size, stats.size]);
+
+  // H clears the window or puts it back and P does the same for the panels
+  // alone; Escape only ever puts things back, so the way out is never hidden
+  // along with everything else.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -260,14 +335,18 @@ export default function App() {
         return;
       }
       if (e.key === "h" || e.key === "H") {
-        setHiddenOverlays((current) => (current.size > 0 ? new Set() : new Set(OVERLAYS)));
+        if (anythingHidden) showEverything();
+        else hideEverything();
+      } else if (e.key === "p" || e.key === "P") {
+        if (panelsHidden) showPanels();
+        else hidePanels();
       } else if (e.key === "Escape") {
-        setHiddenOverlays((current) => (current.size === 0 ? current : new Set()));
+        showEverything();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [anythingHidden, panelsHidden, hideEverything, showEverything, hidePanels, showPanels]);
 
   const handleSample = useCallback(() => adoptDataset(SAMPLE_DATASET), [adoptDataset]);
 
@@ -321,8 +400,7 @@ export default function App() {
     setChain([]);
     setShowIsolated(false);
     setSelectedId(null);
-    setStatsOpen(false);
-    setDrawerCollapsed(false);
+    setCollapsed(new Set<Panel>());
     setHiddenOverlays(new Set());
     setError(null);
   }, []);
@@ -452,37 +530,38 @@ export default function App() {
   }, []);
 
   /** Open the data table on whichever tab holds the columns just written. */
-  const handleShowColumns = useCallback((target: EditTarget) => {
-    setTableTab(target);
-    setDrawerCollapsed(false);
-  }, []);
+  const handleShowColumns = useCallback(
+    (target: EditTarget) => {
+      setTableTab(target);
+      setPanelOpen("table", true);
+    },
+    [setPanelOpen],
+  );
 
-  /** Clicking a breakdown bar drops a one-value column step onto the chain. */
-  const handleToggleValueFilter = useCallback((column: string, value: string) => {
-    setChain((current) => {
-      const existing = current.find(
-        (s) =>
-          s.kind === "column" &&
-          s.table === "edges" &&
-          s.column === column &&
-          s.op.kind === "values" &&
-          s.op.selected.length === 1 &&
-          s.op.selected[0] === value,
-      );
-      if (existing) return current.filter((s) => s.id !== existing.id);
-      return [
-        ...current,
-        {
-          id: newStepId(),
-          enabled: true,
-          kind: "column",
-          table: "edges",
-          column,
-          op: { kind: "values", selected: [value] },
-        },
-      ];
-    });
-  }, []);
+  /**
+   * Clicking a legend entry or a breakdown bar drops a one-value column step
+   * onto the chain; clicking the same one again takes it back off.
+   */
+  const handleToggleValueFilter = useCallback(
+    (table: "nodes" | "edges", column: string, value: string) => {
+      setChain((current) => {
+        const existing = findValueStep(current, table, column, value);
+        if (existing) return current.filter((s) => s.id !== existing.id);
+        return [
+          ...current,
+          {
+            id: newStepId(),
+            enabled: true,
+            kind: "column",
+            table,
+            column,
+            op: { kind: "values", selected: [value] },
+          },
+        ];
+      });
+    },
+    [],
+  );
 
   const exportInput = useCallback(() => {
     if (!doc) return null;
@@ -544,55 +623,28 @@ export default function App() {
   const visibleNodeIds = useMemo(() => new Set((base?.nodes ?? []).map((n) => n.id)), [base]);
 
   const colorColumn = styleColumn(style.nodeColor);
-  const edgeColorColumn = styleColumn(style.edgeColor);
-
-  const nodeLegend = useMemo(() => {
-    if (!graph || graph.ranking || graph.groups.length === 0) return [];
-    const entries = graph.groups.slice(0, MAX_GROUPS).map((g) => ({
-      name: g,
-      color: colors.get(g) ?? NEUTRAL,
-    }));
-    if (graph.groups.length > MAX_GROUPS) entries.push({ name: OTHER_GROUP, color: NEUTRAL });
-    if (graph.nodes.some((n) => n.group === null)) {
-      entries.push({ name: "Unassigned", color: NEUTRAL });
-    }
-    return entries;
-  }, [graph, colors]);
-
-  const edgeLegend = useMemo(() => {
-    if (!graph || graph.edgeGroups.length === 0) return [];
-    const entries = graph.edgeGroups.slice(0, MAX_GROUPS).map((g) => ({
-      name: g,
-      color: edgeColors.get(g) ?? NEUTRAL,
-    }));
-    if (graph.edgeGroups.length > MAX_GROUPS) entries.push({ name: OTHER_GROUP, color: NEUTRAL });
-    return entries;
-  }, [graph, edgeColors]);
-
-  const RANK_LABELS: Record<string, string> = {
-    "metric:degree": "Connections",
-    "metric:betweenness": "Betweenness",
-    "metric:closeness": "Closeness",
-    "metric:eigenvector": "Eigenvector",
-  };
-  const rankingLabel = RANK_LABELS[style.nodeColor] ?? colorColumn ?? "Value";
-
-  const showLegend =
-    graph !== null && (nodeLegend.length > 0 || edgeLegend.length > 0 || graph.ranking !== null);
+  const showLegend = graph !== null && hasLegend(graph);
 
   const pickAnyFile = () => {
     document.querySelector<HTMLInputElement>("input[type=file]")?.click();
   };
 
+  const sidebarCollapsed = collapsed.has("sidebar");
+  const tableCollapsed = collapsed.has("table");
+  // With no file loaded there is nothing to count, so the statistics panel
+  // stays out of the layout whatever the user last chose.
+  const statsCollapsed = collapsed.has("stats") || graph === null || doc === null;
+
   return (
     <div
-      className={`app${sidebarCollapsed ? " app-collapsed" : ""}${
-        drawerCollapsed ? " app-drawer-collapsed" : ""
-      }`}
+      className={`app${sidebarCollapsed ? " app-sidebar-collapsed" : ""}${
+        tableCollapsed ? " app-table-collapsed" : ""
+      }${statsCollapsed ? " app-stats-collapsed" : ""}`}
       style={
         {
-          "--sidebar-width": `${sidebarWidth}px`,
-          "--drawer-height": `${drawerHeight}px`,
+          "--sidebar-width": `${sidebar.size}px`,
+          "--drawer-height": `${drawer.size}px`,
+          "--stats-width": `${stats.size}px`,
         } as CSSProperties
       }
       onDragOver={(e) => {
@@ -642,14 +694,14 @@ export default function App() {
         exportInput={exportInput}
       />
 
-      <div className="resizer" aria-label="Sidebar width" {...sidebarHandle} />
+      <div className="resizer" aria-label="Sidebar width" {...sidebar.handleProps} />
 
       {/* One control in one place: it rides the sidebar's edge, so collapsing
           and expanding happen wherever that edge currently is. */}
       <button
         type="button"
-        className="sidebar-toggle"
-        onClick={() => setSidebarCollapsed((v) => !v)}
+        className="panel-toggle sidebar-toggle"
+        onClick={() => togglePanel("sidebar")}
         aria-expanded={!sidebarCollapsed}
         title={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
         aria-label={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
@@ -661,13 +713,27 @@ export default function App() {
       {doc && (
         <button
           type="button"
-          className="drawer-toggle"
-          onClick={() => setDrawerCollapsed((v) => !v)}
-          aria-expanded={!drawerCollapsed}
-          title={drawerCollapsed ? "Show the data table" : "Hide the data table"}
-          aria-label={drawerCollapsed ? "Show the data table" : "Hide the data table"}
+          className="panel-toggle drawer-toggle"
+          onClick={() => togglePanel("table")}
+          aria-expanded={!tableCollapsed}
+          title={tableCollapsed ? "Show the data table" : "Hide the data table"}
+          aria-label={tableCollapsed ? "Show the data table" : "Hide the data table"}
         >
-          <span aria-hidden="true">{drawerCollapsed ? "‹" : "›"}</span>
+          <span aria-hidden="true">{tableCollapsed ? "‹" : "›"}</span>
+        </button>
+      )}
+
+      {/* And once more, mirrored, on the statistics panel's edge. */}
+      {graph && doc && (
+        <button
+          type="button"
+          className="panel-toggle stats-toggle"
+          onClick={() => togglePanel("stats")}
+          aria-expanded={!statsCollapsed}
+          title={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
+          aria-label={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
+        >
+          <span aria-hidden="true">{statsCollapsed ? "‹" : "›"}</span>
         </button>
       )}
 
@@ -688,21 +754,28 @@ export default function App() {
                 edgeColors={edgeColors}
                 attrColumns={doc.mapping.attrs}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={handleSelect}
                 seedPositions={seedPositionsRef}
               />
               {hiddenOverlays.has("toolbar") && (
                 <button
                   type="button"
-                  className="tool-btn chrome-restore"
-                  onClick={showAllOverlays}
+                  className={`tool-btn chrome-restore at-${toolbarCorner}`}
+                  onClick={showEverything}
                   title="Bring back everything that is hidden (H)"
                 >
                   Show controls
                 </button>
               )}
               {!hiddenOverlays.has("toolbar") && (
-                <div className="toolbar">
+                <div
+                  ref={toolbarDrag.ref}
+                  className={`toolbar at-${toolbarCorner}${
+                    toolbarDrag.dragging ? " dragging" : ""
+                  }`}
+                  title="Drag into another corner"
+                  {...toolbarDrag.handleProps}
+                >
                   <button
                     type="button"
                     className="tool-btn"
@@ -715,26 +788,22 @@ export default function App() {
                     type="button"
                     className="tool-btn"
                     onClick={() => canvasRef.current?.reheat()}
-                    title="Re-run the layout"
+                    title="Run the layout again"
                   >
-                    Re-run
-                  </button>
-                  <button
-                    type="button"
-                    className={statsOpen ? "tool-btn active" : "tool-btn"}
-                    onClick={() => setStatsOpen((v) => !v)}
-                    aria-pressed={statsOpen}
-                    title="Show graph statistics"
-                  >
-                    Stats
+                    Layout
                   </button>
                   <span className="tool-sep" aria-hidden="true" />
-                  <OverlayMenu
+                  <ViewMenu
                     hidden={hiddenOverlays}
+                    collapsed={collapsed}
                     legendAvailable={showLegend}
-                    onSetVisible={setOverlayVisible}
-                    onHideAll={hideAllOverlays}
-                    onShowAll={showAllOverlays}
+                    corner={toolbarCorner}
+                    onSetOverlayVisible={setOverlayVisible}
+                    onSetPanelOpen={setPanelOpen}
+                    onHideAll={hideEverything}
+                    onShowAll={showEverything}
+                    onHidePanels={hidePanels}
+                    onShowPanels={showPanels}
                   />
                   <button
                     type="button"
@@ -748,87 +817,24 @@ export default function App() {
                 </div>
               )}
               {showLegend && !hiddenOverlays.has("legend") && (
-                <div className="legend" aria-label="Legend">
-                  {graph.ranking && (
-                    <span className="legend-item">
-                      <span
-                        className="legend-gradient"
-                        style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
-                      />
-                      <span>
-                        {rankingLabel} {formatMetric(graph.ranking.min)} to{" "}
-                        {formatMetric(graph.ranking.max)}
-                      </span>
-                    </span>
-                  )}
-                  {nodeLegend.map((e) => (
-                    <span key={`n${e.name}`} className="legend-item">
-                      <span className="legend-dot" style={{ background: e.color }} />
-                      {e.name}
-                    </span>
-                  ))}
-                  {edgeLegend.length > 0 && edgeColorColumn && (
-                    <span className="legend-item legend-caption">{edgeColorColumn}:</span>
-                  )}
-                  {edgeLegend.map((e) => (
-                    <span key={`e${e.name}`} className="legend-item">
-                      <span className="legend-line" style={{ background: e.color }} />
-                      {e.name}
-                    </span>
-                  ))}
-                  <button
-                    type="button"
-                    className="overlay-x"
-                    onClick={() => setOverlayVisible("legend", false)}
-                    title="Hide the legend"
-                    aria-label="Hide the legend"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-              {!hiddenOverlays.has("count") && (
-                <div className="status-chip">
-                  {graph.nodes.length} nodes · {graph.links.length} edges
-                  <button
-                    type="button"
-                    className="overlay-x"
-                    onClick={() => setOverlayVisible("count", false)}
-                    title="Hide the node and edge count"
-                    aria-label="Hide the node and edge count"
-                  >
-                    ×
-                  </button>
-                </div>
+                <Legend
+                  doc={doc}
+                  graph={graph}
+                  style={style}
+                  colors={colors}
+                  edgeColors={edgeColors}
+                  chain={chain}
+                  corner={legendCorner}
+                  stacked={legendCorner === toolbarCorner && !hiddenOverlays.has("toolbar")}
+                  onCornerChange={setLegendCorner}
+                  onToggleValueFilter={handleToggleValueFilter}
+                  onHide={() => setOverlayVisible("legend", false)}
+                />
               )}
               {graph.nodes.length === 0 && (
                 <div className="no-match">
                   <p>No rows match the current filters.</p>
                 </div>
-              )}
-              {statsOpen && !hiddenOverlays.has("panels") && (
-                <StatsPanel
-                  doc={doc}
-                  rows={filteredRows}
-                  totalRows={doc.edges.rows.length}
-                  graph={graph}
-                  colorColumn={graph.ranking ? null : colorColumn}
-                  colors={colors}
-                  chain={chain}
-                  onToggleValueFilter={handleToggleValueFilter}
-                  onSelectNode={setSelectedId}
-                  onClose={() => setStatsOpen(false)}
-                />
-              )}
-              {selectedId && !statsOpen && !hiddenOverlays.has("panels") && (
-                <Inspector
-                  doc={doc}
-                  graph={graph}
-                  selectedId={selectedId}
-                  colors={colors}
-                  onSelect={setSelectedId}
-                  onClose={() => setSelectedId(null)}
-                />
               )}
             </>
           ) : (
@@ -917,14 +923,39 @@ export default function App() {
             visibleRows={visibleRows}
             visibleNodeIds={visibleNodeIds}
             selectedId={selectedId}
-            onSelectNode={setSelectedId}
+            onSelectNode={handleSelect}
             onEditCell={handleEditCell}
             onAddRow={handleAddRow}
             onDeleteRow={handleDeleteRow}
-            gripProps={drawerHandle}
+            gripProps={drawer.handleProps}
           />
         )}
       </div>
+
+      {/* The third panel takes its own column, so the graph gets the width back
+          when it is put away rather than being covered by it. */}
+      {graph && doc && (
+        <>
+          <div
+            className="resizer resizer-stats"
+            aria-label="Statistics width"
+            {...stats.handleProps}
+          />
+          <StatsPanel
+            doc={doc}
+            rows={filteredRows}
+            totalRows={doc.edges.rows.length}
+            graph={graph}
+            colorColumn={graph.ranking ? null : colorColumn}
+            colors={colors}
+            chain={chain}
+            selectedId={selectedId}
+            onToggleValueFilter={handleToggleValueFilter}
+            onSelectNode={handleSelect}
+            onClose={() => setPanelOpen("stats", false)}
+          />
+        </>
+      )}
     </div>
   );
 }

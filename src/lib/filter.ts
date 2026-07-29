@@ -86,6 +86,28 @@ export const FILTER_KINDS: { kind: FilterSpec["kind"]; name: string; blurb: stri
   },
 ];
 
+/**
+ * The step a single click adds: one column pinned to one value. A legend entry
+ * and a breakdown bar both add exactly this, so both can find their own step
+ * here to show it as active and to take it back off the chain.
+ */
+export function findValueStep(
+  chain: FilterStep[],
+  table: "nodes" | "edges",
+  column: string,
+  value: string,
+): FilterStep | undefined {
+  return chain.find(
+    (step) =>
+      step.kind === "column" &&
+      step.table === table &&
+      step.column === column &&
+      step.op.kind === "values" &&
+      step.op.selected.length === 1 &&
+      step.op.selected[0] === value,
+  );
+}
+
 /** A condition that lets everything through, so a fresh step is a no-op. */
 export function neutralCondition(table: Table, columnName: string): ColumnFilter {
   const column = table.columns.find((c) => c.name === columnName);

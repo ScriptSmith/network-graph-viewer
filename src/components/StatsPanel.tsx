@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Graph, GraphDoc, Row } from "../types";
-import type { FilterStep } from "../lib/filter";
+import { findValueStep, type FilterStep } from "../lib/filter";
 import { cellKey } from "../lib/cells";
 import { componentCount, distinctValues } from "../lib/graph";
 import {
@@ -12,6 +12,7 @@ import {
 import { asNumber } from "../lib/parse";
 import { CATEGORICAL } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
+import { NodeDetails } from "./NodeDetails";
 
 const METRIC_HELP: { term: string; text: string }[] = [
   {
@@ -61,8 +62,10 @@ interface StatsPanelProps {
   colorColumn: string | null;
   colors: Map<string, string>;
   chain: FilterStep[];
-  onToggleValueFilter: (column: string, value: string) => void;
-  onSelectNode: (id: string) => void;
+  /** The node whose details head the panel, if one is selected. */
+  selectedId: string | null;
+  onToggleValueFilter: (table: "nodes" | "edges", column: string, value: string) => void;
+  onSelectNode: (id: string | null) => void;
   onClose: () => void;
 }
 
@@ -115,6 +118,7 @@ export function StatsPanel({
   colorColumn,
   colors,
   chain,
+  selectedId,
   onToggleValueFilter,
   onSelectNode,
   onClose,
@@ -172,17 +176,9 @@ export function StatsPanel({
   }, [graph, centrality]);
   const maxCentrality = Math.max(1e-9, ...topNodes.map((n) => centrality.get(n.id) ?? 0));
 
-  // A bar reads as active when the chain holds exactly the step clicking it adds.
-  const isActiveBar = (key: string) =>
-    chain.some(
-      (step) =>
-        step.kind === "column" &&
-        step.table === "edges" &&
-        step.column === groupBy &&
-        step.op.kind === "values" &&
-        step.op.selected.length === 1 &&
-        step.op.selected[0] === key,
-    );
+  // A bar reads as active when the chain holds exactly the step clicking it
+  // adds. The pivots run over edge rows, so that is the table it matches on.
+  const isActiveBar = (key: string) => findValueStep(chain, "edges", groupBy, key) !== undefined;
 
   const barColor = (key: string): string =>
     groupBy === colorColumn ? (colors.get(key) ?? CATEGORICAL[0]) : CATEGORICAL[0];
@@ -190,18 +186,30 @@ export function StatsPanel({
   const avgDegree = graph.nodes.length > 0 ? (2 * graph.links.length) / graph.nodes.length : 0;
 
   return (
-    <div className="stats-panel" role="dialog" aria-label="Graph statistics">
-      <header className="insp-head">
-        <h3>Statistics</h3>
+    <aside className="stats-panel" aria-label="Statistics">
+      <header className="panel-head">
+        <h2>Statistics</h2>
         <button
           type="button"
           className="insp-close"
           onClick={onClose}
-          aria-label="Close statistics"
+          title="Hide the statistics panel"
+          aria-label="Hide the statistics panel"
         >
           ×
         </button>
       </header>
+
+      {selectedId !== null && (
+        <NodeDetails
+          doc={doc}
+          graph={graph}
+          selectedId={selectedId}
+          colors={colors}
+          onSelect={onSelectNode}
+        />
+      )}
+
       {rows.length < totalRows && (
         <p className="insp-meta">
           {rows.length} of {totalRows} rows after filters
@@ -306,7 +314,7 @@ export function StatsPanel({
               key={b.key}
               type="button"
               className={isActiveBar(b.key) ? "bar-row active" : "bar-row"}
-              onClick={() => onToggleValueFilter(groupBy, b.key)}
+              onClick={() => onToggleValueFilter("edges", groupBy, b.key)}
               title={`Filter to ${groupBy} = ${b.key === "" ? "(blank)" : b.key}`}
             >
               <span className="bar-head">
@@ -373,6 +381,6 @@ export function StatsPanel({
           </div>
         </section>
       )}
-    </div>
+    </aside>
   );
 }

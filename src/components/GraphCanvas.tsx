@@ -673,8 +673,13 @@ export function GraphCanvas({
     sel.on("click", (event: MouseEvent) => {
       if (event.target === svg) liveRef.current.onSelect(null);
     });
+    // The background is the only thing a double-click reaches, d3's own
+    // dblclick zoom having been unhooked above, so it is free to mean "fit".
+    sel.on("dblclick", (event: MouseEvent) => {
+      if (event.target === svg) fit(600);
+    });
     return () => {
-      sel.on(".zoom", null).on("click", null);
+      sel.on(".zoom", null).on("click", null).on("dblclick", null);
     };
   }, [ambient]);
 

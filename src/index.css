@@ -61,18 +61,49 @@ button {
 
 /* ---- Shell ---- */
 
+/* Three panels around a stage, each in a column of its own. A collapsed panel
+   zeroes its column and the gutter beside it, so the graph gets the room back
+   and the edge tabs, which read the same widths, follow the edge that moved. */
 .app {
+  --sidebar-col: var(--sidebar-width, 316px);
+  --sidebar-gutter: 6px;
+  --stats-col: var(--stats-width, 340px);
+  --stats-gutter: 6px;
+  --sidebar-inset: calc(var(--sidebar-col) + var(--sidebar-gutter));
+  --stats-inset: calc(var(--stats-col) + var(--stats-gutter));
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width, 316px) 6px 1fr;
+  grid-template-columns:
+    var(--sidebar-col) var(--sidebar-gutter) 1fr
+    var(--stats-gutter) var(--stats-col);
   height: 100dvh;
+}
+
+/* Collapsed a panel leaves the layout but stays in the DOM, so a half-written
+   script, an entered gist token or a search over the table is still there when
+   it comes back. */
+.app.app-sidebar-collapsed {
+  --sidebar-col: 0px;
+  --sidebar-gutter: 0px;
+}
+
+.app.app-stats-collapsed {
+  --stats-col: 0px;
+  --stats-gutter: 0px;
+}
+
+.app.app-sidebar-collapsed .sidebar,
+.app.app-sidebar-collapsed .resizer,
+.app.app-stats-collapsed .stats-panel,
+.app.app-stats-collapsed .resizer-stats,
+.app.app-table-collapsed .drawer {
+  display: none;
 }
 
 /* Each toggle sits on its panel's edge, so it is in the same place whichever
    way it points: expanded it hangs off the divider, collapsed it hangs off the
-   window. Absolutely positioned, so neither takes a grid track. */
-.sidebar-toggle,
-.drawer-toggle {
+   window. Absolutely positioned, so none of them takes a grid track. */
+.panel-toggle {
   position: absolute;
   z-index: 3;
   display: grid;
@@ -86,8 +117,7 @@ button {
   cursor: pointer;
 }
 
-.sidebar-toggle:hover,
-.drawer-toggle:hover {
+.panel-toggle:hover {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--surface);
@@ -95,7 +125,7 @@ button {
 
 .sidebar-toggle {
   top: 50%;
-  left: calc(var(--sidebar-width, 316px) + 6px);
+  left: var(--sidebar-inset);
   transform: translateY(-50%);
   width: 26px;
   height: 76px;
@@ -104,11 +134,23 @@ button {
   box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);
 }
 
-/* The same tab a quarter turn on, centred over the graph it uncovers. */
+/* The same tab mirrored, on the far edge of the graph. */
+.stats-toggle {
+  top: 50%;
+  right: var(--stats-inset);
+  transform: translateY(-50%);
+  width: 26px;
+  height: 76px;
+  border-right: none;
+  border-radius: 9px 0 0 9px;
+  box-shadow: -4px 0 14px rgba(0, 0, 0, 0.35);
+}
+
+/* And once more a quarter turn on, centred over the graph it uncovers. */
 .drawer-toggle {
   bottom: var(--drawer-height, 200px);
-  left: calc(var(--sidebar-width, 316px) + 6px);
-  right: 0;
+  left: var(--sidebar-inset);
+  right: var(--stats-inset);
   margin-inline: auto;
   width: 76px;
   height: 26px;
@@ -121,31 +163,12 @@ button {
   transform: rotate(90deg);
 }
 
-.app.app-collapsed .sidebar-toggle,
-.app.app-collapsed .drawer-toggle {
-  left: 0;
-}
-
-.app.app-drawer-collapsed .drawer-toggle {
+.app.app-table-collapsed .drawer-toggle {
   bottom: 0;
 }
 
-/* Collapsed a panel leaves the layout but stays in the DOM, so a half-written
-   script, an entered gist token or a search over the table is still there when
-   it comes back. The extra class keeps this winning over the narrow-screen
-   layout below. */
-.app.app-collapsed {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
-}
-
-.app.app-collapsed .sidebar,
-.app.app-collapsed .resizer,
-.app.app-drawer-collapsed .drawer {
-  display: none;
-}
-
 .sidebar {
+  grid-column: 1;
   background: var(--panel);
   overflow-y: auto;
   display: flex;
@@ -154,9 +177,10 @@ button {
   gap: 20px;
 }
 
-/* The graph and the data pane split the space the sidebar leaves: the pane
+/* The graph and the data pane split the space the side panels leave: the pane
    takes its own room off the bottom rather than covering the graph. */
 .workspace {
+  grid-column: 3;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -165,6 +189,7 @@ button {
 }
 
 .resizer {
+  grid-column: 2;
   background: var(--panel);
   border-right: 1px solid var(--hairline);
   cursor: col-resize;
@@ -178,11 +203,34 @@ button {
   outline: none;
 }
 
+/* The hairline belongs to the side of the gutter the panel is on. */
+.resizer-stats {
+  grid-column: 4;
+  border-right: none;
+  border-left: 1px solid var(--hairline);
+}
+
+.resizer-stats:hover,
+.resizer-stats:focus-visible {
+  border-left-color: var(--accent);
+}
+
+/* Placement lives here rather than with the panel's own styling, so the
+   narrow-screen layout further down is the last word on where things go. */
+.stats-panel {
+  grid-column: 5;
+}
+
 /* Held for the length of a drag: without it the pointer picks up panel text
    as it sweeps across, and the cursor flickers over the canvas. */
 body.resizing-x,
-body.resizing-y {
+body.resizing-y,
+body.dragging-overlay {
   user-select: none;
+}
+
+body.dragging-overlay {
+  cursor: grabbing;
 }
 
 body.resizing-x {
@@ -583,12 +631,35 @@ body.resizing-y {
   color: var(--ink-3);
 }
 
+/* Both stage overlays park in one of the four corners and are dragged between
+   them. The bottom pair sits high enough to clear the data pane's tab, which
+   rides the middle of that edge. */
+.at-top-left {
+  top: 14px;
+  left: 14px;
+}
+
+.at-top-right {
+  top: 14px;
+  right: 14px;
+}
+
+.at-bottom-left {
+  bottom: 32px;
+  left: 14px;
+}
+
+.at-bottom-right {
+  bottom: 32px;
+  right: 14px;
+}
+
 /* One surface holding the buttons, so the × in its corner reads as the whole
    strip's rather than the last button's. */
 .toolbar {
   position: absolute;
-  top: 14px;
-  left: 14px;
+  cursor: grab;
+  touch-action: none;
   display: flex;
   align-items: stretch;
   gap: 2px;
@@ -639,34 +710,27 @@ body.resizing-y {
   color: var(--accent);
 }
 
+.toolbar.dragging {
+  cursor: grabbing;
+}
+
 .tool-sep {
   width: 1px;
   margin: 3px;
   background: var(--hairline);
 }
 
-/* Something on the stage is hidden. */
-.tool-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-left: 6px;
-  vertical-align: 1px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.overlay-menu-wrap {
+.view-menu-wrap {
   position: relative;
   display: flex;
 }
 
-.overlay-menu {
+/* Opens back into the stage rather than off it, whichever corner the controls
+   have been dragged to. */
+.view-menu {
   position: absolute;
-  top: calc(100% + 9px);
-  left: 0;
   z-index: 4;
-  min-width: 196px;
+  min-width: 254px;
   padding: 6px;
   background: var(--raised);
   border: 1px solid var(--hairline-strong);
@@ -674,24 +738,49 @@ body.resizing-y {
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 
-.overlay-menu-title {
+.view-menu.from-top-left,
+.view-menu.from-top-right {
+  top: calc(100% + 9px);
+}
+
+.view-menu.from-bottom-left,
+.view-menu.from-bottom-right {
+  bottom: calc(100% + 9px);
+}
+
+.view-menu.from-top-left,
+.view-menu.from-bottom-left {
+  left: 0;
+}
+
+.view-menu.from-top-right,
+.view-menu.from-bottom-right {
+  right: 0;
+}
+
+.view-menu-title {
   margin: 2px 4px 6px;
   font-size: 11.5px;
   color: var(--ink-3);
 }
 
-.overlay-menu .check-item:has(input:disabled) {
+/* Every group after the first is set off from the one above it. */
+.check-item + .view-menu-title {
+  margin-top: 10px;
+}
+
+.view-menu .check-item:has(input:disabled) {
   color: var(--ink-3);
   cursor: default;
 }
 
-.overlay-menu-rule {
+.view-menu-rule {
   height: 1px;
   margin: 6px 2px;
   background: var(--hairline);
 }
 
-.overlay-menu-all {
+.view-menu-all {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -702,16 +791,18 @@ body.resizing-y {
   border: none;
   border-radius: 6px;
   font-size: 13px;
+  text-align: left;
   color: var(--ink-2);
   cursor: pointer;
 }
 
-.overlay-menu-all:hover {
+.view-menu-all:hover {
   background: var(--raised-2);
   color: var(--ink);
 }
 
-.overlay-menu-key {
+.view-menu-key {
+  flex: none;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--ink-3);
@@ -724,8 +815,6 @@ body.resizing-y {
    a screenshot, solid the moment it is hovered or tabbed to. */
 .chrome-restore {
   position: absolute;
-  top: 14px;
-  left: 14px;
   opacity: 0.14;
   transition: opacity 120ms ease;
 }
@@ -759,7 +848,6 @@ body.resizing-y {
 
 .toolbar:hover .overlay-x,
 .legend:hover .overlay-x,
-.status-chip:hover .overlay-x,
 .overlay-x:focus-visible {
   opacity: 1;
 }
@@ -769,29 +857,83 @@ body.resizing-y {
   border-color: var(--ink-3);
 }
 
-/* Both bottom corners clear the data pane's tab, which rides the middle of
-   the same edge. */
+/* Faint until it is reached for: the colors still read as a key, but the panel
+   around them stays out of the picture, and out of a screenshot. It parks in
+   whichever corner it was dragged to; the bottom two clear the data pane's tab,
+   which rides the middle of that edge, and the top left clears the toolbar. */
 .legend {
   position: absolute;
-  left: 14px;
-  bottom: 32px;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  max-width: min(70%, 560px);
-  background: #1a1a19d9;
-  border: 1px solid var(--hairline);
+  gap: 2px 10px;
+  max-width: min(68%, 540px);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: 8px;
-  padding: 7px 11px;
+  padding: 5px 7px;
   font-size: 12px;
+  color: var(--ink-3);
+  opacity: 0.55;
+  cursor: grab;
+  touch-action: none;
+  transition:
+    opacity 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+/* Sharing a corner with the controls, the legend is the one that steps aside. */
+.legend.stacked.at-top-left,
+.legend.stacked.at-top-right {
+  top: 62px;
+}
+
+.legend.stacked.at-bottom-left,
+.legend.stacked.at-bottom-right {
+  bottom: 80px;
+}
+
+.legend:hover,
+.legend:focus-within,
+.legend.dragging {
+  background: #1a1a19f2;
+  border-color: var(--hairline);
   color: var(--ink-2);
+  opacity: 1;
   backdrop-filter: blur(6px);
+}
+
+.legend.dragging {
+  cursor: grabbing;
+  transition: none;
 }
 
 .legend-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 1px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+/* An entry that stands for one value can be clicked to filter down to it. */
+.legend-pick {
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.legend:hover .legend-pick:hover {
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+}
+
+.legend-pick.active {
+  border-color: var(--accent);
+  background: rgba(57, 135, 229, 0.12);
+  color: var(--ink);
 }
 
 .legend-dot {
@@ -799,19 +941,6 @@ body.resizing-y {
   height: 9px;
   border-radius: 50%;
   flex: none;
-}
-
-.status-chip {
-  position: absolute;
-  right: 14px;
-  bottom: 32px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-3);
-  background: #1a1a19d9;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  padding: 5px 9px;
 }
 
 /* ---- Empty state ---- */
@@ -881,22 +1010,7 @@ body.resizing-y {
   color: var(--ink-3);
 }
 
-/* ---- Inspector ---- */
-
-.inspector {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  width: 290px;
-  max-height: calc(100% - 28px);
-  overflow-y: auto;
-  background: #161615f5;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 12px;
-  padding: 14px 16px;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(6px);
-}
+/* ---- Node details ---- */
 
 .insp-head {
   display: flex;
@@ -1051,61 +1165,84 @@ body.resizing-y {
 /* ---- Responsive & motion ---- */
 
 @media (max-width: 900px) {
+  /* The three panels stack instead of flanking the stage: sidebar above,
+     statistics below, the data pane where it always was. */
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto 1fr auto;
     height: auto;
     min-height: 100dvh;
   }
 
-  /* Stacked, so the sidebar spans the screen and there is nothing to drag.
-     The toggle moves to the top corner, where there is no vertical edge for
-     it to ride, and still collapses the sidebar out of the way. */
-  .resizer {
-    display: none;
-  }
-
-  /* The page itself scrolls at this width, so the toggle is pinned to the
-     viewport rather than to the top of the document. */
-  .sidebar-toggle {
-    position: fixed;
-    left: auto;
-    right: 12px;
-    top: 12px;
-    transform: none;
-    width: 34px;
-    height: 34px;
-    border-left: 1px solid var(--hairline-strong);
-    border-radius: 9px;
-  }
-
-  /* The sidebar now sits above the stage, so the chevron points that way. */
-  .sidebar-toggle span {
-    transform: rotate(90deg);
-  }
-
-  .app.app-collapsed .sidebar-toggle {
-    left: auto;
-  }
-
-  /* Nothing to the left of the data pane at this width, so it starts at the
-     edge whether the sidebar is showing or not. */
-  .drawer-toggle,
-  .app.app-collapsed .drawer-toggle {
-    left: 0;
+  .sidebar,
+  .workspace,
+  .stats-panel {
+    grid-column: 1;
   }
 
   .sidebar {
+    grid-row: 1;
     border-bottom: 1px solid var(--hairline);
     max-height: 50dvh;
   }
 
-  .stage {
-    min-height: 62dvh;
+  .workspace {
+    grid-row: 2;
   }
 
-  .inspector {
-    width: min(290px, calc(100% - 28px));
+  .stats-panel {
+    grid-row: 3;
+    border-top: 1px solid var(--hairline);
+    max-height: 60dvh;
+  }
+
+  /* Stacked, so each panel spans the screen and there is nothing to drag.
+     The toggles move to the top corner, where there is no vertical edge for
+     them to ride, and still put their panel away. */
+  .resizer,
+  .resizer-stats {
+    display: none;
+  }
+
+  /* The page itself scrolls at this width, so the toggles are pinned to the
+     viewport rather than to the top of the document. */
+  .sidebar-toggle,
+  .stats-toggle {
+    position: fixed;
+    left: auto;
+    right: 12px;
+    transform: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+  }
+
+  .sidebar-toggle {
+    top: 12px;
+    border-left: 1px solid var(--hairline-strong);
+  }
+
+  .stats-toggle {
+    top: 54px;
+    border-right: 1px solid var(--hairline-strong);
+  }
+
+  /* The panels now sit above and below the stage, so the chevrons point that
+     way: up to the sidebar, down to the statistics. */
+  .sidebar-toggle span,
+  .stats-toggle span {
+    transform: rotate(90deg);
+  }
+
+  /* Nothing beside the data pane at this width, so it spans the screen
+     whether the other panels are showing or not. */
+  .drawer-toggle {
+    left: 0;
+    right: 0;
+  }
+
+  .stage {
+    min-height: 62dvh;
   }
 }
 
@@ -1948,25 +2085,38 @@ body.resizing-y {
 /* ---- Stats panel ---- */
 
 .stats-panel {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  width: 320px;
-  max-height: calc(100% - 28px);
+  background: var(--panel);
   overflow-y: auto;
-  background: #161615f5;
-  border: 1px solid var(--hairline-strong);
-  border-radius: 12px;
-  padding: 14px 16px;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(6px);
+  padding: 18px 18px 22px;
+  min-width: 0;
 }
 
-.stats-panel .insp-head h3 {
+/* The panel's own title bar, weighted like the sidebar's heading rather than
+   like the section labels underneath it. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.panel-head h2 {
   margin: 0;
-  font-size: 15px;
-  color: var(--ink);
   flex: 1;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* The selection, read before the whole-graph numbers and ruled off from them. */
+.node-details {
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+  margin-bottom: 14px;
+  background: var(--raised-2);
 }
 
 .stat-tiles {
@@ -2208,12 +2358,6 @@ body.resizing-y {
   margin: -6px 0 0;
   font-size: 11.5px;
   color: var(--ink-3);
-}
-
-@media (max-width: 900px) {
-  .stats-panel {
-    width: min(320px, calc(100% - 28px));
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

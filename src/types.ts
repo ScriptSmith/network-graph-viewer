@@ -142,10 +142,18 @@ export type LabelMode = "auto" | "all" | "none";
 /**
  * Everything the stage draws on top of the graph. Each one can be dismissed on
  * its own, from its own corner × or from the View menu, and "Show everything"
- * puts them all back. "panels" covers the stats and inspector overlays, which
- * are only ever hidden all at once: they already carry their own close
- * buttons. The data pane is not here; like the sidebar it takes its own room
- * rather than covering the graph.
+ * puts them all back.
  */
-export const OVERLAYS = ["toolbar", "legend", "count", "panels"] as const;
+export const OVERLAYS = ["toolbar", "legend"] as const;
 export type Overlay = (typeof OVERLAYS)[number];
+
+/**
+ * The three panels around the stage. Unlike the overlays these take their own
+ * room rather than covering the graph, so collapsing one gives the graph the
+ * space back. Each has an edge tab of its own and a line in the View menu.
+ */
+export const PANELS = ["sidebar", "table", "stats"] as const;
+export type Panel = (typeof PANELS)[number];
+
+/** Which corner of the stage an overlay is parked in; it is dragged between them. */
+export type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";

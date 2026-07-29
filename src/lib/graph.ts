@@ -286,6 +286,11 @@ function countValues(values: (string | null)[]): string[] {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g);
 }
 
+/** Whether the styling of a graph produces anything worth putting in a legend. */
+export function hasLegend(graph: Graph): boolean {
+  return graph.ranking !== null || graph.groups.length > 0 || graph.edgeGroups.length > 0;
+}
+
 /** Scale for edge stroke width when a width column is mapped. */
 export function weightScale(links: GraphLink[]): (l: GraphLink) => number {
   const weights = links.map((l) => l.weight).filter((w): w is number => w !== null);

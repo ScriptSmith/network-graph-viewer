@@ -3,13 +3,12 @@ import { endpointId } from "../lib/graph";
 import { nodeColor } from "../theme";
 import { displayCell } from "../lib/format";
 
-interface InspectorProps {
+interface NodeDetailsProps {
   doc: GraphDoc;
   graph: Graph;
   selectedId: string;
   colors: Map<string, string>;
-  onSelect: (id: string) => void;
-  onClose: () => void;
+  onSelect: (id: string | null) => void;
 }
 
 function EdgeCard({
@@ -47,7 +46,13 @@ function EdgeCard({
   );
 }
 
-export function Inspector({ doc, graph, selectedId, colors, onSelect, onClose }: InspectorProps) {
+/**
+ * The selected node, at the head of the statistics panel: who it is, what it
+ * carries, and what it connects to. It sits above the whole-graph numbers
+ * rather than in a panel of its own, so clicking a node answers in the place
+ * the reader is already looking.
+ */
+export function NodeDetails({ doc, graph, selectedId, colors, onSelect }: NodeDetailsProps) {
   const node = graph.nodes.find((n) => n.id === selectedId);
   if (!node) return null;
 
@@ -60,11 +65,17 @@ export function Inspector({ doc, graph, selectedId, colors, onSelect, onClose }:
   );
 
   return (
-    <div className="inspector" role="dialog" aria-label={`Details for ${node.id}`}>
+    <section className="node-details" aria-label={`Details for ${node.id}`}>
       <header className="insp-head">
         <span className="legend-dot" style={{ background: nodeColor(node.group, colors) }} />
         <h3>{node.id}</h3>
-        <button type="button" className="insp-close" onClick={onClose} aria-label="Close details">
+        <button
+          type="button"
+          className="insp-close"
+          onClick={() => onSelect(null)}
+          title="Clear the selection"
+          aria-label="Clear the selection"
+        >
           ×
         </button>
       </header>
@@ -113,6 +124,6 @@ export function Inspector({ doc, graph, selectedId, colors, onSelect, onClose }:
           ))}
         </section>
       )}
-    </div>
+    </section>
   );
 }

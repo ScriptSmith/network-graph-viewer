@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
 /**
- * A panel edge the user can drag. Both resizable panels run through this so a
- * drag, an arrow key and a double-click mean the same thing on either one, and
- * both remember their size across a reload.
+ * A panel edge the user can drag. Every resizable panel runs through this so a
+ * drag, an arrow key and a double-click mean the same thing on all of them, and
+ * each remembers its size across a reload.
  */
 export interface PanelSizeOptions {
   /** localStorage key the size is remembered under. */
   storageKey: string;
-  /** "x" drags a panel's right edge, "y" drags a panel's top edge. */
-  axis: "x" | "y";
+  /** Which edge the handle sits on; the panel grows out of the opposite one. */
+  edge: "right" | "left" | "top";
   /** Size a double-click returns to, and the size before anything is saved. */
   fallback: number;
   min: number;
@@ -34,10 +34,14 @@ export interface PanelHandleProps {
 const KEYBOARD_STEP = 16;
 const KEYBOARD_STEP_FAST = 48;
 
-export function usePanelSize({ storageKey, axis, fallback, min, max }: PanelSizeOptions): {
+export function usePanelSize({ storageKey, edge, fallback, min, max }: PanelSizeOptions): {
   size: number;
+  /** True for the length of a drag, so callers can wait for the size to settle. */
+  resizing: boolean;
   handleProps: PanelHandleProps;
 } {
+  const axis = edge === "top" ? "y" : "x";
+
   const clamp = useCallback(
     (px: number) => Math.round(Math.min(max(), Math.max(min, px))),
     [max, min],
@@ -51,6 +55,7 @@ export function usePanelSize({ storageKey, axis, fallback, min, max }: PanelSize
       return clamp(fallback);
     }
   });
+  const [resizing, setResizing] = useState(false);
 
   useEffect(() => {
     try {
@@ -81,42 +86,59 @@ export function usePanelSize({ storageKey, axis, fallback, min, max }: PanelSize
       e.preventDefault();
       const handle = e.currentTarget;
       const panel = handle.parentElement?.getBoundingClientRect();
-      const origin = axis === "x" ? (panel?.left ?? 0) : (panel?.bottom ?? window.innerHeight);
+      const origin =
+        edge === "right"
+          ? (panel?.left ?? 0)
+          : edge === "left"
+            ? (panel?.right ?? window.innerWidth)
+            : (panel?.bottom ?? window.innerHeight);
       handle.setPointerCapture(e.pointerId);
       document.body.classList.add(`resizing-${axis}`);
+      setResizing(true);
       const onMove = (ev: PointerEvent) =>
-        setSize(clamp(axis === "x" ? ev.clientX - origin : origin - ev.clientY));
+        setSize(
+          clamp(
+            edge === "right"
+              ? ev.clientX - origin
+              : edge === "left"
+                ? origin - ev.clientX
+                : origin - ev.clientY,
+          ),
+        );
       const onStop = () => {
         handle.removeEventListener("pointermove", onMove);
         handle.removeEventListener("pointerup", onStop);
         handle.removeEventListener("pointercancel", onStop);
         document.body.classList.remove(`resizing-${axis}`);
+        setResizing(false);
       };
       handle.addEventListener("pointermove", onMove);
       handle.addEventListener("pointerup", onStop);
       handle.addEventListener("pointercancel", onStop);
     },
-    [axis, clamp],
+    [axis, edge, clamp],
   );
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLElement>) => {
       const step = e.shiftKey ? KEYBOARD_STEP_FAST : KEYBOARD_STEP;
-      // Up grows a panel whose top edge is the handle, the way dragging does.
-      const grow = axis === "x" ? "ArrowRight" : "ArrowUp";
-      const shrink = axis === "x" ? "ArrowLeft" : "ArrowDown";
+      // The key that moves the handle away from the panel grows it, the way
+      // dragging does: right for a left-hand panel, up for one along the bottom.
+      const grow = edge === "right" ? "ArrowRight" : edge === "left" ? "ArrowLeft" : "ArrowUp";
+      const shrink = edge === "right" ? "ArrowLeft" : edge === "left" ? "ArrowRight" : "ArrowDown";
       if (e.key === grow) setSize((s) => clamp(s + step));
       else if (e.key === shrink) setSize((s) => clamp(s - step));
       else return;
       e.preventDefault();
     },
-    [axis, clamp],
+    [edge, clamp],
   );
 
   const reset = useCallback(() => setSize(clamp(fallback)), [clamp, fallback]);
 
   return {
     size,
+    resizing,
     handleProps: {
       role: "separator",
       "aria-orientation": axis === "x" ? "vertical" : "horizontal",

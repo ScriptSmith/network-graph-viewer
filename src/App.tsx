@@ -7,8 +7,16 @@ import {
   type CSSProperties,
   type DragEvent,
 } from "react";
-import type { CellValue, Dataset, GraphDoc, GraphStyle, LabelMode, Mapping } from "./types";
-import { DEFAULT_STYLE, styleColumn } from "./types";
+import type {
+  CellValue,
+  Dataset,
+  GraphDoc,
+  GraphStyle,
+  LabelMode,
+  Mapping,
+  Overlay,
+} from "./types";
+import { DEFAULT_STYLE, OVERLAYS, styleColumn } from "./types";
 import { SAMPLE_DATASET } from "./sample-data";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
 import {
@@ -43,22 +51,13 @@ import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
 import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
+import { OverlayMenu } from "./components/OverlayMenu";
 
 const AMBIENT_TABLE = SAMPLE_DATASET.tables[0];
 const AMBIENT_DOC = buildDoc(SAMPLE_DATASET.fileName, AMBIENT_TABLE);
 const AMBIENT_STYLE: GraphStyle = guessStyle(AMBIENT_TABLE, AMBIENT_DOC.mapping);
 const AMBIENT_GRAPH = applyStyle(buildBaseGraph(AMBIENT_DOC), AMBIENT_DOC, AMBIENT_STYLE);
 const AMBIENT_COLORS = groupColorMap(AMBIENT_GRAPH.groups);
-
-/**
- * Everything the stage draws on top of the graph. Each one can be dismissed on
- * its own, and "Show all" puts every one of them back. "panels" covers the
- * stats and inspector overlays, which are only ever hidden all at once: they
- * already carry their own close buttons. The data pane is not here; like the
- * sidebar it takes its own room rather than covering the graph.
- */
-const OVERLAYS = ["toolbar", "legend", "count", "panels"] as const;
-type Overlay = (typeof OVERLAYS)[number];
 
 const SIDEBAR_SIZE: PanelSizeOptions = {
   storageKey: "ngv:sidebar-width",
@@ -234,8 +233,13 @@ export default function App() {
     return () => document.removeEventListener("paste", onPaste);
   }, [adoptDataset, adoptImported, handleFile]);
 
-  const hideOverlay = useCallback((key: Overlay) => {
-    setHiddenOverlays((current) => new Set(current).add(key));
+  const setOverlayVisible = useCallback((key: Overlay, visible: boolean) => {
+    setHiddenOverlays((current) => {
+      const next = new Set(current);
+      if (visible) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }, []);
 
   const hideAllOverlays = useCallback(() => setHiddenOverlays(new Set(OVERLAYS)), []);
@@ -724,28 +728,18 @@ export default function App() {
                   >
                     Stats
                   </button>
-                  {hiddenOverlays.size > 0 && (
-                    <button
-                      type="button"
-                      className="tool-btn"
-                      onClick={showAllOverlays}
-                      title="Bring back everything that is hidden (H)"
-                    >
-                      Show controls
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    onClick={hideAllOverlays}
-                    title="Hide everything drawn over the graph (H)"
-                  >
-                    Hide controls
-                  </button>
+                  <span className="tool-sep" aria-hidden="true" />
+                  <OverlayMenu
+                    hidden={hiddenOverlays}
+                    legendAvailable={showLegend}
+                    onSetVisible={setOverlayVisible}
+                    onHideAll={hideAllOverlays}
+                    onShowAll={showAllOverlays}
+                  />
                   <button
                     type="button"
                     className="overlay-x"
-                    onClick={() => hideOverlay("toolbar")}
+                    onClick={() => setOverlayVisible("toolbar", false)}
                     title="Hide these buttons"
                     aria-label="Hide these buttons"
                   >
@@ -785,7 +779,7 @@ export default function App() {
                   <button
                     type="button"
                     className="overlay-x"
-                    onClick={() => hideOverlay("legend")}
+                    onClick={() => setOverlayVisible("legend", false)}
                     title="Hide the legend"
                     aria-label="Hide the legend"
                   >
@@ -799,7 +793,7 @@ export default function App() {
                   <button
                     type="button"
                     className="overlay-x"
-                    onClick={() => hideOverlay("count")}
+                    onClick={() => setOverlayVisible("count", false)}
                     title="Hide the node and edge count"
                     aria-label="Hide the node and edge count"
                   >

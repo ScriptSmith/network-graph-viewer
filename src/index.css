@@ -583,12 +583,20 @@ body.resizing-y {
   color: var(--ink-3);
 }
 
+/* One surface holding the buttons, so the × in its corner reads as the whole
+   strip's rather than the last button's. */
 .toolbar {
   position: absolute;
   top: 14px;
   left: 14px;
   display: flex;
-  gap: 6px;
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px;
+  background: #1a1a19d9;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  backdrop-filter: blur(6px);
 }
 
 .tool-btn {
@@ -610,6 +618,106 @@ body.resizing-y {
 .tool-btn.active {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Inside the strip the surface belongs to the strip, so the buttons are only
+   type until they are hovered. */
+.toolbar .tool-btn {
+  background: none;
+  border-color: transparent;
+  backdrop-filter: none;
+}
+
+.toolbar .tool-btn:hover {
+  background: var(--raised);
+  border-color: transparent;
+}
+
+.toolbar .tool-btn.active {
+  background: var(--raised);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.tool-sep {
+  width: 1px;
+  margin: 3px;
+  background: var(--hairline);
+}
+
+/* Something on the stage is hidden. */
+.tool-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.overlay-menu-wrap {
+  position: relative;
+  display: flex;
+}
+
+.overlay-menu {
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 0;
+  z-index: 4;
+  min-width: 196px;
+  padding: 6px;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+}
+
+.overlay-menu-title {
+  margin: 2px 4px 6px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.overlay-menu .check-item:has(input:disabled) {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.overlay-menu-rule {
+  height: 1px;
+  margin: 6px 2px;
+  background: var(--hairline);
+}
+
+.overlay-menu-all {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 2px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.overlay-menu-all:hover {
+  background: var(--raised-2);
+  color: var(--ink);
+}
+
+.overlay-menu-key {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0 5px;
 }
 
 /* The one control left once the toolbar is hidden: faint enough to stay out of

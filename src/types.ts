@@ -138,3 +138,14 @@ export interface Graph extends BaseGraph {
 }
 
 export type LabelMode = "auto" | "all" | "none";
+
+/**
+ * Everything the stage draws on top of the graph. Each one can be dismissed on
+ * its own, from its own corner × or from the View menu, and "Show everything"
+ * puts them all back. "panels" covers the stats and inspector overlays, which
+ * are only ever hidden all at once: they already carry their own close
+ * buttons. The data pane is not here; like the sidebar it takes its own room
+ * rather than covering the graph.
+ */
+export const OVERLAYS = ["toolbar", "legend", "count", "panels"] as const;
+export type Overlay = (typeof OVERLAYS)[number];

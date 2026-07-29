@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { VisibilityState } from "@tanstack/react-table";
 import type { CellValue, GraphDoc, Row } from "../types";
 import type { EditTarget } from "../lib/edit";
 import { cellToId } from "../lib/cells";
+import type { PanelHandleProps } from "../usePanelSize";
 import { DataTable, type Aggregation } from "./DataTable";
 
 interface TableDrawerProps {
@@ -19,11 +20,9 @@ interface TableDrawerProps {
   onEditCell: (target: EditTarget, rowIndex: number, column: string, value: CellValue) => void;
   onAddRow: (target: EditTarget) => void;
   onDeleteRow: (target: EditTarget, rowIndex: number) => void;
-  onClose: () => void;
+  /** The pane's height is the shell's business, the way the sidebar's is. */
+  gripProps: PanelHandleProps;
 }
-
-const MIN_HEIGHT = 120;
-const DEFAULT_HEIGHT = 280;
 
 const AGGREGATIONS: { id: Aggregation; name: string }[] = [
   { id: "count", name: "Count" },
@@ -44,9 +43,8 @@ export function TableDrawer({
   onEditCell,
   onAddRow,
   onDeleteRow,
-  onClose,
+  gripProps,
 }: TableDrawerProps) {
-  const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [search, setSearch] = useState("");
   const [onlyVisible, setOnlyVisible] = useState(true);
   const [groupBy, setGroupBy] = useState("");
@@ -58,7 +56,6 @@ export function TableDrawer({
   const [columnsOpen, setColumnsOpen] = useState(false);
   // Where the last Add row landed, so the table can keep it in sight.
   const [addedIndex, setAddedIndex] = useState<number | null>(null);
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const table = target === "nodes" ? doc.nodes : doc.edges;
   const addedRow = addedIndex === null ? null : (table.rows[addedIndex] ?? null);
@@ -96,46 +93,14 @@ export function TableDrawer({
     onSelectNode(id);
   };
 
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      dragRef.current = { startY: e.clientY, startHeight: height };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    },
-    [height],
-  );
-
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      // Dragging up grows the drawer, so the delta is inverted.
-      const next = drag.startHeight + (drag.startY - e.clientY);
-      setHeight(Math.max(MIN_HEIGHT, Math.min(next, window.innerHeight - 160)));
-    };
-    const onUp = () => {
-      dragRef.current = null;
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, []);
-
   // The added row is listed even when the filter chain dropped it, so it counts.
   const shownCount = onlyVisible
     ? visible.size + (addedRow && !visible.has(addedRow) ? 1 : 0)
     : table.rows.length;
 
   return (
-    <section className="drawer" style={{ height }} aria-label="Data table">
-      <div
-        className="drawer-grip"
-        onPointerDown={onPointerDown}
-        role="separator"
-        aria-label="Resize the table"
-      />
+    <section className="drawer" aria-label="Data table">
+      <div className="drawer-grip" aria-label="Data table height" {...gripProps} />
 
       <header className="drawer-bar">
         <div className="drawer-tabs" role="tablist">
@@ -247,9 +212,6 @@ export function TableDrawer({
           }}
         >
           Add row
-        </button>
-        <button type="button" className="drawer-btn" onClick={onClose} aria-label="Close the table">
-          ×
         </button>
       </header>
 

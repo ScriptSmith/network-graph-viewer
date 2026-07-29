@@ -37,6 +37,7 @@ import type { ScriptRunRequest } from "./components/ScriptPanel";
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "./theme";
 import { formatMetric } from "./lib/format";
+import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
@@ -52,28 +53,29 @@ const AMBIENT_COLORS = groupColorMap(AMBIENT_GRAPH.groups);
 /**
  * Everything the stage draws on top of the graph. Each one can be dismissed on
  * its own, and "Show all" puts every one of them back. "panels" covers the
- * stats, data and inspector overlays, which are only ever hidden all at once:
- * they already carry their own close buttons.
+ * stats and inspector overlays, which are only ever hidden all at once: they
+ * already carry their own close buttons. The data pane is not here; like the
+ * sidebar it takes its own room rather than covering the graph.
  */
 const OVERLAYS = ["toolbar", "legend", "count", "panels"] as const;
 type Overlay = (typeof OVERLAYS)[number];
 
-const SIDEBAR_WIDTH_KEY = "ngv:sidebar-width";
-const SIDEBAR_DEFAULT_WIDTH = 316;
-const SIDEBAR_MIN_WIDTH = 250;
-const SIDEBAR_MAX_WIDTH = 680;
+const SIDEBAR_SIZE: PanelSizeOptions = {
+  storageKey: "ngv:sidebar-width",
+  axis: "x",
+  fallback: 316,
+  min: 250,
+  max: () => 680,
+};
 
-const clampSidebarWidth = (px: number) =>
-  Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, px)));
-
-function loadSidebarWidth(): number {
-  try {
-    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    return saved > 0 ? clampSidebarWidth(saved) : SIDEBAR_DEFAULT_WIDTH;
-  } catch {
-    return SIDEBAR_DEFAULT_WIDTH;
-  }
-}
+const DRAWER_SIZE: PanelSizeOptions = {
+  storageKey: "ngv:drawer-height",
+  axis: "y",
+  fallback: 200,
+  min: 120,
+  // Whatever the window allows, less enough graph to still aim at.
+  max: () => Math.max(120, window.innerHeight - 160),
+};
 
 export default function App() {
   const [dataset, setDataset] = useState<Dataset | null>(null);
@@ -92,18 +94,20 @@ export default function App() {
   const [labelMode, setLabelMode] = useState<LabelMode>("auto");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [statsOpen, setStatsOpen] = useState(false);
-  const [tableOpen, setTableOpen] = useState(false);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Overlays the user has dismissed, so the graph can be presented or
-  // screenshotted clean. Nothing underneath changes: hiding the data panel
-  // leaves it open, so showing it again brings it back as it was.
+  // screenshotted clean. Nothing underneath changes: showing them again brings
+  // each one back as it was.
   const [hiddenOverlays, setHiddenOverlays] = useState<ReadonlySet<Overlay>>(() => new Set());
-  // The sidebar is only ever hidden with CSS, never unmounted, so a collapse
-  // does not throw away a half-written script or an unsaved gist token.
-  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
+  // Both panels are only ever hidden with CSS, never unmounted, so a collapse
+  // does not throw away a half-written script, an unsaved gist token, or the
+  // search and grouping set up over the table.
+  const { size: sidebarWidth, handleProps: sidebarHandle } = usePanelSize(SIDEBAR_SIZE);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const { size: drawerHeight, handleProps: drawerHandle } = usePanelSize(DRAWER_SIZE);
+  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
 
   const canvasRef = useRef<GraphCanvasHandle>(null);
   // Positions handed to the canvas on its next rebuild: a node just dropped,
@@ -230,44 +234,6 @@ export default function App() {
     return () => document.removeEventListener("paste", onPaste);
   }, [adoptDataset, adoptImported, handleFile]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
-    } catch {
-      // Storage turned off just means the width lasts for this visit only.
-    }
-  }, [sidebarWidth]);
-
-  /**
-   * Drag the divider. The pointer is captured so the drag survives crossing
-   * the canvas, which swallows pointer events of its own.
-   */
-  const handleResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    const originX = handle.parentElement?.getBoundingClientRect().left ?? 0;
-    handle.setPointerCapture(e.pointerId);
-    document.body.classList.add("resizing");
-    const onMove = (ev: PointerEvent) => setSidebarWidth(clampSidebarWidth(ev.clientX - originX));
-    const onStop = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onStop);
-      handle.removeEventListener("pointercancel", onStop);
-      document.body.classList.remove("resizing");
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onStop);
-    handle.addEventListener("pointercancel", onStop);
-  }, []);
-
-  const handleResizeKey = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 48 : 16;
-    if (e.key === "ArrowLeft") setSidebarWidth((w) => clampSidebarWidth(w - step));
-    else if (e.key === "ArrowRight") setSidebarWidth((w) => clampSidebarWidth(w + step));
-    else return;
-    e.preventDefault();
-  }, []);
-
   const hideOverlay = useCallback((key: Overlay) => {
     setHiddenOverlays((current) => new Set(current).add(key));
   }, []);
@@ -352,7 +318,7 @@ export default function App() {
     setShowIsolated(false);
     setSelectedId(null);
     setStatsOpen(false);
-    setTableOpen(false);
+    setDrawerCollapsed(false);
     setHiddenOverlays(new Set());
     setError(null);
   }, []);
@@ -484,7 +450,7 @@ export default function App() {
   /** Open the data table on whichever tab holds the columns just written. */
   const handleShowColumns = useCallback((target: EditTarget) => {
     setTableTab(target);
-    setTableOpen(true);
+    setDrawerCollapsed(false);
   }, []);
 
   /** Clicking a breakdown bar drops a one-value column step onto the chain. */
@@ -616,8 +582,15 @@ export default function App() {
 
   return (
     <div
-      className={sidebarCollapsed ? "app app-collapsed" : "app"}
-      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      className={`app${sidebarCollapsed ? " app-collapsed" : ""}${
+        drawerCollapsed ? " app-drawer-collapsed" : ""
+      }`}
+      style={
+        {
+          "--sidebar-width": `${sidebarWidth}px`,
+          "--drawer-height": `${drawerHeight}px`,
+        } as CSSProperties
+      }
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -665,20 +638,7 @@ export default function App() {
         exportInput={exportInput}
       />
 
-      <div
-        className="resizer"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Sidebar width"
-        aria-valuenow={sidebarWidth}
-        aria-valuemin={SIDEBAR_MIN_WIDTH}
-        aria-valuemax={SIDEBAR_MAX_WIDTH}
-        tabIndex={0}
-        title="Drag to resize the sidebar, double-click to reset"
-        onPointerDown={handleResizeStart}
-        onKeyDown={handleResizeKey}
-        onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
-      />
+      <div className="resizer" aria-label="Sidebar width" {...sidebarHandle} />
 
       {/* One control in one place: it rides the sidebar's edge, so collapsing
           and expanding happen wherever that edge currently is. */}
@@ -693,275 +653,284 @@ export default function App() {
         <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
       </button>
 
-      <main className="stage">
-        {graph && doc ? (
-          <>
-            <GraphCanvas
-              ref={canvasRef}
-              graph={graph}
-              layout={layout}
-              layoutParams={layoutParams}
-              scriptedTargets={scriptedTargets}
-              preventOverlap={preventOverlap}
-              labelMode={labelMode}
-              style={style}
-              colors={colors}
-              edgeColors={edgeColors}
-              attrColumns={doc.mapping.attrs}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              seedPositions={seedPositionsRef}
-            />
-            {hiddenOverlays.has("toolbar") && (
-              <button
-                type="button"
-                className="tool-btn chrome-restore"
-                onClick={showAllOverlays}
-                title="Bring back everything that is hidden (H)"
-              >
-                Show controls
-              </button>
-            )}
-            {!hiddenOverlays.has("toolbar") && (
-              <div className="toolbar">
+      {/* The same control on the data pane's edge, turned a quarter turn. */}
+      {doc && (
+        <button
+          type="button"
+          className="drawer-toggle"
+          onClick={() => setDrawerCollapsed((v) => !v)}
+          aria-expanded={!drawerCollapsed}
+          title={drawerCollapsed ? "Show the data table" : "Hide the data table"}
+          aria-label={drawerCollapsed ? "Show the data table" : "Hide the data table"}
+        >
+          <span aria-hidden="true">{drawerCollapsed ? "‹" : "›"}</span>
+        </button>
+      )}
+
+      <div className="workspace">
+        <main className="stage">
+          {graph && doc ? (
+            <>
+              <GraphCanvas
+                ref={canvasRef}
+                graph={graph}
+                layout={layout}
+                layoutParams={layoutParams}
+                scriptedTargets={scriptedTargets}
+                preventOverlap={preventOverlap}
+                labelMode={labelMode}
+                style={style}
+                colors={colors}
+                edgeColors={edgeColors}
+                attrColumns={doc.mapping.attrs}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                seedPositions={seedPositionsRef}
+              />
+              {hiddenOverlays.has("toolbar") && (
                 <button
                   type="button"
-                  className="tool-btn"
-                  onClick={() => canvasRef.current?.fit()}
-                  title="Fit graph to view"
+                  className="tool-btn chrome-restore"
+                  onClick={showAllOverlays}
+                  title="Bring back everything that is hidden (H)"
                 >
-                  Fit
+                  Show controls
                 </button>
-                <button
-                  type="button"
-                  className="tool-btn"
-                  onClick={() => canvasRef.current?.reheat()}
-                  title="Re-run the layout"
-                >
-                  Re-run
-                </button>
-                <button
-                  type="button"
-                  className={statsOpen ? "tool-btn active" : "tool-btn"}
-                  onClick={() => setStatsOpen((v) => !v)}
-                  aria-pressed={statsOpen}
-                  title="Show graph statistics"
-                >
-                  Stats
-                </button>
-                <button
-                  type="button"
-                  className={tableOpen ? "tool-btn active" : "tool-btn"}
-                  onClick={() => setTableOpen((v) => !v)}
-                  aria-pressed={tableOpen}
-                  title="Show the underlying data"
-                >
-                  Data
-                </button>
-                {hiddenOverlays.size > 0 && (
+              )}
+              {!hiddenOverlays.has("toolbar") && (
+                <div className="toolbar">
                   <button
                     type="button"
                     className="tool-btn"
-                    onClick={showAllOverlays}
-                    title="Bring back everything that is hidden (H)"
+                    onClick={() => canvasRef.current?.fit()}
+                    title="Fit graph to view"
                   >
-                    Show controls
+                    Fit
                   </button>
-                )}
-                <button
-                  type="button"
-                  className="tool-btn"
-                  onClick={hideAllOverlays}
-                  title="Hide everything drawn over the graph (H)"
-                >
-                  Hide controls
-                </button>
-                <button
-                  type="button"
-                  className="overlay-x"
-                  onClick={() => hideOverlay("toolbar")}
-                  title="Hide these buttons"
-                  aria-label="Hide these buttons"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {showLegend && !hiddenOverlays.has("legend") && (
-              <div className="legend" aria-label="Legend">
-                {graph.ranking && (
-                  <span className="legend-item">
-                    <span
-                      className="legend-gradient"
-                      style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
-                    />
-                    <span>
-                      {rankingLabel} {formatMetric(graph.ranking.min)} to{" "}
-                      {formatMetric(graph.ranking.max)}
+                  <button
+                    type="button"
+                    className="tool-btn"
+                    onClick={() => canvasRef.current?.reheat()}
+                    title="Re-run the layout"
+                  >
+                    Re-run
+                  </button>
+                  <button
+                    type="button"
+                    className={statsOpen ? "tool-btn active" : "tool-btn"}
+                    onClick={() => setStatsOpen((v) => !v)}
+                    aria-pressed={statsOpen}
+                    title="Show graph statistics"
+                  >
+                    Stats
+                  </button>
+                  {hiddenOverlays.size > 0 && (
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      onClick={showAllOverlays}
+                      title="Bring back everything that is hidden (H)"
+                    >
+                      Show controls
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="tool-btn"
+                    onClick={hideAllOverlays}
+                    title="Hide everything drawn over the graph (H)"
+                  >
+                    Hide controls
+                  </button>
+                  <button
+                    type="button"
+                    className="overlay-x"
+                    onClick={() => hideOverlay("toolbar")}
+                    title="Hide these buttons"
+                    aria-label="Hide these buttons"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {showLegend && !hiddenOverlays.has("legend") && (
+                <div className="legend" aria-label="Legend">
+                  {graph.ranking && (
+                    <span className="legend-item">
+                      <span
+                        className="legend-gradient"
+                        style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
+                      />
+                      <span>
+                        {rankingLabel} {formatMetric(graph.ranking.min)} to{" "}
+                        {formatMetric(graph.ranking.max)}
+                      </span>
                     </span>
-                  </span>
-                )}
-                {nodeLegend.map((e) => (
-                  <span key={`n${e.name}`} className="legend-item">
-                    <span className="legend-dot" style={{ background: e.color }} />
-                    {e.name}
-                  </span>
-                ))}
-                {edgeLegend.length > 0 && edgeColorColumn && (
-                  <span className="legend-item legend-caption">{edgeColorColumn}:</span>
-                )}
-                {edgeLegend.map((e) => (
-                  <span key={`e${e.name}`} className="legend-item">
-                    <span className="legend-line" style={{ background: e.color }} />
-                    {e.name}
-                  </span>
-                ))}
-                <button
-                  type="button"
-                  className="overlay-x"
-                  onClick={() => hideOverlay("legend")}
-                  title="Hide the legend"
-                  aria-label="Hide the legend"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {!hiddenOverlays.has("count") && (
-              <div className="status-chip">
-                {graph.nodes.length} nodes · {graph.links.length} edges
-                <button
-                  type="button"
-                  className="overlay-x"
-                  onClick={() => hideOverlay("count")}
-                  title="Hide the node and edge count"
-                  aria-label="Hide the node and edge count"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {graph.nodes.length === 0 && (
-              <div className="no-match">
-                <p>No rows match the current filters.</p>
-              </div>
-            )}
-            {statsOpen && !hiddenOverlays.has("panels") && (
-              <StatsPanel
-                doc={doc}
-                rows={filteredRows}
-                totalRows={doc.edges.rows.length}
-                graph={graph}
-                colorColumn={graph.ranking ? null : colorColumn}
-                colors={colors}
-                chain={chain}
-                onToggleValueFilter={handleToggleValueFilter}
-                onSelectNode={setSelectedId}
-                onClose={() => setStatsOpen(false)}
+                  )}
+                  {nodeLegend.map((e) => (
+                    <span key={`n${e.name}`} className="legend-item">
+                      <span className="legend-dot" style={{ background: e.color }} />
+                      {e.name}
+                    </span>
+                  ))}
+                  {edgeLegend.length > 0 && edgeColorColumn && (
+                    <span className="legend-item legend-caption">{edgeColorColumn}:</span>
+                  )}
+                  {edgeLegend.map((e) => (
+                    <span key={`e${e.name}`} className="legend-item">
+                      <span className="legend-line" style={{ background: e.color }} />
+                      {e.name}
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    className="overlay-x"
+                    onClick={() => hideOverlay("legend")}
+                    title="Hide the legend"
+                    aria-label="Hide the legend"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {!hiddenOverlays.has("count") && (
+                <div className="status-chip">
+                  {graph.nodes.length} nodes · {graph.links.length} edges
+                  <button
+                    type="button"
+                    className="overlay-x"
+                    onClick={() => hideOverlay("count")}
+                    title="Hide the node and edge count"
+                    aria-label="Hide the node and edge count"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {graph.nodes.length === 0 && (
+                <div className="no-match">
+                  <p>No rows match the current filters.</p>
+                </div>
+              )}
+              {statsOpen && !hiddenOverlays.has("panels") && (
+                <StatsPanel
+                  doc={doc}
+                  rows={filteredRows}
+                  totalRows={doc.edges.rows.length}
+                  graph={graph}
+                  colorColumn={graph.ranking ? null : colorColumn}
+                  colors={colors}
+                  chain={chain}
+                  onToggleValueFilter={handleToggleValueFilter}
+                  onSelectNode={setSelectedId}
+                  onClose={() => setStatsOpen(false)}
+                />
+              )}
+              {selectedId && !statsOpen && !hiddenOverlays.has("panels") && (
+                <Inspector
+                  doc={doc}
+                  graph={graph}
+                  selectedId={selectedId}
+                  colors={colors}
+                  onSelect={setSelectedId}
+                  onClose={() => setSelectedId(null)}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              <GraphCanvas
+                graph={AMBIENT_GRAPH}
+                layout="force"
+                layoutParams={{}}
+                preventOverlap={false}
+                labelMode="none"
+                style={AMBIENT_STYLE}
+                colors={AMBIENT_COLORS}
+                edgeColors={new Map()}
+                attrColumns={[]}
+                selectedId={null}
+                onSelect={() => {}}
+                ambient
               />
-            )}
-            {tableOpen && !hiddenOverlays.has("panels") && (
-              <TableDrawer
-                doc={doc}
-                target={tableTab}
-                onTargetChange={setTableTab}
-                visibleRows={visibleRows}
-                visibleNodeIds={visibleNodeIds}
-                selectedId={selectedId}
-                onSelectNode={setSelectedId}
-                onEditCell={handleEditCell}
-                onAddRow={handleAddRow}
-                onDeleteRow={handleDeleteRow}
-                onClose={() => setTableOpen(false)}
-              />
-            )}
-            {selectedId && !statsOpen && !hiddenOverlays.has("panels") && (
-              <Inspector
-                doc={doc}
-                graph={graph}
-                selectedId={selectedId}
-                colors={colors}
-                onSelect={setSelectedId}
-                onClose={() => setSelectedId(null)}
-              />
-            )}
-          </>
-        ) : (
-          <>
-            <GraphCanvas
-              graph={AMBIENT_GRAPH}
-              layout="force"
-              layoutParams={{}}
-              preventOverlap={false}
-              labelMode="none"
-              style={AMBIENT_STYLE}
-              colors={AMBIENT_COLORS}
-              edgeColors={new Map()}
-              attrColumns={[]}
-              selectedId={null}
-              onSelect={() => {}}
-              ambient
-            />
-            <div className="empty">
-              <div className="empty-card">
-                <h2 className="empty-title">Every spreadsheet hides a network.</h2>
-                <p className="empty-tag">
-                  Upload an edge list, one row per connection: the first two columns you map become
-                  the arrows, everything else becomes detail you can style, filter, and chart.
-                </p>
-                <table className="example-table">
-                  <thead>
-                    <tr>
-                      <th>Supervisor</th>
-                      <th>Supervisee</th>
-                      <th>Meetings</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Alex Rivera</td>
-                      <td>Priya Sharma</td>
-                      <td>4</td>
-                    </tr>
-                    <tr>
-                      <td>Priya Sharma</td>
-                      <td>Grace Okafor</td>
-                      <td>4</td>
-                    </tr>
-                    <tr>
-                      <td>Grace Okafor</td>
-                      <td>Mei Chen</td>
-                      <td>2</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p className="example-caption">
-                  Any column names work; you pick which is which after loading.
-                </p>
-                <button type="button" className="dropzone" onClick={pickAnyFile}>
-                  <strong>Drop a file here or click to browse</strong>
-                  <span className="hint">.csv · .xlsx · .xls · .ods</span>
-                </button>
-                <p className="example-caption">
-                  Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
-                </p>
-                <button type="button" className="btn btn-primary" onClick={handleSample}>
-                  Try the sample supervision network
-                </button>
+              <div className="empty">
+                <div className="empty-card">
+                  <h2 className="empty-title">Every spreadsheet hides a network.</h2>
+                  <p className="empty-tag">
+                    Upload an edge list, one row per connection: the first two columns you map
+                    become the arrows, everything else becomes detail you can style, filter, and
+                    chart.
+                  </p>
+                  <table className="example-table">
+                    <thead>
+                      <tr>
+                        <th>Supervisor</th>
+                        <th>Supervisee</th>
+                        <th>Meetings</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Alex Rivera</td>
+                        <td>Priya Sharma</td>
+                        <td>4</td>
+                      </tr>
+                      <tr>
+                        <td>Priya Sharma</td>
+                        <td>Grace Okafor</td>
+                        <td>4</td>
+                      </tr>
+                      <tr>
+                        <td>Grace Okafor</td>
+                        <td>Mei Chen</td>
+                        <td>2</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p className="example-caption">
+                    Any column names work; you pick which is which after loading.
+                  </p>
+                  <button type="button" className="dropzone" onClick={pickAnyFile}>
+                    <strong>Drop a file here or click to browse</strong>
+                    <span className="hint">.csv · .xlsx · .xls · .ods</span>
+                  </button>
+                  <p className="example-caption">
+                    Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
+                  </p>
+                  <button type="button" className="btn btn-primary" onClick={handleSample}>
+                    Try the sample supervision network
+                  </button>
+                </div>
               </div>
+            </>
+          )}
+          {error && (
+            <div className="error-toast" role="alert">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError(null)} aria-label="Dismiss error">
+                ×
+              </button>
             </div>
-          </>
+          )}
+          {dragOver && <div className="drop-veil">Drop to load</div>}
+        </main>
+
+        {doc && (
+          <TableDrawer
+            doc={doc}
+            target={tableTab}
+            onTargetChange={setTableTab}
+            visibleRows={visibleRows}
+            visibleNodeIds={visibleNodeIds}
+            selectedId={selectedId}
+            onSelectNode={setSelectedId}
+            onEditCell={handleEditCell}
+            onAddRow={handleAddRow}
+            onDeleteRow={handleDeleteRow}
+            gripProps={drawerHandle}
+          />
         )}
-        {error && (
-          <div className="error-toast" role="alert">
-            <span>{error}</span>
-            <button type="button" onClick={() => setError(null)} aria-label="Dismiss error">
-              ×
-            </button>
-          </div>
-        )}
-        {dragOver && <div className="drop-veil">Drop to load</div>}
-      </main>
+      </div>
     </div>
   );
 }

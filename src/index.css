@@ -68,51 +68,80 @@ button {
   height: 100dvh;
 }
 
-/* Sits on the sidebar's edge, so it is in the same place whichever way it
-   points: expanded it hangs off the divider, collapsed it hangs off the
-   window. Absolutely positioned, so it never takes a grid column. */
-.sidebar-toggle {
+/* Each toggle sits on its panel's edge, so it is in the same place whichever
+   way it points: expanded it hangs off the divider, collapsed it hangs off the
+   window. Absolutely positioned, so neither takes a grid track. */
+.sidebar-toggle,
+.drawer-toggle {
   position: absolute;
-  top: 50%;
-  left: calc(var(--sidebar-width, 316px) + 6px);
-  transform: translateY(-50%);
   z-index: 3;
-  width: 26px;
-  height: 76px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 1px solid var(--hairline-strong);
-  border-left: none;
-  border-radius: 0 9px 9px 0;
   background: var(--raised);
   color: var(--ink);
   font-size: 19px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);
 }
 
-.sidebar-toggle:hover {
+.sidebar-toggle:hover,
+.drawer-toggle:hover {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--surface);
 }
 
-.app.app-collapsed .sidebar-toggle {
+.sidebar-toggle {
+  top: 50%;
+  left: calc(var(--sidebar-width, 316px) + 6px);
+  transform: translateY(-50%);
+  width: 26px;
+  height: 76px;
+  border-left: none;
+  border-radius: 0 9px 9px 0;
+  box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);
+}
+
+/* The same tab a quarter turn on, centred over the graph it uncovers. */
+.drawer-toggle {
+  bottom: var(--drawer-height, 200px);
+  left: calc(var(--sidebar-width, 316px) + 6px);
+  right: 0;
+  margin-inline: auto;
+  width: 76px;
+  height: 26px;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.drawer-toggle span {
+  transform: rotate(90deg);
+}
+
+.app.app-collapsed .sidebar-toggle,
+.app.app-collapsed .drawer-toggle {
   left: 0;
 }
 
-/* Collapsed the sidebar leaves the grid but stays in the DOM, so a half-written
-   script or an entered gist token is still there when it comes back. The extra
-   class keeps this winning over the narrow-screen layout below. */
+.app.app-drawer-collapsed .drawer-toggle {
+  bottom: 0;
+}
+
+/* Collapsed a panel leaves the layout but stays in the DOM, so a half-written
+   script, an entered gist token or a search over the table is still there when
+   it comes back. The extra class keeps this winning over the narrow-screen
+   layout below. */
 .app.app-collapsed {
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
 }
 
 .app.app-collapsed .sidebar,
-.app.app-collapsed .resizer {
+.app.app-collapsed .resizer,
+.app.app-drawer-collapsed .drawer {
   display: none;
 }
 
@@ -123,6 +152,16 @@ button {
   flex-direction: column;
   padding: 22px 20px 16px;
   gap: 20px;
+}
+
+/* The graph and the data pane split the space the sidebar leaves: the pane
+   takes its own room off the bottom rather than covering the graph. */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .resizer {
@@ -139,15 +178,25 @@ button {
   outline: none;
 }
 
-/* Held for the length of a drag: without it the pointer picks up sidebar text
+/* Held for the length of a drag: without it the pointer picks up panel text
    as it sweeps across, and the cursor flickers over the canvas. */
-body.resizing {
-  cursor: col-resize;
+body.resizing-x,
+body.resizing-y {
   user-select: none;
+}
+
+body.resizing-x {
+  cursor: col-resize;
+}
+
+body.resizing-y {
+  cursor: ns-resize;
 }
 
 .stage {
   position: relative;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   background-color: var(--surface);
   background-image: radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
@@ -612,10 +661,12 @@ body.resizing {
   border-color: var(--ink-3);
 }
 
+/* Both bottom corners clear the data pane's tab, which rides the middle of
+   the same edge. */
 .legend {
   position: absolute;
   left: 14px;
-  bottom: 14px;
+  bottom: 32px;
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
@@ -645,7 +696,7 @@ body.resizing {
 .status-chip {
   position: absolute;
   right: 14px;
-  bottom: 14px;
+  bottom: 32px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-3);
@@ -927,6 +978,13 @@ body.resizing {
 
   .app.app-collapsed .sidebar-toggle {
     left: auto;
+  }
+
+  /* Nothing to the left of the data pane at this width, so it starts at the
+     edge whether the sidebar is showing or not. */
+  .drawer-toggle,
+  .app.app-collapsed .drawer-toggle {
+    left: 0;
   }
 
   .sidebar {
@@ -1241,28 +1299,29 @@ body.resizing {
 /* ---- Data drawer ---- */
 
 .drawer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 6;
+  flex: none;
+  height: var(--drawer-height, 200px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-top: 1px solid var(--hairline-strong);
-  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.45);
 }
 
+/* The drawer's divider, the way .resizer is the sidebar's: the line the eye
+   follows is the strip the pointer grabs, and it lights up the same way. */
 .drawer-grip {
-  height: 7px;
+  height: 6px;
   flex: none;
+  background: var(--panel);
+  border-top: 1px solid var(--hairline-strong);
   cursor: ns-resize;
-  background: transparent;
   touch-action: none;
 }
 
-.drawer-grip:hover {
-  background: var(--raised-2);
+.drawer-grip:hover,
+.drawer-grip:focus-visible {
+  background: var(--accent);
+  border-top-color: var(--accent);
+  outline: none;
 }
 
 .drawer-bar {

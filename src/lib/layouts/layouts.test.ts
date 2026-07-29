@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
-import type { BaseGraph, GraphNode } from "../../types";
+import { forceSimulation } from "d3-force";
+import type { BaseGraph, GraphLink, GraphNode } from "../../types";
 import { circlePackLayout } from "./circlepack";
+import { forceAtlas2 } from "./forceatlas2";
 import { noverlap, noverlapPass } from "./noverlap";
-import { computeTargets, defaultParams, LAYOUTS } from "./index";
+import { computeTargets, defaultParams, forceAtlas2Params, LAYOUTS } from "./index";
 
 function node(id: string, radius = 8, group?: string): GraphNode {
   return {
@@ -89,6 +91,60 @@ test("noverlap separates a pile of coincident nodes", () => {
   }
   noverlap(nodes, { margin: 4, speed: 0.8 });
   expect(noOverlaps(nodes, 3)).toBe(true);
+});
+
+/**
+ * A hub is what breaks a naive integrator: it feels one pull per edge, so the
+ * step it takes overshoots by more the more edges it has. This graph gives
+ * three hubs 40 leaves each and cross-links them, which the pre-adaptive-speed
+ * force sent past 1e100 within a hundred ticks and to Infinity soon after —
+ * and an infinite coordinate hangs d3-quadtree's `cover` outright.
+ */
+function hubGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
+  const nodes: GraphNode[] = [];
+  const links: GraphLink[] = [];
+  const link = (source: GraphNode, target: GraphNode) =>
+    links.push({ source, target, rows: [], weight: null, colorValue: null, curve: false });
+
+  const hubs = ["h0", "h1", "h2"].map((id) => node(id));
+  nodes.push(...hubs);
+  for (const [i, hub] of hubs.entries()) {
+    for (let j = 0; j < 40; j++) {
+      const leaf = node(`${hub.id}-${j}`);
+      nodes.push(leaf);
+      link(hub, leaf);
+    }
+    link(hub, hubs[(i + 1) % hubs.length]);
+  }
+  for (const n of nodes) n.degree = links.filter((l) => l.source === n || l.target === n).length;
+  return { nodes, links };
+}
+
+test("ForceAtlas2 stays finite on a hub-heavy graph", () => {
+  const { nodes, links } = hubGraph();
+  const sim = forceSimulation<GraphNode, GraphLink>(nodes).velocityDecay(0.45).stop();
+  sim.force("fa2", forceAtlas2(links, forceAtlas2Params(defaultParams("forceatlas2")), null));
+
+  // Held at full alpha, the way a drag or a slider kick holds the real
+  // simulation, so nothing here is rescued by alpha decay.
+  for (let i = 0; i < 400; i++) {
+    sim.alpha(1);
+    sim.tick(1);
+  }
+
+  let extent = 0;
+  for (const n of nodes) {
+    expect(Number.isFinite(n.x) && Number.isFinite(n.y), `${n.id} left the plane`).toBe(true);
+    extent = Math.max(extent, Math.abs(n.x ?? 0), Math.abs(n.y ?? 0));
+  }
+  // Loose, but four orders of magnitude below where the old force ended up.
+  expect(extent).toBeLessThan(50_000);
+
+  // And it has settled rather than merely stayed bounded: a tick moves nodes
+  // by a fraction of the layout, not by the whole of it.
+  let move = 0;
+  for (const n of nodes) move = Math.max(move, Math.hypot(n.vx ?? 0, n.vy ?? 0));
+  expect(move).toBeLessThan(extent / 100);
 });
 
 test("noverlap leaves an already-clear layout alone", () => {

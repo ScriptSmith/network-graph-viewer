@@ -15,6 +15,14 @@ import { asNumber } from "../parse";
  *
  * Repulsion is the expensive part, so it goes through a Barnes-Hut quadtree:
  * a distant clump of nodes is treated as one body at its centre of mass.
+ *
+ * The forces alone are not a layout. Attraction grows with distance and a hub
+ * feels one pull per edge, so on a graph with any real hub the step a plain
+ * integrator takes overshoots, and the next step overshoots further: nodes
+ * leave for infinity within a dozen ticks. FA2's answer is the adaptive speed
+ * below, which watches how much of the movement is a node swinging back and
+ * forth rather than travelling somewhere, and scales the step down until it
+ * isn't. That is what keeps the layout stable, so it is not optional.
  */
 
 export interface ForceAtlas2Params {
@@ -46,6 +54,13 @@ export const FORCE_ATLAS_2_DEFAULTS: ForceAtlas2Params = {
 /** Barnes-Hut opening angle: bigger is faster and coarser. */
 const THETA = 1.2;
 
+/** How much swinging the speed controller puts up with before it slows down. */
+const JITTER_TOLERANCE = 1;
+/** Floor on the efficiency term, so a bad patch can't stall the layout. */
+const MIN_SPEED_EFFICIENCY = 0.05;
+/** Speed may rise by half per tick at most; faster and it oscillates again. */
+const MAX_RISE = 0.5;
+
 interface MassQuad {
   value?: number;
   x?: number;
@@ -72,6 +87,17 @@ export function forceAtlas2(
   let nodes: GraphNode[] = [];
   let mass = new Float64Array(0);
   const index = new Map<string, number>();
+
+  // This tick's force per node, and the last tick's, which is what tells a
+  // node travelling from one swinging in place.
+  let fx = new Float64Array(0);
+  let fy = new Float64Array(0);
+  let lastFx = new Float64Array(0);
+  let lastFy = new Float64Array(0);
+  let swing = new Float64Array(0);
+
+  let speed = 1;
+  let speedEfficiency = 1;
 
   const theta2 = THETA * THETA;
 
@@ -118,8 +144,8 @@ export function forceAtlas2(
     quad.value = strength;
   }
 
-  function repel(tree: Quadtree<GraphNode>, node: GraphNode, alpha: number): void {
-    const myMass = mass[index.get(node.id) ?? 0];
+  function repel(tree: Quadtree<GraphNode>, node: GraphNode, i: number): void {
+    const myMass = mass[i];
     tree.visit((raw, x0, _y0, x1) => {
       const quad = raw as unknown as MassQuad;
       if (!quad.value) return true;
@@ -132,9 +158,9 @@ export function forceAtlas2(
       // Far enough that the whole cell can act as one body.
       if ((width * width) / theta2 < l) {
         if (l > 0) {
-          const factor = (params.scaling * myMass * quad.value * alpha) / l;
-          node.vx = (node.vx ?? 0) - dx * factor;
-          node.vy = (node.vy ?? 0) - dy * factor;
+          const factor = (params.scaling * myMass * quad.value) / l;
+          fx[i] -= dx * factor;
+          fy[i] -= dy * factor;
         }
         return true;
       }
@@ -150,15 +176,54 @@ export function forceAtlas2(
           const ol = ox * ox + oy * oy;
           if (ol > 0) {
             const otherMass = mass[index.get(other.id) ?? 0];
-            const factor = (params.scaling * myMass * otherMass * alpha) / ol;
-            node.vx = (node.vx ?? 0) - ox * factor;
-            node.vy = (node.vy ?? 0) - oy * factor;
+            const factor = (params.scaling * myMass * otherMass) / ol;
+            fx[i] -= ox * factor;
+            fy[i] -= oy * factor;
           }
         }
         leaf = leaf.next;
       }
       return true;
     });
+  }
+
+  /**
+   * The speed controller from section 2.3 of the paper. Swinging is movement
+   * that reverses, traction is movement that goes somewhere; the layout is
+   * allowed to move faster only while the second outweighs the first.
+   */
+  function adaptSpeed(): void {
+    let totalSwing = 0;
+    let totalTraction = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const m = mass[i];
+      swing[i] = m * Math.hypot(fx[i] - lastFx[i], fy[i] - lastFy[i]);
+      totalSwing += swing[i];
+      totalTraction += m * 0.5 * Math.hypot(fx[i] + lastFx[i], fy[i] + lastFy[i]);
+    }
+    // Settled: every force is holding still, so leave the speed where it is.
+    if (totalSwing <= 0 || totalTraction <= 0) return;
+
+    const estimate = 0.05 * Math.sqrt(nodes.length);
+    let tolerance =
+      JITTER_TOLERANCE *
+      Math.max(
+        Math.sqrt(estimate),
+        Math.min(10, (estimate * totalTraction) / (nodes.length * nodes.length)),
+      );
+
+    if (totalSwing / totalTraction > 2) {
+      if (speedEfficiency > MIN_SPEED_EFFICIENCY) speedEfficiency *= 0.5;
+      tolerance = Math.max(tolerance, JITTER_TOLERANCE);
+    }
+
+    const target = (tolerance * speedEfficiency * totalTraction) / totalSwing;
+    if (totalSwing > tolerance * totalTraction) {
+      if (speedEfficiency > MIN_SPEED_EFFICIENCY) speedEfficiency *= 0.7;
+    } else if (speed < 1000) {
+      speedEfficiency *= 1.3;
+    }
+    speed += Math.min(target - speed, MAX_RISE * speed);
   }
 
   const force = ((alpha: number) => {
@@ -170,33 +235,54 @@ export function forceAtlas2(
       (d) => d.y ?? 0,
     ).visitAfter((quad) => accumulate(quad as unknown as MassQuad));
 
-    for (const node of nodes) repel(tree, node, alpha);
+    fx.fill(0);
+    fy.fill(0);
+
+    for (let i = 0; i < nodes.length; i++) repel(tree, nodes[i], i);
 
     for (const link of links) {
       const source = link.source as GraphNode;
       const target = link.target as GraphNode;
       if (typeof source === "string" || typeof target === "string") continue;
+      const si = index.get(source.id);
+      const ti = index.get(target.id);
+      if (si === undefined || ti === undefined) continue;
       const dx = (target.x ?? 0) - (source.x ?? 0);
       const dy = (target.y ?? 0) - (source.y ?? 0);
       const d = Math.hypot(dx, dy);
       if (d === 0) continue;
       const weight = linkWeight(link) ** params.edgeWeightInfluence;
-      const factor = (params.linLog ? (weight * Math.log(1 + d)) / d : weight) * alpha;
-      source.vx = (source.vx ?? 0) + dx * factor;
-      source.vy = (source.vy ?? 0) + dy * factor;
-      target.vx = (target.vx ?? 0) - dx * factor;
-      target.vy = (target.vy ?? 0) - dy * factor;
+      const factor = params.linLog ? (weight * Math.log(1 + d)) / d : weight;
+      fx[si] += dx * factor;
+      fy[si] += dy * factor;
+      fx[ti] -= dx * factor;
+      fy[ti] -= dy * factor;
     }
 
-    for (const node of nodes) {
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const x = nodes[i].x ?? 0;
+      const y = nodes[i].y ?? 0;
       const d = Math.hypot(x, y);
       if (d === 0) continue;
-      const m = mass[index.get(node.id) ?? 0];
-      const factor = (params.strongGravity ? params.gravity * m : (params.gravity * m) / d) * alpha;
-      node.vx = (node.vx ?? 0) - x * factor;
-      node.vy = (node.vy ?? 0) - y * factor;
+      const factor = params.strongGravity
+        ? params.gravity * mass[i]
+        : (params.gravity * mass[i]) / d;
+      fx[i] -= x * factor;
+      fy[i] -= y * factor;
+    }
+
+    adaptSpeed();
+
+    // The step, not the force, is what moves a node: a node that is swinging
+    // takes a short one however hard it is being pushed. Velocity is set
+    // rather than added because FA2 carries no momentum between ticks — the
+    // momentum is what turned the overshoot into an explosion.
+    for (let i = 0; i < nodes.length; i++) {
+      const step = (alpha * speed) / (1 + Math.sqrt(speed * swing[i]));
+      nodes[i].vx = fx[i] * step;
+      nodes[i].vy = fy[i] * step;
+      lastFx[i] = fx[i];
+      lastFy[i] = fy[i];
     }
   }) as ForceAtlas2;
 
@@ -210,6 +296,13 @@ export function forceAtlas2(
     nodes.forEach((n, i) => {
       mass[i] = n.degree + 1;
     });
+    fx = new Float64Array(nodes.length);
+    fy = new Float64Array(nodes.length);
+    lastFx = new Float64Array(nodes.length);
+    lastFy = new Float64Array(nodes.length);
+    swing = new Float64Array(nodes.length);
+    speed = 1;
+    speedEfficiency = 1;
   };
 
   return force;

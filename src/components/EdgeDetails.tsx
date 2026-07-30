@@ -1,11 +1,12 @@
 import type { Graph, GraphDoc, Row } from "../types";
 import { endpointId } from "../lib/graph";
-import { NEUTRAL, nodeColor } from "../theme";
+import { NEUTRAL, nodeColor, type Palette } from "../theme";
 
 interface EdgeDetailsProps {
   doc: GraphDoc;
   graph: Graph;
   edge: { source: string; target: string };
+  palette: Palette;
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
   onSelectNode: (id: string) => void;
@@ -22,6 +23,7 @@ export function EdgeDetails({
   doc,
   graph,
   edge,
+  palette,
   colors,
   edgeColors,
   onSelectNode,
@@ -37,7 +39,7 @@ export function EdgeDetails({
   // Each end wears the same dot it wears in the graph and at the head of its
   // own card, and the arrow between them takes the edge's own color.
   const dot = (id: string) =>
-    nodeColor(graph.nodes.find((n) => n.id === id)?.group ?? null, colors);
+    nodeColor(graph.nodes.find((n) => n.id === id)?.group ?? null, colors, palette.categorical);
   const arrowColor =
     link.colorValue === null ? undefined : (edgeColors.get(link.colorValue) ?? NEUTRAL);
 

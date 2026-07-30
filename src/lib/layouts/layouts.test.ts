@@ -12,6 +12,7 @@ function node(id: string, radius = 8, group?: string): GraphNode {
     row: { Id: id, Team: group ?? "" },
     group: group ?? null,
     value: null,
+    image: null,
     inDegree: 0,
     outDegree: 0,
     degree: 1,

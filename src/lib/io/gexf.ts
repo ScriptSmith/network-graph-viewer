@@ -2,7 +2,7 @@ import type { Column, GraphDoc, Graph, GraphStyle, Row } from "../../types";
 import { styleColumn } from "../../types";
 import { cellToId } from "../cells";
 import { DEFAULT_NODE_ID_COLUMN } from "../doc";
-import { nodeColor, sequentialColor, CATEGORICAL, NEUTRAL } from "../../theme";
+import { nodeColor, sequentialColor, DEFAULT_COLORS, NEUTRAL, type Palette } from "../../theme";
 import {
   cellToText,
   coerce,
@@ -163,10 +163,18 @@ export interface GexfExportOptions {
   /** The styled graph, which supplies positions, radii and colours. */
   graph: Graph;
   style: GraphStyle;
+  /** The palette in force; defaults to the shipped one. */
+  palette?: Palette;
   colors: Map<string, string>;
 }
 
-export function writeGexf({ doc, graph, style, colors }: GexfExportOptions): string {
+export function writeGexf({
+  doc,
+  graph,
+  style,
+  palette = DEFAULT_COLORS,
+  colors,
+}: GexfExportOptions): string {
   // createDocument already puts the root in the GEXF namespace; setting xmlns
   // by hand as well would serialize a duplicate attribute and fail to reparse.
   const xml = document.implementation.createDocument(GEXF_NS, "gexf", null);
@@ -228,10 +236,15 @@ export function writeGexf({ doc, graph, style, colors }: GexfExportOptions): str
     if (!node) return NEUTRAL;
     if (graph.ranking) {
       const span = graph.ranking.max - graph.ranking.min || 1;
-      return sequentialColor(((node.value ?? graph.ranking.min) - graph.ranking.min) / span);
+      return sequentialColor(
+        ((node.value ?? graph.ranking.min) - graph.ranking.min) / span,
+        palette.sequential,
+      );
     }
-    if (styleColumn(style.nodeColor) === null && style.nodeColor === "none") return CATEGORICAL[0];
-    return nodeColor(node.group, colors);
+    if (styleColumn(style.nodeColor) === null && style.nodeColor === "none") {
+      return palette.categorical[0];
+    }
+    return nodeColor(node.group, colors, palette.categorical);
   };
 
   const nodesEl = make("nodes");

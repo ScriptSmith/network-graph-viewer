@@ -10,7 +10,7 @@ import {
   type CentralityKind,
 } from "../lib/metrics";
 import { asNumber } from "../lib/parse";
-import { CATEGORICAL } from "../theme";
+import type { Palette } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
 import { NodeDetails } from "./NodeDetails";
 import { EdgeDetails } from "./EdgeDetails";
@@ -61,6 +61,7 @@ interface StatsPanelProps {
   graph: Graph;
   /** The partition column currently coloring nodes, if any. */
   colorColumn: string | null;
+  palette: Palette;
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
   chain: FilterStep[];
@@ -118,6 +119,7 @@ export function StatsPanel({
   totalRows,
   graph,
   colorColumn,
+  palette,
   colors,
   edgeColors,
   chain,
@@ -184,7 +186,7 @@ export function StatsPanel({
   const isActiveBar = (key: string) => findValueStep(chain, "edges", groupBy, key) !== undefined;
 
   const barColor = (key: string): string =>
-    groupBy === colorColumn ? (colors.get(key) ?? CATEGORICAL[0]) : CATEGORICAL[0];
+    groupBy === colorColumn ? (colors.get(key) ?? palette.categorical[0]) : palette.categorical[0];
 
   const avgDegree = graph.nodes.length > 0 ? (2 * graph.links.length) / graph.nodes.length : 0;
 
@@ -208,6 +210,7 @@ export function StatsPanel({
           doc={doc}
           graph={graph}
           selectedId={selection.id}
+          palette={palette}
           colors={colors}
           onSelect={onSelectNode}
         />
@@ -218,6 +221,7 @@ export function StatsPanel({
           doc={doc}
           graph={graph}
           edge={selection}
+          palette={palette}
           colors={colors}
           edgeColors={edgeColors}
           onSelectNode={onSelectNode}

@@ -47,6 +47,9 @@ way to change data is the data table, which edits the underlying rows.
 - `src/lib/layouts/` - `positions: "physics" | "computed" | "external"` says
   where a layout's coordinates come from. ForceAtlas2 is a custom d3 force with
   Barnes-Hut repulsion via `d3-quadtree`.
+- `src/lib/images.ts` - node image cells (`https` links, data URIs, bare
+  base64, raw SVG markup) into something an `<image>` can draw, or null.
+  Nothing else is let through: a cell is untrusted text.
 - `src/lib/io/` - GEXF, GraphML, the native `.ngv.json` workspace, gists, and
   `url.ts`, which packs a workspace into a link's fragment and reads one back.
   Links put the data in the fragment, never the query: fragments are not sent
@@ -61,18 +64,30 @@ way to change data is the data table, which edits the underlying rows.
   forceX/forceY toward targets, so layout switches animate as morphs. Props are
   mirrored into `liveRef` so handlers installed once stay current; the scene
   re-joins only when `graph` changes.
-- `src/theme.ts` - color tokens. The categorical palette is CVD-validated;
-  slot order matters, don't reorder it.
+- `src/theme.ts` - color tokens, the shipped palettes and ramps, and
+  `resolvePalette`, which turns a style's `palette`/`ramp` ids (or `custom`
+  plus its own colors) into two arrays. The default categorical palette is
+  CVD-validated; slot order matters, don't reorder it. Custom colors live in
+  the style, so they travel with the workspace, and only `#rrggbb` survives
+  `resolvePalette`: a workspace can arrive from a link anyone wrote.
 - `src/samples/` - the shipped networks, one file each, listed in `index.ts`.
   Each is a different shape at a different size; `sample()` counts them for the
   picker. The first, supervision, is also the graph drifting behind the empty
-  state and the fixture behind `graph.test.ts`, so its rows are frozen.
+  state and the fixture behind `graph.test.ts`, so its rows are frozen. The
+  toolchain sample is the one exception to the app never touching the network:
+  its node table holds Simple Icons URLs, whose CDN serves them cross-origin.
 
 ## Constraints
 
 - Graph marks are styled with SVG attributes, never CSS classes, so
   `lib/export.ts` can serialize a faithful standalone SVG (clone + background
   rect). Keep it that way when adding visuals.
+- Node images are `<pattern>` fills in bounding-box units, one per distinct
+  source, so a node stays a single circle to hit, drag, dim and export, and
+  the pattern sizes itself to whatever radius the node has. A source that
+  fails to load is dropped from the defs, or the browser draws its broken-image
+  glyph inside the node. Remote images can't reach a PNG export: rasterizing
+  goes through an SVG loaded as an image, which fetches nothing.
 - In-graph text uses system fonts (export fidelity); webfonts are for UI
   chrome only.
 - **Algorithms are hand-written on purpose.** Dependencies are allowed for file

@@ -28,6 +28,13 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 - Nodes are first-class: they keep their own attributes and can exist without any edges
 - A data table over both the node and edge tables: search, sort, group with count/sum/average/min/max, hide columns, add and delete rows, and edit any cell with the graph updating as you type
 
+### Styling
+
+- Colour nodes by a column or a network metric, size them by degree or any number column, and colour and weight the edges the same way
+- Four categorical palettes, including the published colourblind-safe Okabe-Ito and Tol bright sets, and four ramps for numeric rankings
+- Or build your own: edit any slot, add and remove colours, and the palette travels with the workspace, the export and the shared link
+- Node images from a column of `https` links, data URIs, bare base64, or SVG markup: the picture fills the node and its colour becomes the ring, so an image costs nothing the colours were saying. The shipped **Web toolchain** sample is 42 projects wearing their logos, and the one place the app fetches anything from a third party
+
 ### Filters that chain
 
 Filters apply in order, each one seeing the subgraph the last produced, so

@@ -52,7 +52,7 @@ import { computeMetrics, runScriptInWorker } from "./lib/metrics/runner";
 import { interpretResult, normalizeEdgeKeys, toScriptGraph } from "./lib/script/payload";
 import type { ScriptRunRequest } from "./components/ScriptPanel";
 import { downloadPng, downloadSvg } from "./lib/export";
-import { groupColorMap } from "./theme";
+import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
 import { useCornerDrag } from "./useCornerDrag";
 import { useDocHistory } from "./useDocHistory";
@@ -160,13 +160,17 @@ export default function App() {
     () => (base && doc ? applyStyle(base, doc, style) : null),
     [base, doc, style],
   );
+  // Everything that draws in colour reads these two: the palette in force, and
+  // the group-to-slot map it produced for the graph on screen.
+  const palette = useMemo(() => resolvePalette(style), [style]);
   const colors = useMemo(
-    () => (graph ? groupColorMap(graph.groups) : new Map<string, string>()),
-    [graph],
+    () => (graph ? groupColorMap(graph.groups, palette.categorical) : new Map<string, string>()),
+    [graph, palette],
   );
   const edgeColors = useMemo(
-    () => (graph ? groupColorMap(graph.edgeGroups) : new Map<string, string>()),
-    [graph],
+    () =>
+      graph ? groupColorMap(graph.edgeGroups, palette.categorical) : new Map<string, string>(),
+    [graph, palette],
   );
 
   // What the address bar last pointed at, so a link this app wrote is not
@@ -561,6 +565,7 @@ export default function App() {
           ...s,
           nodeColor: fix(s.nodeColor, "none"),
           nodeSize: fix(s.nodeSize, "metric:degree"),
+          nodeImage: fix(s.nodeImage, "none"),
           edgeWidth: fix(s.edgeWidth, "uniform"),
           edgeColor: fix(s.edgeColor, "uniform"),
         };
@@ -701,6 +706,7 @@ export default function App() {
       doc,
       graph,
       style,
+      palette,
       colors,
       chain,
       layout,
@@ -708,7 +714,18 @@ export default function App() {
       showIsolated,
       preventOverlap,
     };
-  }, [doc, graph, style, colors, chain, layout, layoutParams, showIsolated, preventOverlap]);
+  }, [
+    doc,
+    graph,
+    style,
+    palette,
+    colors,
+    chain,
+    layout,
+    layoutParams,
+    showIsolated,
+    preventOverlap,
+  ]);
 
   /** The current session as a link, built on demand because packing costs. */
   const buildLink = useCallback(async () => {
@@ -901,6 +918,7 @@ export default function App() {
                 preventOverlap={preventOverlap}
                 labelMode={labelMode}
                 style={style}
+                palette={palette}
                 colors={colors}
                 edgeColors={edgeColors}
                 attrColumns={doc.mapping.attrs}
@@ -972,6 +990,7 @@ export default function App() {
                   doc={doc}
                   graph={graph}
                   style={style}
+                  palette={palette}
                   colors={colors}
                   edgeColors={edgeColors}
                   chain={chain}
@@ -1110,6 +1129,7 @@ export default function App() {
             totalRows={doc.edges.rows.length}
             graph={graph}
             colorColumn={graph.ranking ? null : colorColumn}
+            palette={palette}
             colors={colors}
             edgeColors={edgeColors}
             chain={chain}

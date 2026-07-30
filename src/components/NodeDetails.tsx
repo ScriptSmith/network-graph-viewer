@@ -1,12 +1,13 @@
 import type { Graph, GraphDoc, GraphLink, Row } from "../types";
 import { endpointId } from "../lib/graph";
-import { nodeColor } from "../theme";
+import { nodeColor, type Palette } from "../theme";
 import { displayCell } from "../lib/format";
 
 interface NodeDetailsProps {
   doc: GraphDoc;
   graph: Graph;
   selectedId: string;
+  palette: Palette;
   colors: Map<string, string>;
   onSelect: (id: string | null) => void;
 }
@@ -52,7 +53,14 @@ function EdgeCard({
  * rather than in a panel of its own, so clicking a node answers in the place
  * the reader is already looking.
  */
-export function NodeDetails({ doc, graph, selectedId, colors, onSelect }: NodeDetailsProps) {
+export function NodeDetails({
+  doc,
+  graph,
+  selectedId,
+  palette,
+  colors,
+  onSelect,
+}: NodeDetailsProps) {
   const node = graph.nodes.find((n) => n.id === selectedId);
   if (!node) return null;
 
@@ -67,7 +75,21 @@ export function NodeDetails({ doc, graph, selectedId, colors, onSelect }: NodeDe
   return (
     <section className="node-details" aria-label={`Details for ${node.id}`}>
       <header className="insp-head">
-        <span className="legend-dot" style={{ background: nodeColor(node.group, colors) }} />
+        {/* The picture stands in for the colour dot when there is one, ringed
+            in the node's colour so the grouping still reads. */}
+        {node.image === null ? (
+          <span
+            className="legend-dot"
+            style={{ background: nodeColor(node.group, colors, palette.categorical) }}
+          />
+        ) : (
+          <img
+            className="insp-image"
+            src={node.image}
+            alt=""
+            style={{ borderColor: nodeColor(node.group, colors, palette.categorical) }}
+          />
+        )}
         <h3>{node.id}</h3>
         <button
           type="button"

@@ -12,6 +12,7 @@ import type {
 import { styleColumn } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
 import { findColumn, hasColumn } from "./doc";
+import { imageSource } from "./images";
 import { asNumber } from "./parse";
 import { centralityValues, type CentralityKind } from "./metrics";
 
@@ -57,6 +58,7 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
     row,
     group: null,
     value: null,
+    image: null,
     inDegree: 0,
     outDegree: 0,
     degree: 0,
@@ -169,8 +171,18 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       : numericAttr(base, doc, colorCol as string);
     for (const node of nodes) node.value = values.get(node.id) ?? 0;
   }
+  // Images resolve here rather than at draw time, so the canvas, the tooltips
+  // and an export all see the same source for a node.
+  const imageCol = styleColumn(style.nodeImage);
+  if (imageCol !== null) {
+    const sources = categoricalAttr(base, doc, imageCol);
+    for (const node of nodes) node.image = imageSource(sources.get(node.id) ?? null);
+  }
 
-  // Node radius: sqrt scale of the chosen metric into [4.5, 22].
+  // Node radius: sqrt scale of the chosen metric into [4.5, 22]. Pictures need
+  // room to be recognized, so a graph carrying them starts larger and spans
+  // further; the sizing still says the same thing, just at a readable scale.
+  const sized = imageCol !== null ? { floor: 8, span: 20, uniform: 13 } : null;
   const sizeCentrality = CENTRALITY_TOKENS[style.nodeSize];
   const sizeValues =
     sizeCol !== null
@@ -188,7 +200,9 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
   const maxMetric = Math.max(1e-9, ...nodes.map(sizeMetric));
   for (const node of nodes) {
     node.radius =
-      style.nodeSize === "metric:uniform" ? 8 : 4.5 + 17 * Math.sqrt(sizeMetric(node) / maxMetric);
+      style.nodeSize === "metric:uniform"
+        ? (sized?.uniform ?? 8)
+        : (sized?.floor ?? 4.5) + (sized?.span ?? 17) * Math.sqrt(sizeMetric(node) / maxMetric);
   }
 
   const links: GraphLink[] = base.links.map((l) => {

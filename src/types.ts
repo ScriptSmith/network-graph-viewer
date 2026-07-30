@@ -1,4 +1,5 @@
 import type { SimulationLinkDatum, SimulationNodeDatum } from "d3-force";
+import { DEFAULT_PALETTE, DEFAULT_RAMP, type PaletteChoice } from "./theme";
 
 export type CellValue = string | number | boolean | null;
 export type Row = Record<string, CellValue>;
@@ -52,13 +53,17 @@ export interface GraphDoc {
 
 /**
  * Appearance settings, Gephi style. Column-driven options are encoded as
- * "column:<name>" so they can't collide with the built-in metric tokens.
+ * "column:<name>" so they can't collide with the built-in metric tokens. The
+ * palette fields come from `PaletteChoice`: a shipped set by id, or "custom"
+ * with the colors carried here, so styling travels with the workspace.
  */
-export interface GraphStyle {
+export interface GraphStyle extends PaletteChoice {
   /** 'none' | 'metric:degree' | 'column:<name>' */
   nodeColor: string;
   /** 'metric:degree' | 'metric:in' | 'metric:out' | 'metric:uniform' | 'column:<name>' */
   nodeSize: string;
+  /** 'none' | 'column:<name>' naming a column of image data or URLs. */
+  nodeImage: string;
   /** 'uniform' | 'column:<name>' */
   edgeWidth: string;
   /** 'uniform' | 'column:<name>' */
@@ -71,10 +76,13 @@ export interface GraphStyle {
 export const DEFAULT_STYLE: GraphStyle = {
   nodeColor: "none",
   nodeSize: "metric:degree",
+  nodeImage: "none",
   edgeWidth: "uniform",
   edgeColor: "uniform",
   arrows: true,
   spacing: 1,
+  palette: DEFAULT_PALETTE,
+  ramp: DEFAULT_RAMP,
 };
 
 /** The column name inside a "column:<name>" token, or null. */
@@ -96,6 +104,8 @@ export interface GraphNode extends SimulationNodeDatum {
   group: string | null;
   /** Ranking value when nodes are colored by a numeric metric. */
   value: number | null;
+  /** Ready-to-render image source when an image column is mapped. */
+  image: string | null;
   inDegree: number;
   outDegree: number;
   degree: number;

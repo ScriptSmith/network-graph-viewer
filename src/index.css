@@ -612,6 +612,16 @@ body.resizing-y {
   margin-top: 1px;
 }
 
+/* A node's picture, at a size it can actually be read at. */
+.tip-image {
+  display: block;
+  margin-top: 6px;
+  max-width: 120px;
+  max-height: 120px;
+  border-radius: 6px;
+  background: var(--raised-2);
+}
+
 .tip-meta {
   color: var(--ink-3);
   font-family: var(--font-mono);
@@ -1063,6 +1073,17 @@ body.resizing-y {
   gap: 8px;
 }
 
+/* Stands where the colour dot stands, ringed in the colour it replaced. */
+.insp-image {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--hairline-strong);
+  object-fit: cover;
+  background: var(--raised-2);
+  flex: none;
+}
+
 .insp-head h3 {
   margin: 0;
   font-size: 15px;
@@ -1458,6 +1479,102 @@ body.resizing-y {
 .range {
   width: 100%;
   accent-color: var(--accent);
+}
+
+/* ---- Palette editor ---- */
+
+/* A shipped set is shown as plain chips; a custom one swaps each chip for a
+   colour input, which keeps the row the same shape either way. */
+/* Gapped wide enough that a swatch's remove badge lands in the gutter rather
+   than on the colour next to it. */
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: -4px 0 0;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-strong);
+  padding: 0;
+  flex: none;
+}
+
+input.swatch {
+  appearance: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* Chrome and Safari draw the value inside a swatch of their own. */
+input.swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input.swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+input.swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+.swatch-slot {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The remove button rides the corner of its own swatch and only shows up once
+   the row is hovered, so a palette at rest is just its colours. */
+.swatch-drop {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline-strong);
+  background: var(--raised-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  display: none;
+  place-items: center;
+  cursor: pointer;
+}
+
+.swatches:hover .swatch-drop {
+  display: grid;
+}
+
+.swatch-drop:hover {
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+
+.swatch-add {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px dashed var(--hairline-strong);
+  background: none;
+  color: var(--ink-3);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+
+.swatch-add:hover {
+  color: var(--ink);
+  border-color: var(--ink-3);
 }
 
 /* ---- Script panel ---- */

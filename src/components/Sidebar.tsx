@@ -19,6 +19,7 @@ import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
 import { GistLoad } from "./GistLoad";
 import { SharePanel } from "./SharePanel";
 import { FilterChain } from "./FilterChain";
+import { PalettePicker } from "./PalettePicker";
 import { SampleList } from "./SampleList";
 import { SAMPLES, type SampleNetwork } from "../samples";
 
@@ -113,6 +114,8 @@ export function Sidebar({
     () => (doc ? doc.nodes.columns.filter((c) => c.name !== doc.nodeIdColumn) : []),
     [doc],
   );
+  // Image references are text, whether they are links, data URIs or markup.
+  const imageColumns = useMemo(() => nodeColumns.filter((c) => c.type === "text"), [nodeColumns]);
 
   const pickFile = () => fileInputRef.current?.click();
 
@@ -399,6 +402,28 @@ export function Sidebar({
                 </select>
               </label>
               <label className="field">
+                <span className="field-label">Node images from</span>
+                <select
+                  className="control"
+                  value={style.nodeImage}
+                  onChange={(e) => onStyleChange({ nodeImage: e.target.value })}
+                >
+                  <option value="none">None</option>
+                  {imageColumns.map((c) => (
+                    <option key={c.name} value={`column:${c.name}`}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {style.nodeImage !== "none" && (
+                <p className="note">
+                  Cells can hold an https link, a data URI, bare base64, or SVG markup. Linked
+                  images are fetched as the graph draws, so a PNG export leaves them out; embedded
+                  ones export with it.
+                </p>
+              )}
+              <label className="field">
                 <span className="field-label">Color edges by</span>
                 <select
                   className="control"
@@ -452,6 +477,7 @@ export function Sidebar({
                   <option value="none">None</option>
                 </select>
               </label>
+              <PalettePicker style={style} onStyleChange={onStyleChange} />
             </>
           ) : (
             <p className="note">Load data first.</p>

@@ -1,4 +1,5 @@
 import type { Dataset, Graph, GraphDoc, GraphStyle } from "../../types";
+import type { Palette } from "../../theme";
 import { buildDoc } from "../doc";
 import { parsePastedText } from "../parse";
 import { parseGexf, writeGexf } from "./gexf";
@@ -70,6 +71,8 @@ export interface ExportInput extends WorkspaceInput {
   doc: GraphDoc;
   graph: Graph | null;
   style: GraphStyle;
+  /** The palette in force, so an exported file carries the colours on screen. */
+  palette?: Palette;
   colors: Map<string, string>;
 }
 
@@ -103,6 +106,7 @@ export function exportAs(format: ExportFormat, input: ExportInput): ExportedFile
               doc: input.doc,
               graph: input.graph,
               style: input.style,
+              palette: input.palette,
               colors: input.colors,
             })
           : "",

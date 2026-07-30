@@ -4,7 +4,7 @@ import { styleColumn } from "../types";
 import { findValueStep, type FilterStep } from "../lib/filter";
 import { formatMetric } from "../lib/format";
 import { useCornerDrag } from "../useCornerDrag";
-import { MAX_GROUPS, NEUTRAL, OTHER_GROUP, SEQUENTIAL } from "../theme";
+import { NEUTRAL, OTHER_GROUP, type Palette } from "../theme";
 
 const RANK_LABELS: Record<string, string> = {
   "metric:degree": "Connections",
@@ -24,6 +24,7 @@ interface LegendProps {
   doc: GraphDoc;
   graph: Graph;
   style: GraphStyle;
+  palette: Palette;
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
   chain: FilterStep[];
@@ -46,6 +47,7 @@ export function Legend({
   doc,
   graph,
   style,
+  palette,
   colors,
   edgeColors,
   chain,
@@ -67,33 +69,36 @@ export function Legend({
       ? "nodes"
       : "edges";
 
+  // However many slots the palette in force has is how many groups get one.
+  const slots = palette.categorical.length;
+
   const nodeEntries = useMemo<Entry[]>(() => {
     if (graph.ranking || graph.groups.length === 0) return [];
-    const entries: Entry[] = graph.groups.slice(0, MAX_GROUPS).map((g) => ({
+    const entries: Entry[] = graph.groups.slice(0, slots).map((g) => ({
       name: g,
       color: colors.get(g) ?? NEUTRAL,
       value: g,
     }));
-    if (graph.groups.length > MAX_GROUPS) {
+    if (graph.groups.length > slots) {
       entries.push({ name: OTHER_GROUP, color: NEUTRAL, value: null });
     }
     if (graph.nodes.some((n) => n.group === null)) {
       entries.push({ name: "Unassigned", color: NEUTRAL, value: null });
     }
     return entries;
-  }, [graph, colors]);
+  }, [graph, colors, slots]);
 
   const edgeEntries = useMemo<Entry[]>(() => {
-    const entries: Entry[] = graph.edgeGroups.slice(0, MAX_GROUPS).map((g) => ({
+    const entries: Entry[] = graph.edgeGroups.slice(0, slots).map((g) => ({
       name: g,
       color: edgeColors.get(g) ?? NEUTRAL,
       value: g,
     }));
-    if (graph.edgeGroups.length > MAX_GROUPS) {
+    if (graph.edgeGroups.length > slots) {
       entries.push({ name: OTHER_GROUP, color: NEUTRAL, value: null });
     }
     return entries;
-  }, [graph, edgeColors]);
+  }, [graph, edgeColors, slots]);
 
   const rankingLabel = RANK_LABELS[style.nodeColor] ?? colorColumn ?? "Value";
 
@@ -143,7 +148,7 @@ export function Legend({
         <span className="legend-item">
           <span
             className="legend-gradient"
-            style={{ background: `linear-gradient(90deg, ${SEQUENTIAL.join(",")})` }}
+            style={{ background: `linear-gradient(90deg, ${palette.sequential.join(",")})` }}
           />
           <span>
             {rankingLabel} {formatMetric(graph.ranking.min)} to {formatMetric(graph.ranking.max)}

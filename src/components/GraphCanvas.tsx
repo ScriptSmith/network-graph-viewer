@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type Ref,
   type RefObject,
 } from "react";
@@ -42,7 +43,7 @@ import { endpointId as endpoint, weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { formatMetric } from "../lib/format";
 import {
-  CATEGORICAL,
+  DEFAULT_COLORS,
   EDGE,
   EDGE_LIT,
   LABEL,
@@ -52,6 +53,7 @@ import {
   SURFACE,
   nodeColor,
   sequentialColor,
+  type Palette,
 } from "../theme";
 
 export interface GraphCanvasHandle {
@@ -71,6 +73,8 @@ interface GraphCanvasProps {
   preventOverlap: boolean;
   labelMode: LabelMode;
   style: GraphStyle;
+  /** Resolved color sets, so the palette the user picked reaches every mark. */
+  palette?: Palette;
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
   attrColumns: string[];
@@ -106,10 +110,10 @@ function escapeHtml(v: unknown): string {
 }
 
 /** Marker id matching an edge stroke color; markers are pre-defined per slot. */
-function markerFor(stroke: string): string {
+function markerFor(stroke: string, categorical: string[]): string {
   if (stroke === EDGE_LIT) return "url(#arrow-lit)";
   if (stroke === NEUTRAL) return "url(#arrow-cn)";
-  const slot = CATEGORICAL.indexOf(stroke);
+  const slot = categorical.indexOf(stroke);
   return slot === -1 ? "url(#arrow-dim)" : `url(#arrow-c${slot})`;
 }
 
@@ -121,6 +125,7 @@ export function GraphCanvas({
   preventOverlap,
   labelMode,
   style,
+  palette = DEFAULT_COLORS,
   colors,
   edgeColors,
   attrColumns,
@@ -150,6 +155,41 @@ export function GraphCanvas({
 
   const edgeWidth = useMemo(() => weightScale(graph.links), [graph]);
 
+  // Sources that turned out not to load: a dead link would otherwise leave the
+  // browser's broken-image glyph sitting inside the node.
+  const [brokenImages, setBrokenImages] = useState<ReadonlySet<string>>(() => new Set());
+  const probedImages = useRef<Set<string>>(new Set());
+
+  /**
+   * A pattern per distinct image, not per node: a pattern in bounding-box units
+   * sizes itself to whichever circle carries it, so one definition serves every
+   * node sharing a picture whatever radius each ended up with.
+   */
+  const imagePatterns = useMemo(() => {
+    const ids = new Map<string, string>();
+    for (const node of graph.nodes) {
+      if (node.image !== null && !brokenImages.has(node.image) && !ids.has(node.image)) {
+        ids.set(node.image, `node-image-${ids.size}`);
+      }
+    }
+    return ids;
+  }, [graph, brokenImages]);
+
+  // Each source is tried once, in an image of its own. Anything that fails
+  // drops its pattern and the node falls back to its color.
+  useEffect(() => {
+    for (const node of graph.nodes) {
+      const source = node.image;
+      if (source === null || probedImages.current.has(source)) continue;
+      probedImages.current.add(source);
+      const probe = new Image();
+      probe.onerror = () => {
+        setBrokenImages((current) => new Set(current).add(source));
+      };
+      probe.src = source;
+    }
+  }, [graph]);
+
   // Live values for callbacks created inside effects.
   const liveRef = useRef({
     layout,
@@ -160,11 +200,13 @@ export function GraphCanvas({
     selectedId,
     selectedEdge,
     onSelect,
+    palette,
     colors,
     edgeColors,
     attrColumns,
     ambient,
     style,
+    brokenImages,
   });
   liveRef.current = {
     layout,
@@ -175,19 +217,42 @@ export function GraphCanvas({
     selectedId,
     selectedEdge,
     onSelect,
+    palette,
     colors,
     edgeColors,
     attrColumns,
     ambient,
     style,
+    brokenImages,
   };
 
-  const nodeFill = (d: GraphNode): string => {
+  /** What color the node stands for, image or no image. */
+  const nodeTint = (d: GraphNode): string => {
     if (graph.ranking) {
       const span = graph.ranking.max - graph.ranking.min || 1;
-      return sequentialColor(((d.value ?? graph.ranking.min) - graph.ranking.min) / span);
+      return sequentialColor(
+        ((d.value ?? graph.ranking.min) - graph.ranking.min) / span,
+        liveRef.current.palette.sequential,
+      );
     }
-    return nodeColor(d.group, liveRef.current.colors);
+    return nodeColor(d.group, liveRef.current.colors, liveRef.current.palette.categorical);
+  };
+
+  const imageFill = (d: GraphNode): string | null => {
+    const id = d.image === null ? undefined : imagePatterns.get(d.image);
+    return id === undefined ? null : `url(#${id})`;
+  };
+
+  // A pictured node keeps its colour as a ring, so an image never costs the
+  // reader whatever the colours were encoding.
+  const nodeFill = (d: GraphNode): string => imageFill(d) ?? nodeTint(d);
+  const nodeStroke = (d: GraphNode): string => {
+    if (d.id === liveRef.current.selectedId) return SELECT_RING;
+    return imageFill(d) === null ? SURFACE : nodeTint(d);
+  };
+  const nodeStrokeWidth = (d: GraphNode): number => {
+    if (d.id === liveRef.current.selectedId) return 2.5;
+    return imageFill(d) === null ? 1.5 : 2;
   };
 
   const edgeBase = (d: GraphLink): string => {
@@ -229,8 +294,8 @@ export function GraphCanvas({
 
     sels.node
       .attr("opacity", (d) => (neighbors && !neighbors.has(d.id) ? 0.14 : 1))
-      .attr("stroke", (d) => (d.id === sel ? SELECT_RING : SURFACE))
-      .attr("stroke-width", (d) => (d.id === sel ? 2.5 : 1.5));
+      .attr("stroke", nodeStroke)
+      .attr("stroke-width", nodeStrokeWidth);
 
     // A selected edge is lit the way a hovered one is, and keeps that whatever
     // the neighbourhood dimming would otherwise have said about it.
@@ -253,7 +318,7 @@ export function GraphCanvas({
         const lit =
           picked(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return markerFor(lit ? EDGE_LIT : edgeBase(d));
+        return markerFor(lit ? EDGE_LIT : edgeBase(d), liveRef.current.palette.categorical);
       });
 
     sels.label.attr("display", (d) => {
@@ -408,8 +473,12 @@ export function GraphCanvas({
       graph.ranking && d.value !== null
         ? `<div class="tip-sub">${escapeHtml(formatMetric(d.value))}</div>`
         : "";
+    // The mark is too small to read a picture in, so the tooltip carries one
+    // at a size that can be. The source was vetted on the way in.
+    const source = d.image !== null && !liveRef.current.brokenImages.has(d.image) ? d.image : null;
+    const image = source === null ? "" : `<img class="tip-image" src="${escapeHtml(source)}" />`;
     return (
-      `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}` +
+      `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}${image}` +
       `<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
     );
   };
@@ -497,7 +566,9 @@ export function GraphCanvas({
       .attr("stroke", (d) => edgeBase(d))
       .attr("stroke-width", (d) => edgeWidth(d))
       .attr("stroke-linecap", "round")
-      .attr("marker-end", (d) => (amb || !st.arrows ? null : markerFor(edgeBase(d))));
+      .attr("marker-end", (d) =>
+        amb || !st.arrows ? null : markerFor(edgeBase(d), palette.categorical),
+      );
 
     const hit = hitLayer
       .selectAll<SVGPathElement, GraphLink>("path")
@@ -535,9 +606,9 @@ export function GraphCanvas({
       .join("circle")
       .attr("data-id", (d) => d.id)
       .attr("r", (d) => d.radius)
-      .attr("fill", (d) => nodeFill(d))
-      .attr("stroke", SURFACE)
-      .attr("stroke-width", 1.5)
+      .attr("fill", nodeFill)
+      .attr("stroke", nodeStroke)
+      .attr("stroke-width", nodeStrokeWidth)
       .style("cursor", amb ? "default" : "pointer");
 
     const label = labelLayer
@@ -673,6 +744,17 @@ export function GraphCanvas({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [labelMode, selection, graph, style.arrows]);
 
+  // A pattern that has just been dropped from the defs must stop being named
+  // before anything paints, or the node it filled would come out blank. Fills
+  // are otherwise set once, when the scene is built.
+  useLayoutEffect(() => {
+    selsRef.current?.node
+      .attr("fill", nodeFill)
+      .attr("stroke", nodeStroke)
+      .attr("stroke-width", nodeStrokeWidth);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [imagePatterns]);
+
   // Pan and zoom.
   useEffect(() => {
     const svg = svgRef.current;
@@ -742,8 +824,11 @@ export function GraphCanvas({
           <Arrow id="arrow-dim" fill={ARROW} />
           <Arrow id="arrow-lit" fill={EDGE_LIT} />
           <Arrow id="arrow-cn" fill={NEUTRAL} />
-          {CATEGORICAL.map((c, i) => (
+          {palette.categorical.map((c, i) => (
             <Arrow key={c} id={`arrow-c${i}`} fill={c} />
+          ))}
+          {[...imagePatterns].map(([source, id]) => (
+            <NodeImage key={id} id={id} source={source} />
           ))}
         </defs>
         <g ref={viewportRef} data-viewport="">
@@ -755,6 +840,23 @@ export function GraphCanvas({
       </svg>
       {!ambient && <div className="graph-tooltip" ref={tooltipRef} />}
     </div>
+  );
+}
+
+/**
+ * A node picture, as a pattern the circles fill themselves with. Bounding-box
+ * units mean the 1x1 content box is the circle's own box, so the picture lands
+ * centred and cropped square at whatever radius the node has, and the mark
+ * stays a plain circle: still one element to hit, drag, dim and export.
+ */
+function NodeImage({ id, source }: { id: string; source: string }) {
+  return (
+    <pattern id={id} width="1" height="1" patternContentUnits="objectBoundingBox">
+      {/* Backdrop, so a transparent picture and one that has not arrived yet
+          both read as the surface rather than as a hole in the graph. */}
+      <rect width="1" height="1" fill={SURFACE} />
+      <image href={source} width="1" height="1" preserveAspectRatio="xMidYMid slice" />
+    </pattern>
   );
 }
 

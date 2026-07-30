@@ -70,6 +70,7 @@ import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
 import { Legend } from "./components/Legend";
 import { ViewMenu } from "./components/ViewMenu";
+import iconUrl from "../docs/icon.svg";
 
 const AMBIENT_TABLE = SAMPLE_DATASET.tables[0];
 const AMBIENT_DOC = buildDoc(SAMPLE_DATASET.fileName, AMBIENT_TABLE);
@@ -1076,7 +1077,8 @@ export default function App() {
               />
               <div className="empty">
                 <div className="empty-card">
-                  <h2 className="empty-title">Every spreadsheet hides a network.</h2>
+                  <img className="empty-icon" src={iconUrl} alt="" width={96} height={96} />
+                  <h2 className="empty-title">Two columns make a graph</h2>
                   <p className="empty-tag">
                     Upload an edge list, one row per connection: the first two columns you map
                     become the arrows, everything else becomes detail you can style, filter, and
@@ -1084,9 +1086,19 @@ export default function App() {
                   </p>
                   <table className="example-table">
                     <thead>
+                      <tr className="example-arrow" aria-hidden="true">
+                        <td>
+                          <span className="arrow-tail" />
+                        </td>
+                        <td>
+                          <span className="arrow-head" />
+                        </td>
+                        <td colSpan={2} />
+                      </tr>
                       <tr>
                         <th>Supervisor</th>
                         <th>Supervisee</th>
+                        <th>Department</th>
                         <th>Meetings</th>
                       </tr>
                     </thead>
@@ -1094,16 +1106,19 @@ export default function App() {
                       <tr>
                         <td>Alex Rivera</td>
                         <td>Priya Sharma</td>
+                        <td>Engineering</td>
                         <td>4</td>
                       </tr>
                       <tr>
                         <td>Priya Sharma</td>
                         <td>Grace Okafor</td>
+                        <td>Engineering</td>
                         <td>4</td>
                       </tr>
                       <tr>
-                        <td>Grace Okafor</td>
-                        <td>Mei Chen</td>
+                        <td>Alex Rivera</td>
+                        <td>Kenji Mori</td>
+                        <td>Operations</td>
                         <td>2</td>
                       </tr>
                     </tbody>

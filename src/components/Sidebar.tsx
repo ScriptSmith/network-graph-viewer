@@ -161,7 +161,7 @@ export function Sidebar({
           <br />
           Graph Viewer
         </h1>
-        <p className="tagline">Spreadsheet in, network out.</p>
+        <p className="tagline">Data in, network out.</p>
       </header>
 
       <input

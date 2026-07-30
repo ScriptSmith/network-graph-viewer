@@ -975,7 +975,7 @@ body.resizing-y {
 }
 
 .empty-card {
-  width: min(430px, 100%);
+  width: min(480px, 100%);
   max-height: 100%;
   overflow-y: auto;
   background: #161615ee;
@@ -989,8 +989,18 @@ body.resizing-y {
   backdrop-filter: blur(4px);
 }
 
+/* The card is a column flexbox, so pin the icon's own size: stretch would take
+   the card's width and shrink would squash it when the card scrolls. */
+.empty-icon {
+  width: 96px;
+  height: 96px;
+  align-self: center;
+  flex: none;
+}
+
 .empty-title {
   margin: 0;
+  text-align: center;
   font-family: var(--font-display);
   font-size: 30px;
   font-weight: 720;
@@ -3077,6 +3087,54 @@ input.swatch::-moz-color-swatch {
 .example-table td:last-child,
 .example-table th:last-child {
   text-align: right;
+}
+
+/* A bracket that leaves the source column, crosses, and turns down onto the
+   target. Two cells rather than one spanning cell: each leg is a border at the
+   50% mark of its own cell, so both land on their column's middle at whatever
+   widths the content gives them. */
+/* Top-aligned, or the shorter leg gets centred against the taller one and the
+   two halves of the horizontal line stop meeting. */
+.example-arrow td {
+  border: 0;
+  padding: 0 0 3px;
+  vertical-align: top;
+}
+
+.arrow-tail,
+.arrow-head {
+  display: block;
+  position: relative;
+  border-top: 2px solid var(--accent);
+}
+
+/* Half a stroke back off the 50% mark, so a 2px leg straddles the column's
+   middle rather than hanging to one side of it. The tail runs the arrowhead's
+   length deeper than the head, which leaves both legs stopping level. */
+.arrow-tail {
+  height: 19px;
+  margin-left: calc(50% - 1px);
+  border-left: 2px solid var(--accent);
+}
+
+.arrow-head {
+  height: 12px;
+  margin-right: calc(50% - 1px);
+  border-right: 2px solid var(--accent);
+}
+
+/* Hangs below the leg into the row's padding, tip clear of the header rule.
+   Offsets run from the padding box, which stops short of the leg it hangs from:
+   -6px is half the head's width plus that 2px border, putting the point on the
+   line rather than beside it. */
+.arrow-head::after {
+  content: "";
+  position: absolute;
+  right: -6px;
+  bottom: -7px;
+  border-top: 7px solid var(--accent);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
 }
 
 .example-caption {

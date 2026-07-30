@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" width="128" height="128" alt="A ten-node network cycling through the force, circle, grid, radial and grouped layouts, recolouring and resizing as it moves">
+
 # Network Graph Viewer
 
 > [!NOTE]

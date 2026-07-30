@@ -892,6 +892,14 @@ body.resizing-y {
     border-color 140ms ease;
 }
 
+/* Parked on the right, the rows hug that edge, so a legend long enough to wrap
+   stays flush with the corner it was dragged to instead of leaving a ragged
+   edge against it. */
+.legend.at-top-right,
+.legend.at-bottom-right {
+  justify-content: flex-end;
+}
+
 /* Sharing a corner with the controls, the legend is the one that steps aside. */
 .legend.stacked.at-top-left,
 .legend.stacked.at-top-right {

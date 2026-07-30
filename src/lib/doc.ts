@@ -2,6 +2,7 @@ import type { CellValue, Column, GraphDoc, Mapping, Row, Table } from "../types"
 import type { MetricRunResult } from "./metrics";
 import { cellToId, edgeKey } from "./cells";
 import { guessMapping } from "./parse";
+import { parseColor } from "../theme";
 
 export const DEFAULT_NODE_ID_COLUMN = "Id";
 
@@ -135,6 +136,31 @@ export function edgeStyleColumns(doc: GraphDoc): Column[] {
   return doc.edges.columns.filter(
     (c) => c.name !== doc.mapping.source && c.name !== doc.mapping.target,
   );
+}
+
+/**
+ * Columns whose cells are colors rather than categories, so they can paint the
+ * marks themselves. Offered only when most of the column reads as a color: a
+ * column of prose that happens to mention "red" is not a color column.
+ */
+export function colorCellColumns(doc: GraphDoc, scope: "nodes" | "edges"): Column[] {
+  const candidates = scope === "nodes" ? nodeStyleColumns(doc) : edgeStyleColumns(doc);
+  return candidates.filter((c) => {
+    if (c.type !== "text") return false;
+    // Node styling resolves against the node table first, so that is where the
+    // cells are read from when both tables happen to carry the name.
+    const rows =
+      scope === "nodes" && hasColumn(doc.nodes, c.name) ? doc.nodes.rows : doc.edges.rows;
+    let filled = 0;
+    let colors = 0;
+    for (const row of rows) {
+      const value = cellToId(row[c.name]);
+      if (value === null) continue;
+      filled++;
+      if (parseColor(value) !== null) colors++;
+    }
+    return filled > 0 && colors * 2 >= filled;
+  });
 }
 
 /**

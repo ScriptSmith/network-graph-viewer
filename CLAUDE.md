@@ -31,14 +31,21 @@ way to change data is the data table, which edits the underlying rows.
 
 - `src/types.ts` - shared types. `Column` carries an inferred `type`, set once
   at import. Style options are tagged strings: `metric:degree` |
-  `column:<name>`; `styleColumn()` extracts the column.
+  `column:<name>` | `cell:<name>`; `styleColumn()` extracts the column and
+  `isCellStyle()` says which of the two column forms it is. `column:` maps the
+  values onto a palette or a scale, `cell:` means the column already holds the
+  answer, a color or a pixel size, so it lands on the mark untouched.
 - `src/lib/cells.ts` - cell coercion and the compound-key helpers. Keys join
   with a unit separator so ids with spaces or punctuation can't collide.
 - `src/lib/doc.ts` - document assembly, node-table derivation and
   reconciliation, computed-column writes.
 - `src/lib/graph.ts` - `buildBaseGraph` (structure) and `applyStyle`
   (appearance). Node style columns resolve against the node table first, then
-  fall back to projecting from incident edge rows.
+  fall back to projecting from incident edge rows. A `cell:` column puts its own
+  color on `node.color`/`link.color` and its own pixel radius on `node.radius`,
+  clamped, and leaves `group`/`groups` empty: the colors are their own key, so
+  there is no legend and nothing to fold into "Other". `markColor()` is the one
+  answer to what color a node is, asked by the canvas, the inspector and GEXF.
 - `src/lib/filter.ts` - the filter chain. Steps apply **in order**, each seeing
   the subgraph the last one produced, so reordering changes the answer.
 - `src/lib/metrics/` - every algorithm, hand-written. `model.ts` holds the
@@ -76,6 +83,9 @@ way to change data is the data table, which edits the underlying rows.
   state and the fixture behind `graph.test.ts`, so its rows are frozen. The
   toolchain sample is the one exception to the app never touching the network:
   its node table holds Simple Icons URLs, whose CDN serves them cross-origin.
+  The transit sample is the one styled by `cell:` columns; `samples.test.ts`
+  holds every shipped cell colour to reading as a colour, since one that didn't
+  would come out neutral rather than failing.
 
 ## Constraints
 

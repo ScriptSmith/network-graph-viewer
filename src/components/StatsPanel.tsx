@@ -10,7 +10,7 @@ import {
   type CentralityKind,
 } from "../lib/metrics";
 import { asNumber } from "../lib/parse";
-import type { Palette } from "../theme";
+import { parseColor, type Palette } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
 import { NodeDetails } from "./NodeDetails";
 import { EdgeDetails } from "./EdgeDetails";
@@ -185,8 +185,12 @@ export function StatsPanel({
   // adds. The pivots run over edge rows, so that is the table it matches on.
   const isActiveBar = (key: string) => findValueStep(chain, "edges", groupBy, key) !== undefined;
 
+  // Bars grouped by the column that colors the graph wear its colors: a palette
+  // slot, or the cell itself when the column is one the marks read directly.
   const barColor = (key: string): string =>
-    groupBy === colorColumn ? (colors.get(key) ?? palette.categorical[0]) : palette.categorical[0];
+    groupBy === colorColumn
+      ? (colors.get(key) ?? parseColor(key) ?? palette.categorical[0])
+      : palette.categorical[0];
 
   const avgDegree = graph.nodes.length > 0 ? (2 * graph.links.length) / graph.nodes.length : 0;
 

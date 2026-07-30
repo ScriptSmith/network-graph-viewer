@@ -12,6 +12,7 @@ function node(id: string, radius = 8, group?: string): GraphNode {
     row: { Id: id, Team: group ?? "" },
     group: group ?? null,
     value: null,
+    color: null,
     image: null,
     inDegree: 0,
     outDegree: 0,
@@ -105,7 +106,15 @@ function hubGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
   const nodes: GraphNode[] = [];
   const links: GraphLink[] = [];
   const link = (source: GraphNode, target: GraphNode) =>
-    links.push({ source, target, rows: [], weight: null, colorValue: null, curve: false });
+    links.push({
+      source,
+      target,
+      rows: [],
+      weight: null,
+      colorValue: null,
+      color: null,
+      curve: false,
+    });
 
   const hubs = ["h0", "h1", "h2"].map((id) => node(id));
   nodes.push(...hubs);

@@ -2,7 +2,8 @@ import type { Column, GraphDoc, Graph, GraphStyle, Row } from "../../types";
 import { styleColumn } from "../../types";
 import { cellToId } from "../cells";
 import { DEFAULT_NODE_ID_COLUMN } from "../doc";
-import { nodeColor, sequentialColor, DEFAULT_COLORS, NEUTRAL, type Palette } from "../../theme";
+import { DEFAULT_COLORS, NEUTRAL, type Palette } from "../../theme";
+import { markColor } from "../graph";
 import {
   cellToText,
   coerce,
@@ -234,17 +235,8 @@ export function writeGexf({
   const fillFor = (id: string): string => {
     const node = graph.nodes.find((n) => n.id === id);
     if (!node) return NEUTRAL;
-    if (graph.ranking) {
-      const span = graph.ranking.max - graph.ranking.min || 1;
-      return sequentialColor(
-        ((node.value ?? graph.ranking.min) - graph.ranking.min) / span,
-        palette.sequential,
-      );
-    }
-    if (styleColumn(style.nodeColor) === null && style.nodeColor === "none") {
-      return palette.categorical[0];
-    }
-    return nodeColor(node.group, colors, palette.categorical);
+    if (node.color === null && style.nodeColor === "none") return palette.categorical[0];
+    return markColor(node, graph.ranking, colors, palette);
   };
 
   const nodesEl = make("nodes");

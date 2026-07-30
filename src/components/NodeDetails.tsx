@@ -1,6 +1,6 @@
 import type { Graph, GraphDoc, GraphLink, Row } from "../types";
-import { endpointId } from "../lib/graph";
-import { nodeColor, type Palette } from "../theme";
+import { endpointId, markColor } from "../lib/graph";
+import { type Palette } from "../theme";
 import { displayCell } from "../lib/format";
 
 interface NodeDetailsProps {
@@ -71,6 +71,7 @@ export function NodeDetails({
   const nodeAttrs = doc.nodes.columns.filter(
     (c) => c.name !== doc.nodeIdColumn && node.row[c.name] !== null && node.row[c.name] !== "",
   );
+  const tint = markColor(node, graph.ranking, colors, palette);
 
   return (
     <section className="node-details" aria-label={`Details for ${node.id}`}>
@@ -78,17 +79,9 @@ export function NodeDetails({
         {/* The picture stands in for the colour dot when there is one, ringed
             in the node's colour so the grouping still reads. */}
         {node.image === null ? (
-          <span
-            className="legend-dot"
-            style={{ background: nodeColor(node.group, colors, palette.categorical) }}
-          />
+          <span className="legend-dot" style={{ background: tint }} />
         ) : (
-          <img
-            className="insp-image"
-            src={node.image}
-            alt=""
-            style={{ borderColor: nodeColor(node.group, colors, palette.categorical) }}
-          />
+          <img className="insp-image" src={node.image} alt="" style={{ borderColor: tint }} />
         )}
         <h3>{node.id}</h3>
         <button

@@ -120,6 +120,87 @@ export function isHexColor(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
 }
 
+/**
+ * CSS color names, name and hex packed into one string so the table reads as a
+ * table and the formatter leaves it alone. Grey spellings are folded onto the
+ * gray ones on lookup rather than listed twice.
+ */
+const NAMED_COLORS =
+  "black 000000,white ffffff,silver c0c0c0,gray 808080,darkgray a9a9a9,lightgray d3d3d3," +
+  "dimgray 696969,slategray 708090,darkslategray 2f4f4f,whitesmoke f5f5f5,snow fffafa," +
+  "ivory fffff0,beige f5f5dc,azure f0ffff,aliceblue f0f8ff,antiquewhite faebd7," +
+  "red ff0000,darkred 8b0000,firebrick b22222,crimson dc143c,tomato ff6347,coral ff7f50," +
+  "salmon fa8072,lightsalmon ffa07a,lightcoral f08080,maroon 800000,brown a52a2a," +
+  "orange ffa500,darkorange ff8c00,gold ffd700,yellow ffff00,lightyellow ffffe0," +
+  "khaki f0e68c,goldenrod daa520,wheat f5deb3,tan d2b48c,sandybrown f4a460," +
+  "peru cd853f,chocolate d2691e,sienna a0522d,olive 808000,olivedrab 6b8e23," +
+  "green 008000,darkgreen 006400,forestgreen 228b22,seagreen 2e8b57," +
+  "mediumseagreen 3cb371,limegreen 32cd32,lime 00ff00,lightgreen 90ee90," +
+  "springgreen 00ff7f,yellowgreen 9acd32,mintcream f5fffa,teal 008080,darkcyan 008b8b," +
+  "aqua 00ffff,cyan 00ffff,turquoise 40e0d0,lightblue add8e6,skyblue 87ceeb," +
+  "steelblue 4682b4,cornflowerblue 6495ed,dodgerblue 1e90ff,royalblue 4169e1," +
+  "blue 0000ff,darkblue 00008b,navy 000080,midnightblue 191970,slateblue 6a5acd," +
+  "mediumslateblue 7b68ee,mediumpurple 9370db,purple 800080,rebeccapurple 663399," +
+  "indigo 4b0082,darkviolet 9400d3,violet ee82ee,orchid da70d6,darkmagenta 8b008b," +
+  "magenta ff00ff,fuchsia ff00ff,plum dda0dd,thistle d8bfd8,lavender e6e6fa," +
+  "pink ffc0cb,hotpink ff69b4,deeppink ff1493";
+
+let namedColors: Map<string, string> | null = null;
+
+function namedColor(name: string): string | null {
+  if (namedColors === null) {
+    namedColors = new Map();
+    for (const entry of NAMED_COLORS.split(",")) {
+      const [key, hex] = entry.split(" ");
+      namedColors.set(key, `#${hex}`);
+    }
+  }
+  return namedColors.get(name.replaceAll("grey", "gray")) ?? null;
+}
+
+const byte = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+const hex2 = (v: number) => byte(v).toString(16).padStart(2, "0");
+
+/**
+ * A cell read as a color: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()` or a
+ * CSS color name. Everything comes back as plain `#rrggbb`, since that is what
+ * the rest of the app and the GEXF writer expect, and anything else comes back
+ * null: a cell is untrusted text, and it is about to become an SVG attribute.
+ */
+export function parseColor(value: string | null): string | null {
+  if (value === null) return null;
+  const text = value.trim().toLowerCase();
+  if (text === "") return null;
+
+  const hash = /^#([0-9a-f]{3,8})$/.exec(text);
+  if (hash) {
+    const digits = hash[1];
+    if (digits.length === 3 || digits.length === 4) {
+      const [r, g, b] = [...digits.slice(0, 3)];
+      return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    // Alpha is dropped: marks carry their own opacity, and a translucent node
+    // would not survive the round trip through GEXF or a PNG export.
+    if (digits.length === 6 || digits.length === 8) return `#${digits.slice(0, 6)}`;
+    return null;
+  }
+
+  const parens = /^rgba?\(([^)]*)\)$/.exec(text);
+  if (parens) {
+    const parts = parens[1].split(/[\s,/]+/).filter((p) => p !== "");
+    if (parts.length < 3) return null;
+    const channels = parts.slice(0, 3).map((p) => {
+      const scale = p.endsWith("%") ? 2.55 : 1;
+      const n = Number(p.endsWith("%") ? p.slice(0, -1) : p);
+      return isFinite(n) ? n * scale : NaN;
+    });
+    if (channels.some((c) => isNaN(c))) return null;
+    return `#${channels.map(hex2).join("")}`;
+  }
+
+  return /^[a-z]+$/.test(text) ? namedColor(text) : null;
+}
+
 function chosen(sets: ColorSet[], id: string, custom: string[] | undefined, fallback: string[]) {
   if (id === CUSTOM) {
     const clean = (Array.isArray(custom) ? custom : []).filter(isHexColor);

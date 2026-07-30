@@ -1,5 +1,6 @@
 import { useMemo, useRef } from "react";
 import type { Dataset, Graph, GraphDoc, GraphStyle, LabelMode, Mapping } from "../types";
+import { isCellStyle } from "../types";
 import {
   layoutDefinition,
   LAYOUTS,
@@ -10,7 +11,8 @@ import {
 import type { ChainStepResult, FilterStep } from "../lib/filter";
 import type { EditTarget } from "../lib/edit";
 import { ACCEPTED_EXTENSIONS } from "../lib/parse";
-import { edgeStyleColumns, nodeStyleColumns } from "../lib/doc";
+import { colorCellColumns, edgeStyleColumns, nodeStyleColumns } from "../lib/doc";
+import { CELL_RADIUS, CELL_WIDTH } from "../lib/graph";
 import type { MetricOptions } from "../lib/metrics";
 import type { MetricRun } from "../lib/metrics/runner";
 import { exportAs, type ExportFormat, type ExportInput } from "../lib/io";
@@ -66,6 +68,10 @@ interface SidebarProps {
 
 const ACCEPT = ACCEPTED_EXTENSIONS.join(",");
 
+const COLOR_CELL_NOTE =
+  "Cells are painted as they read: #b7410e, #b41, rgb(183, 65, 14) or a color name. " +
+  "Anything else stays grey, and the legend steps aside, the colors being their own key.";
+
 export function Sidebar({
   dataset,
   edgeTableIndex,
@@ -116,6 +122,17 @@ export function Sidebar({
   );
   // Image references are text, whether they are links, data URIs or markup.
   const imageColumns = useMemo(() => nodeColumns.filter((c) => c.type === "text"), [nodeColumns]);
+  // Columns that hold colours, which can dress the marks without a palette.
+  const nodeColorColumns = useMemo(() => (doc ? colorCellColumns(doc, "nodes") : []), [doc]);
+  const edgeColorColumns = useMemo(() => (doc ? colorCellColumns(doc, "edges") : []), [doc]);
+  const nodeNumberColumns = useMemo(
+    () => nodeColumns.filter((c) => c.type === "number"),
+    [nodeColumns],
+  );
+  const edgeNumberColumns = useMemo(
+    () => edgeColumns.filter((c) => c.type === "number"),
+    [edgeColumns],
+  );
 
   const pickFile = () => fileInputRef.current?.click();
 
@@ -372,8 +389,18 @@ export function Sidebar({
                       </option>
                     ))}
                   </optgroup>
+                  {nodeColorColumns.length > 0 && (
+                    <optgroup label="Colors in the column">
+                      {nodeColorColumns.map((c) => (
+                        <option key={c.name} value={`cell:${c.name}`}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
+              {isCellStyle(style.nodeColor) && <p className="note">{COLOR_CELL_NOTE}</p>}
               <label className="field">
                 <span className="field-label">Size nodes by</span>
                 <select
@@ -391,16 +418,29 @@ export function Sidebar({
                     <option value="metric:eigenvector">Eigenvector centrality</option>
                   </optgroup>
                   <optgroup label="By number column">
-                    {nodeColumns
-                      .filter((c) => c.type === "number")
-                      .map((c) => (
-                        <option key={c.name} value={`column:${c.name}`}>
+                    {nodeNumberColumns.map((c) => (
+                      <option key={c.name} value={`column:${c.name}`}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {nodeNumberColumns.length > 0 && (
+                    <optgroup label="Pixel radius in the column">
+                      {nodeNumberColumns.map((c) => (
+                        <option key={c.name} value={`cell:${c.name}`}>
                           {c.name}
                         </option>
                       ))}
-                  </optgroup>
+                    </optgroup>
+                  )}
                 </select>
               </label>
+              {isCellStyle(style.nodeSize) && (
+                <p className="note">
+                  Numbers are radii in pixels, held between {CELL_RADIUS.min} and {CELL_RADIUS.max}.
+                  A cell with no number in it keeps the plain size.
+                </p>
+              )}
               <label className="field">
                 <span className="field-label">Node images from</span>
                 <select
@@ -438,8 +478,18 @@ export function Sidebar({
                         {c.name}
                       </option>
                     ))}
+                  {edgeColorColumns.length > 0 && (
+                    <optgroup label="Colors in the column">
+                      {edgeColorColumns.map((c) => (
+                        <option key={c.name} value={`cell:${c.name}`}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
+              {isCellStyle(style.edgeColor) && <p className="note">{COLOR_CELL_NOTE}</p>}
               <label className="field">
                 <span className="field-label">Edge width from</span>
                 <select
@@ -448,15 +498,28 @@ export function Sidebar({
                   onChange={(e) => onStyleChange({ edgeWidth: e.target.value })}
                 >
                   <option value="uniform">Uniform width</option>
-                  {edgeColumns
-                    .filter((c) => c.type === "number")
-                    .map((c) => (
-                      <option key={c.name} value={`column:${c.name}`}>
-                        {c.name}
-                      </option>
-                    ))}
+                  {edgeNumberColumns.map((c) => (
+                    <option key={c.name} value={`column:${c.name}`}>
+                      {c.name}
+                    </option>
+                  ))}
+                  {edgeNumberColumns.length > 0 && (
+                    <optgroup label="Pixel width in the column">
+                      {edgeNumberColumns.map((c) => (
+                        <option key={c.name} value={`cell:${c.name}`}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
+              {isCellStyle(style.edgeWidth) && (
+                <p className="note">
+                  Numbers are stroke widths in pixels, held between {CELL_WIDTH.min} and{" "}
+                  {CELL_WIDTH.max}.
+                </p>
+              )}
               <label className="check-item">
                 <input
                   type="checkbox"

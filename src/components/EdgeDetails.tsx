@@ -1,5 +1,5 @@
 import type { Graph, GraphDoc, Row } from "../types";
-import { endpointId } from "../lib/graph";
+import { endpointId, markColor } from "../lib/graph";
 import { NEUTRAL, nodeColor, type Palette } from "../theme";
 
 interface EdgeDetailsProps {
@@ -38,10 +38,14 @@ export function EdgeDetails({
   const rows = link.rows as Row[];
   // Each end wears the same dot it wears in the graph and at the head of its
   // own card, and the arrow between them takes the edge's own color.
-  const dot = (id: string) =>
-    nodeColor(graph.nodes.find((n) => n.id === id)?.group ?? null, colors, palette.categorical);
+  const dot = (id: string) => {
+    const node = graph.nodes.find((n) => n.id === id);
+    if (!node) return nodeColor(null, colors, palette.categorical);
+    return markColor(node, graph.ranking, colors, palette);
+  };
   const arrowColor =
-    link.colorValue === null ? undefined : (edgeColors.get(link.colorValue) ?? NEUTRAL);
+    link.color ??
+    (link.colorValue === null ? undefined : (edgeColors.get(link.colorValue) ?? NEUTRAL));
 
   return (
     <section

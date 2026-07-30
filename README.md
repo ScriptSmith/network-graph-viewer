@@ -31,6 +31,7 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 ### Styling
 
 - Colour nodes by a column or a network metric, size them by degree or any number column, and colour and weight the edges the same way
+- Or let the data do the styling: a column of colours (`#b7410e`, `#b41`, `rgb(183, 65, 14)` or a colour name) paints the nodes and edges exactly as written, and a column of numbers sets radii and stroke widths in pixels, no palette or scale in the way. The shipped **Metro lines** sample is the case for it, a network whose colours are its identity rather than a category to map
 - Four categorical palettes, including the published colourblind-safe Okabe-Ito and Tol bright sets, and four ramps for numeric rankings
 - Or build your own: edit any slot, add and remove colours, and the palette travels with the workspace, the export and the shared link
 - Node images from a column of `https` links, data URIs, bare base64, or SVG markup: the picture fills the node and its colour becomes the ring, so an image costs nothing the colours were saying. The shipped **Web toolchain** sample is 42 projects wearing their logos, and the one place the app fetches anything from a third party

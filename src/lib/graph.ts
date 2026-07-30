@@ -9,12 +9,13 @@ import type {
   GraphStyle,
   Row,
 } from "../types";
-import { styleColumn } from "../types";
+import { isCellStyle, styleColumn } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
 import { findColumn, hasColumn } from "./doc";
 import { imageSource } from "./images";
 import { asNumber } from "./parse";
 import { centralityValues, type CentralityKind } from "./metrics";
+import { NEUTRAL, nodeColor, parseColor, sequentialColor, type Palette } from "../theme";
 
 /** Style tokens that rank nodes by a computed network metric. */
 export const CENTRALITY_TOKENS: Record<string, CentralityKind> = {
@@ -58,6 +59,7 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
     row,
     group: null,
     value: null,
+    color: null,
     image: null,
     inDegree: 0,
     outDegree: 0,
@@ -110,6 +112,7 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
       rows: [row],
       weight: null,
       colorValue: null,
+      color: null,
       curve: false,
     });
     getNode(sourceId).outDegree++;
@@ -130,6 +133,13 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
   return { nodes: nodeList, links: [...links.values()], rows, skippedRows };
 }
 
+/** Pixel bounds for sizes taken straight from a column, either end inclusive. */
+export const CELL_RADIUS = { min: 1, max: 100 };
+export const CELL_WIDTH = { min: 0.2, max: 24 };
+
+const clamp = (v: number, { min, max }: { min: number; max: number }) =>
+  Math.max(min, Math.min(max, v));
+
 /**
  * Apply appearance settings to a structural graph, returning fresh node and
  * link objects so the base graph stays reusable.
@@ -137,6 +147,10 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
  * Column tokens resolve against the node table first and fall back to the
  * edge rows: a categorical value is taken from the first incident row naming
  * the node as a target, a numeric one is summed over every incident row.
+ *
+ * A "cell:" token means the column is not a value to encode but the answer
+ * itself, a color to paint or a size in pixels, so it skips the palettes and
+ * the scales and lands on the mark as it was written.
  */
 export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): Graph {
   const colorCol = styleColumn(style.nodeColor);
@@ -144,7 +158,11 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
   const widthCol = styleColumn(style.edgeWidth);
   const edgeColorCol = styleColumn(style.edgeColor);
 
-  const colorIsNumeric = colorCol !== null && isNumericAttr(doc, colorCol);
+  const colorFromCells = colorCol !== null && isCellStyle(style.nodeColor);
+  const sizeFromCells = sizeCol !== null && isCellStyle(style.nodeSize);
+  const edgeColorFromCells = edgeColorCol !== null && isCellStyle(style.edgeColor);
+
+  const colorIsNumeric = colorCol !== null && !colorFromCells && isNumericAttr(doc, colorCol);
   const colorCentrality = CENTRALITY_TOKENS[style.nodeColor];
   const ranking = colorCentrality !== undefined || colorIsNumeric;
 
@@ -161,7 +179,14 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
     return map;
   };
 
-  if (colorCol !== null && !colorIsNumeric) {
+  if (colorFromCells) {
+    // A column of colors is decoration, not a partition: the nodes get no group
+    // and the legend has nothing to key, since the values are the colors. A cell
+    // that says nothing a color could be read from lands on the neutral, which
+    // is what a node with nothing to say wears everywhere else.
+    const cells = categoricalAttr(base, doc, colorCol as string);
+    for (const node of nodes) node.color = parseColor(cells.get(node.id) ?? null) ?? NEUTRAL;
+  } else if (colorCol !== null && !colorIsNumeric) {
     const groups = categoricalAttr(base, doc, colorCol);
     for (const node of nodes) node.group = groups.get(node.id) ?? null;
   }
@@ -183,26 +208,37 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
   // room to be recognized, so a graph carrying them starts larger and spans
   // further; the sizing still says the same thing, just at a readable scale.
   const sized = imageCol !== null ? { floor: 8, span: 20, uniform: 13 } : null;
-  const sizeCentrality = CENTRALITY_TOKENS[style.nodeSize];
-  const sizeValues =
-    sizeCol !== null
-      ? numericAttr(base, doc, sizeCol)
-      : sizeCentrality && sizeCentrality !== "degree"
-        ? getCentrality(sizeCentrality)
-        : null;
-  const sizeMetric = (n: GraphNode): number => {
-    if (style.nodeSize === "metric:uniform") return 1;
-    if (style.nodeSize === "metric:in") return n.inDegree;
-    if (style.nodeSize === "metric:out") return n.outDegree;
-    if (sizeValues) return Math.max(0, sizeValues.get(n.id) ?? 0);
-    return n.degree;
-  };
-  const maxMetric = Math.max(1e-9, ...nodes.map(sizeMetric));
-  for (const node of nodes) {
-    node.radius =
-      style.nodeSize === "metric:uniform"
-        ? (sized?.uniform ?? 8)
-        : (sized?.floor ?? 4.5) + (sized?.span ?? 17) * Math.sqrt(sizeMetric(node) / maxMetric);
+  if (sizeFromCells) {
+    // Radii in pixels, so a node keeps the size it was given whatever the rest
+    // of the graph does. A cell with no number in it takes the plain size.
+    const cells = cellNumberAttr(base, doc, sizeCol as string);
+    const fallback = sized?.uniform ?? 8;
+    for (const node of nodes) {
+      const v = cells.get(node.id);
+      node.radius = v === undefined ? fallback : clamp(v, CELL_RADIUS);
+    }
+  } else {
+    const sizeCentrality = CENTRALITY_TOKENS[style.nodeSize];
+    const sizeValues =
+      sizeCol !== null
+        ? numericAttr(base, doc, sizeCol)
+        : sizeCentrality && sizeCentrality !== "degree"
+          ? getCentrality(sizeCentrality)
+          : null;
+    const sizeMetric = (n: GraphNode): number => {
+      if (style.nodeSize === "metric:uniform") return 1;
+      if (style.nodeSize === "metric:in") return n.inDegree;
+      if (style.nodeSize === "metric:out") return n.outDegree;
+      if (sizeValues) return Math.max(0, sizeValues.get(n.id) ?? 0);
+      return n.degree;
+    };
+    const maxMetric = Math.max(1e-9, ...nodes.map(sizeMetric));
+    for (const node of nodes) {
+      node.radius =
+        style.nodeSize === "metric:uniform"
+          ? (sized?.uniform ?? 8)
+          : (sized?.floor ?? 4.5) + (sized?.span ?? 17) * Math.sqrt(sizeMetric(node) / maxMetric);
+    }
   }
 
   const links: GraphLink[] = base.links.map((l) => {
@@ -212,6 +248,7 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       target: byId.get(endpointId(l.target)) ?? endpointId(l.target),
       weight: null,
       colorValue: null,
+      color: null,
     };
     if (widthCol) {
       const values = l.rows
@@ -220,7 +257,9 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       if (values.length > 0) link.weight = values.reduce((a, b) => a + b, 0) / values.length;
     }
     if (edgeColorCol) {
-      link.colorValue = l.rows.map((r) => cellKey(r[edgeColorCol])).find((k) => k !== "") ?? null;
+      const value = l.rows.map((r) => cellKey(r[edgeColorCol])).find((k) => k !== "") ?? null;
+      if (edgeColorFromCells) link.color = parseColor(value);
+      else link.colorValue = value;
     }
     return link;
   });
@@ -270,6 +309,30 @@ function categoricalAttr(base: BaseGraph, doc: GraphDoc, column: string): Map<st
   return values;
 }
 
+/**
+ * Numeric value per node, taken as written: node table, else the first incident
+ * row that has one. Nothing is summed, since a pixel size is a value rather
+ * than a quantity to accumulate.
+ */
+function cellNumberAttr(base: BaseGraph, doc: GraphDoc, column: string): Map<string, number> {
+  const values = new Map<string, number>();
+  if (hasColumn(doc.nodes, column)) {
+    for (const node of base.nodes) {
+      const v = asNumber(node.row[column]);
+      if (v !== null) values.set(node.id, v);
+    }
+    return values;
+  }
+  for (const row of base.rows) {
+    const v = asNumber(row[column]);
+    if (v === null) continue;
+    for (const end of [cellToId(row[doc.mapping.source]), cellToId(row[doc.mapping.target])]) {
+      if (end !== null && !values.has(end)) values.set(end, v);
+    }
+  }
+  return values;
+}
+
 /** Numeric value per node: node table, else summed over every incident row. */
 function numericAttr(base: BaseGraph, doc: GraphDoc, column: string): Map<string, number> {
   const values = new Map<string, number>();
@@ -305,8 +368,31 @@ export function hasLegend(graph: Graph): boolean {
   return graph.ranking !== null || graph.groups.length > 0 || graph.edgeGroups.length > 0;
 }
 
-/** Scale for edge stroke width when a width column is mapped. */
-export function weightScale(links: GraphLink[]): (l: GraphLink) => number {
+/**
+ * What color a node is painted, wherever that came from: its own cell first,
+ * then a ranking along the ramp, then its group's palette slot. The canvas, the
+ * inspector and the GEXF writer all ask this, so they can't disagree.
+ */
+export function markColor(
+  node: GraphNode,
+  ranking: Graph["ranking"],
+  colors: Map<string, string>,
+  palette: Palette,
+): string {
+  if (node.color !== null) return node.color;
+  if (ranking) {
+    const span = ranking.max - ranking.min || 1;
+    return sequentialColor(((node.value ?? ranking.min) - ranking.min) / span, palette.sequential);
+  }
+  return nodeColor(node.group, colors, palette.categorical);
+}
+
+/**
+ * Scale for edge stroke width when a width column is mapped. Widths taken
+ * straight from a column are already in pixels, so they only get clamped.
+ */
+export function weightScale(links: GraphLink[], asPixels = false): (l: GraphLink) => number {
+  if (asPixels) return (l) => (l.weight === null ? 1.4 : clamp(l.weight, CELL_WIDTH));
   const weights = links.map((l) => l.weight).filter((w): w is number => w !== null);
   if (weights.length === 0) return () => 1.4;
   const min = Math.min(...weights);

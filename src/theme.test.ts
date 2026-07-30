@@ -9,6 +9,7 @@ import {
   SEQUENTIAL,
   groupColorMap,
   isHexColor,
+  parseColor,
   resolvePalette,
   sequentialColor,
 } from "./theme";
@@ -67,6 +68,38 @@ test("groups take palette slots in order and run out at its end", () => {
     ["b", "#222222"],
   ]);
   expect(groupColorMap(groups).get("a")).toBe(CATEGORICAL[0]);
+});
+
+test("a cell reads as a color, or does not", () => {
+  expect(parseColor("#B7410E")).toBe("#b7410e");
+  expect(parseColor("  #b41  ")).toBe("#bb4411");
+  // Alpha is dropped rather than carried into a hex the app can't round-trip.
+  expect(parseColor("#b7410e80")).toBe("#b7410e");
+  expect(parseColor("#b418")).toBe("#bb4411");
+  expect(parseColor("rgb(183, 65, 14)")).toBe("#b7410e");
+  expect(parseColor("rgba(183 65 14 / 0.5)")).toBe("#b7410e");
+  expect(parseColor("rgb(100%, 0%, 0%)")).toBe("#ff0000");
+  // Out-of-range channels clamp, the way a browser would take them.
+  expect(parseColor("rgb(300, -20, 14)")).toBe("#ff000e");
+  expect(parseColor("SteelBlue")).toBe("#4682b4");
+  expect(parseColor("grey")).toBe(parseColor("gray"));
+
+  // A cell is untrusted text on its way into an SVG attribute.
+  for (const junk of [
+    null,
+    "",
+    "   ",
+    "url(#x)",
+    "#GGGGGG",
+    "#12345",
+    "not a color",
+    "rgb(a, b, c)",
+    "rgb(1, 2)",
+    "12",
+    "red;fill:blue",
+  ]) {
+    expect(parseColor(junk)).toBeNull();
+  }
 });
 
 test("a ranking steps along whichever ramp is in force", () => {

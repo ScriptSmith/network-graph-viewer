@@ -30,6 +30,7 @@ import type {
   Row,
   GraphSelection,
 } from "../types";
+import { isCellStyle } from "../types";
 import {
   computeTargets,
   forceAtlas2,
@@ -39,7 +40,7 @@ import {
   type LayoutId,
   type LayoutParams,
 } from "../lib/layouts";
-import { endpointId as endpoint, weightScale } from "../lib/graph";
+import { endpointId as endpoint, markColor, weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { formatMetric } from "../lib/format";
 import {
@@ -51,8 +52,6 @@ import {
   NEUTRAL,
   SELECT_RING,
   SURFACE,
-  nodeColor,
-  sequentialColor,
   type Palette,
 } from "../theme";
 
@@ -109,11 +108,11 @@ function escapeHtml(v: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Marker id matching an edge stroke color; markers are pre-defined per slot. */
-function markerFor(stroke: string, categorical: string[]): string {
+/** Marker id matching an edge stroke color; markers are pre-defined per color. */
+function markerFor(stroke: string, arrowColors: string[]): string {
   if (stroke === EDGE_LIT) return "url(#arrow-lit)";
   if (stroke === NEUTRAL) return "url(#arrow-cn)";
-  const slot = categorical.indexOf(stroke);
+  const slot = arrowColors.indexOf(stroke);
   return slot === -1 ? "url(#arrow-dim)" : `url(#arrow-c${slot})`;
 }
 
@@ -153,7 +152,22 @@ export function GraphCanvas({
   const baseLabelsRef = useRef<Set<string>>(new Set());
   const hoverNodeRef = useRef<string | null>(null);
 
-  const edgeWidth = useMemo(() => weightScale(graph.links), [graph]);
+  const edgeWidth = useMemo(
+    () => weightScale(graph.links, isCellStyle(style.edgeWidth)),
+    [graph, style.edgeWidth],
+  );
+
+  /**
+   * One arrow marker per stroke color in play: the palette's slots, plus
+   * whatever colors the edges brought with them from their own column.
+   */
+  const arrowColors = useMemo(() => {
+    const list = [...palette.categorical];
+    for (const l of graph.links) {
+      if (l.color !== null && !list.includes(l.color)) list.push(l.color);
+    }
+    return list;
+  }, [graph, palette]);
 
   // Sources that turned out not to load: a dead link would otherwise leave the
   // browser's broken-image glyph sitting inside the node.
@@ -203,6 +217,7 @@ export function GraphCanvas({
     palette,
     colors,
     edgeColors,
+    arrowColors,
     attrColumns,
     ambient,
     style,
@@ -220,6 +235,7 @@ export function GraphCanvas({
     palette,
     colors,
     edgeColors,
+    arrowColors,
     attrColumns,
     ambient,
     style,
@@ -227,16 +243,8 @@ export function GraphCanvas({
   };
 
   /** What color the node stands for, image or no image. */
-  const nodeTint = (d: GraphNode): string => {
-    if (graph.ranking) {
-      const span = graph.ranking.max - graph.ranking.min || 1;
-      return sequentialColor(
-        ((d.value ?? graph.ranking.min) - graph.ranking.min) / span,
-        liveRef.current.palette.sequential,
-      );
-    }
-    return nodeColor(d.group, liveRef.current.colors, liveRef.current.palette.categorical);
-  };
+  const nodeTint = (d: GraphNode): string =>
+    markColor(d, graph.ranking, liveRef.current.colors, liveRef.current.palette);
 
   const imageFill = (d: GraphNode): string | null => {
     const id = d.image === null ? undefined : imagePatterns.get(d.image);
@@ -256,6 +264,7 @@ export function GraphCanvas({
   };
 
   const edgeBase = (d: GraphLink): string => {
+    if (d.color !== null) return d.color;
     if (d.colorValue === null) return EDGE;
     return liveRef.current.edgeColors.get(d.colorValue) ?? NEUTRAL;
   };
@@ -318,7 +327,7 @@ export function GraphCanvas({
         const lit =
           picked(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return markerFor(lit ? EDGE_LIT : edgeBase(d), liveRef.current.palette.categorical);
+        return markerFor(lit ? EDGE_LIT : edgeBase(d), liveRef.current.arrowColors);
       });
 
     sels.label.attr("display", (d) => {
@@ -566,9 +575,7 @@ export function GraphCanvas({
       .attr("stroke", (d) => edgeBase(d))
       .attr("stroke-width", (d) => edgeWidth(d))
       .attr("stroke-linecap", "round")
-      .attr("marker-end", (d) =>
-        amb || !st.arrows ? null : markerFor(edgeBase(d), palette.categorical),
-      );
+      .attr("marker-end", (d) => (amb || !st.arrows ? null : markerFor(edgeBase(d), arrowColors)));
 
     const hit = hitLayer
       .selectAll<SVGPathElement, GraphLink>("path")
@@ -824,7 +831,7 @@ export function GraphCanvas({
           <Arrow id="arrow-dim" fill={ARROW} />
           <Arrow id="arrow-lit" fill={EDGE_LIT} />
           <Arrow id="arrow-cn" fill={NEUTRAL} />
-          {palette.categorical.map((c, i) => (
+          {arrowColors.map((c, i) => (
             <Arrow key={c} id={`arrow-c${i}`} fill={c} />
           ))}
           {[...imagePatterns].map(([source, id]) => (

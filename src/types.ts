@@ -53,20 +53,24 @@ export interface GraphDoc {
 
 /**
  * Appearance settings, Gephi style. Column-driven options are encoded as
- * "column:<name>" so they can't collide with the built-in metric tokens. The
- * palette fields come from `PaletteChoice`: a shipped set by id, or "custom"
- * with the colors carried here, so styling travels with the workspace.
+ * "column:<name>" so they can't collide with the built-in metric tokens, or as
+ * "cell:<name>" when the column already holds the answer rather than a value to
+ * map. The palette fields come from `PaletteChoice`: a shipped set by id, or
+ * "custom" with the colors carried here, so styling travels with the workspace.
  */
 export interface GraphStyle extends PaletteChoice {
-  /** 'none' | 'metric:degree' | 'column:<name>' */
+  /** 'none' | 'metric:degree' | 'column:<name>' | 'cell:<name>' */
   nodeColor: string;
-  /** 'metric:degree' | 'metric:in' | 'metric:out' | 'metric:uniform' | 'column:<name>' */
+  /**
+   * 'metric:degree' | 'metric:in' | 'metric:out' | 'metric:uniform' |
+   * 'column:<name>' | 'cell:<name>'
+   */
   nodeSize: string;
   /** 'none' | 'column:<name>' naming a column of image data or URLs. */
   nodeImage: string;
-  /** 'uniform' | 'column:<name>' */
+  /** 'uniform' | 'column:<name>' | 'cell:<name>' */
   edgeWidth: string;
-  /** 'uniform' | 'column:<name>' */
+  /** 'uniform' | 'column:<name>' | 'cell:<name>' */
   edgeColor: string;
   arrows: boolean;
   /** Multiplier applied to layout distances, 0.6 to 1.8. */
@@ -85,9 +89,19 @@ export const DEFAULT_STYLE: GraphStyle = {
   ramp: DEFAULT_RAMP,
 };
 
-/** The column name inside a "column:<name>" token, or null. */
+/** The column name inside a "column:<name>" or "cell:<name>" token, or null. */
 export function styleColumn(token: string): string | null {
-  return token.startsWith("column:") ? token.slice(7) : null;
+  if (token.startsWith("column:")) return token.slice(7);
+  if (token.startsWith("cell:")) return token.slice(5);
+  return null;
+}
+
+/**
+ * Whether the column drives the mark directly: its cells are colors to paint
+ * or pixel sizes, not values to put on a palette or a scale.
+ */
+export function isCellStyle(token: string): boolean {
+  return token.startsWith("cell:");
 }
 
 export type ColumnFilter =
@@ -104,6 +118,8 @@ export interface GraphNode extends SimulationNodeDatum {
   group: string | null;
   /** Ranking value when nodes are colored by a numeric metric. */
   value: number | null;
+  /** The color the node's own cell asked for, when a color column drives it. */
+  color: string | null;
   /** Ready-to-render image source when an image column is mapped. */
   image: string | null;
   inDegree: number;
@@ -124,6 +140,8 @@ export interface GraphLink extends SimulationLinkDatum<GraphNode> {
   weight: number | null;
   /** Value of the edge-color column, or null. */
   colorValue: string | null;
+  /** The color the edge's own cells asked for, when a color column drives it. */
+  color: string | null;
   /** True when the reverse edge also exists; rendered as an arc. */
   curve: boolean;
 }

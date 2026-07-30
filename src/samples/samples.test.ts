@@ -3,8 +3,9 @@ import { SAMPLES } from ".";
 import { buildDoc, nodeStyleColumns } from "../lib/doc";
 import { buildBaseGraph, applyStyle } from "../lib/graph";
 import { guessStyle } from "../lib/parse";
-import { styleColumn, DEFAULT_STYLE } from "../types";
+import { isCellStyle, styleColumn, DEFAULT_STYLE } from "../types";
 import { cellKey } from "../lib/cells";
+import { NEUTRAL } from "../theme";
 
 test("sample ids are unique", () => {
   const ids = SAMPLES.map((s) => s.id);
@@ -34,9 +35,22 @@ test.each(SAMPLES.map((s) => [s.id, s] as const))("%s loads into a graph", (_id,
     if (column !== null) expect(styleColumns).toContain(column);
   }
 
-  // Grouping and ranking only mean something if the column separates nodes.
-  if (styleColumn(style.nodeColor) !== null) expect(graph.groups.length).toBeGreaterThan(1);
-  if (styleColumn(style.edgeColor) !== null) expect(graph.edgeGroups.length).toBeGreaterThan(1);
+  // A cell column paints the marks itself, so there is nothing to group; what
+  // matters instead is that every cell read as a colour, since one that didn't
+  // would quietly come out neutral.
+  if (isCellStyle(style.nodeColor)) {
+    expect(graph.groups).toEqual([]);
+    expect(graph.nodes.every((n) => n.color !== null && n.color !== NEUTRAL)).toBe(true);
+  } else if (styleColumn(style.nodeColor) !== null) {
+    // Grouping and ranking only mean something if the column separates nodes.
+    expect(graph.groups.length).toBeGreaterThan(1);
+  }
+  if (isCellStyle(style.edgeColor)) {
+    expect(graph.edgeGroups).toEqual([]);
+    expect(graph.links.every((l) => l.color !== null)).toBe(true);
+  } else if (styleColumn(style.edgeColor) !== null) {
+    expect(graph.edgeGroups.length).toBeGreaterThan(1);
+  }
 });
 
 test.each(SAMPLES.filter((s) => s.nodeTable !== undefined).map((s) => [s.id, s] as const))(

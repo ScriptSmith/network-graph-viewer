@@ -2,9 +2,10 @@ import { expect, test } from "vitest";
 import { SAMPLE_DATASET } from "../samples";
 import { guessStyle } from "./parse";
 import { buildDoc } from "./doc";
-import { applyStyle, buildBaseGraph } from "./graph";
+import { applyStyle, buildBaseGraph, CELL_RADIUS, CELL_WIDTH, weightScale } from "./graph";
 import { applyChain, type FilterStep } from "./filter";
 import { DEFAULT_STYLE, type GraphStyle } from "../types";
+import { NEUTRAL } from "../theme";
 
 /**
  * Golden output for the sample dataset across the styling and filtering paths.
@@ -127,6 +128,73 @@ test("isolated nodes appear only when asked for", () => {
   expect(
     buildBaseGraph(withGhost, { showIsolated: true }).nodes.some((n) => n.id === "Nobody"),
   ).toBe(true);
+});
+
+test("colors and sizes in a column reach the marks as written", () => {
+  const withCells = {
+    ...doc,
+    nodes: {
+      ...doc.nodes,
+      columns: [
+        ...doc.nodes.columns,
+        { name: "Ink", type: "text" as const },
+        { name: "Px", type: "number" as const },
+      ],
+      rows: doc.nodes.rows.map((r, i) => ({
+        ...r,
+        Ink: i === 0 ? "burnt sienna" : "SteelBlue",
+        // Past the ceiling on purpose: a stray value can't blow up the canvas.
+        Px: i === 0 ? null : 500,
+      })),
+    },
+  };
+  const graph = applyStyle(buildBaseGraph(withCells), withCells, {
+    ...DEFAULT_STYLE,
+    nodeColor: "cell:Ink",
+    nodeSize: "cell:Px",
+  });
+
+  // A column of colors is not a partition, so there is nothing to key or rank.
+  expect(graph.groups).toEqual([]);
+  expect(graph.ranking).toBeNull();
+  expect(graph.nodes.every((n) => n.group === null)).toBe(true);
+
+  const [first, ...rest] = graph.nodes;
+  // A cell that isn't a color takes the neutral; a cell with no number in it
+  // keeps the plain size.
+  expect(first.color).toBe(NEUTRAL);
+  expect(first.radius).toBe(8);
+  expect(rest.every((n) => n.color === "#4682b4")).toBe(true);
+  expect(rest.every((n) => n.radius === CELL_RADIUS.max)).toBe(true);
+});
+
+test("edge colors and widths in a column reach the links as written", () => {
+  const withCells = {
+    ...doc,
+    edges: {
+      ...doc.edges,
+      columns: [
+        ...doc.edges.columns,
+        { name: "Ink", type: "text" as const },
+        { name: "Px", type: "number" as const },
+      ],
+      rows: doc.edges.rows.map((r) => ({ ...r, Ink: "#B41", Px: 400 })),
+    },
+  };
+  const graph = applyStyle(buildBaseGraph(withCells), withCells, {
+    ...DEFAULT_STYLE,
+    edgeColor: "cell:Ink",
+    edgeWidth: "cell:Px",
+  });
+
+  expect(graph.edgeGroups).toEqual([]);
+  expect(graph.links.every((l) => l.colorValue === null)).toBe(true);
+  expect(graph.links.every((l) => l.color === "#bb4411")).toBe(true);
+
+  const width = weightScale(graph.links, true);
+  expect(graph.links.every((l) => width(l) === CELL_WIDTH.max)).toBe(true);
+  // Without the pixel token the same weights normalize onto the usual scale.
+  expect(weightScale(graph.links)(graph.links[0])).toBeLessThan(CELL_WIDTH.max);
 });
 
 test("node table attributes take precedence over projected edge columns", () => {

@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type Ref,
-  type RefObject,
 } from "react";
 import {
   flexRender,
@@ -21,15 +20,26 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { CellValue, Column, ColumnFilter, GraphSelection, Row, Table } from "../types";
+import type {
+  CellValue,
+  Column,
+  ColumnFilter,
+  GraphDoc,
+  GraphSelection,
+  Row,
+  Table,
+} from "../types";
 import { nodeSelection, sameSelection } from "../types";
-import { cellToId } from "../lib/cells";
+import { cellToId, parseCell } from "../lib/cells";
+import type { EditTarget } from "../lib/edit";
 import { asNumber } from "../lib/parse";
 import { displayCell, formatNumber } from "../lib/format";
 import { neutralCondition } from "../lib/filter";
 import { ColumnCondition } from "./ColumnCondition";
+import { ColumnMenu } from "./ColumnMenu";
+import { HeaderPanel } from "./HeaderPanel";
+import { useHeaderPopover } from "../useHeaderPopover";
 
 export type Aggregation = "count" | "sum" | "avg" | "min" | "max";
 
@@ -46,6 +56,8 @@ export interface DataTableHandle {
 
 export interface DataTableProps {
   table: Table;
+  /** Which of the document's two tables this is, for the edits made on it. */
+  target: EditTarget;
   /** Rows currently surviving the filter chain; others are dimmed or hidden. */
   visible: ReadonlySet<Row>;
   onlyVisible: boolean;
@@ -81,11 +93,21 @@ export interface DataTableProps {
   onSelect: (next: GraphSelection | null) => void;
   onEditCell: (rowIndex: number, column: string, value: CellValue) => void;
   onDeleteRow: (rowIndex: number) => void;
+  /** Columns the graph is built out of: renameable, but not removable. */
+  structuralColumns: ReadonlySet<string>;
+  /** The column holding node ids, when this is the node table; null otherwise. */
+  nodeIdColumn: string | null;
+  /** A bulk edit from a column's menu, already a whole transform of the document. */
+  onBulkEdit: (label: string, update: (doc: GraphDoc) => GraphDoc) => void;
+  /** Renames and deletes travel outside the document, so the shell handles them. */
+  onRenameColumn: (column: string, to: string) => void;
+  onDeleteColumn: (column: string) => void;
   ref?: Ref<DataTableHandle>;
 }
 
 const ROW_HEIGHT = 30;
-const POPOVER_WIDTH = 232;
+const FILTER_WIDTH = 232;
+const MENU_WIDTH = 250;
 
 /** One line of the table: a row, or the rule that divides hits from the rest. */
 type Item = { kind: "row"; row: TanRow<Row> } | { kind: "split"; matched: number; others: number };
@@ -107,23 +129,22 @@ function FunnelIcon() {
   );
 }
 
-/** Parse an edited cell back to the column's type so filters keep working. */
-function parseCell(column: Column, raw: string): CellValue {
-  if (raw.trim() === "") return null;
-  if (column.type === "number") {
-    const value = Number(raw);
-    return isNaN(value) ? raw : value;
-  }
-  if (column.type === "bool") {
-    const lowered = raw.trim().toLowerCase();
-    if (["true", "yes", "1"].includes(lowered)) return true;
-    if (["false", "no", "0"].includes(lowered)) return false;
-  }
-  return raw;
+/**
+ * A pencil: this one changes the column rather than deciding what it shows.
+ * The point takes a third of the length, because at ten pixels the taper is
+ * the only thing telling a pencil from a diagonal bar.
+ */
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" focusable="false">
+      <path d="M1 11L2.4 7.4 8.6 1.2 10.8 3.4 4.6 9.6Z" fill="currentColor" />
+    </svg>
+  );
 }
 
 export function DataTable({
   table,
+  target,
   visible,
   onlyVisible,
   addedIndex,
@@ -143,6 +164,11 @@ export function DataTable({
   onSelect,
   onEditCell,
   onDeleteRow,
+  structuralColumns,
+  nodeIdColumn,
+  onBulkEdit,
+  onRenameColumn,
+  onDeleteColumn,
   ref,
 }: DataTableProps) {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -318,7 +344,7 @@ export function DataTable({
     const index = indexOf.get(row);
     setEditing(null);
     if (index === undefined) return;
-    const value = parseCell(column, raw);
+    const value = parseCell(column.type, raw);
     if (value !== (row[column.name] ?? null)) onEditCell(index, column.name, value);
   };
 
@@ -351,6 +377,17 @@ export function DataTable({
                         value={columnFilter(column.name)}
                         active={filteredColumns.has(column.name)}
                         onChange={(filter) => onColumnFilterChange(column.name, filter)}
+                      />
+                      <HeaderMenu
+                        table={table}
+                        target={target}
+                        column={column}
+                        structural={structuralColumns.has(column.name)}
+                        isNodeId={column.name === nodeIdColumn}
+                        visible={visible}
+                        onEdit={onBulkEdit}
+                        onRenameColumn={(to) => onRenameColumn(column.name, to)}
+                        onDeleteColumn={() => onDeleteColumn(column.name)}
                       />
                     </div>
                   </th>
@@ -561,87 +598,9 @@ interface HeaderFilterProps {
   onChange: (filter: ColumnFilter | null) => void;
 }
 
-/**
- * The funnel in a column header. The panel it opens is positioned against the
- * viewport rather than the header: the table scrolls in both directions inside
- * a pane that is often only a couple of rows tall, and a panel laid out inside
- * that pane would be clipped by it.
- */
+/** The funnel in a column header, and the condition it opens. */
 function HeaderFilter({ table, column, value, active, onChange }: HeaderFilterProps) {
-  const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  // Stable, so the panel's listeners are not torn down and put back on every
-  // frame the virtualizer re-renders the table under it.
-  const close = useCallback(() => setAnchor(null), []);
-
-  /**
-   * Follow the header rather than close with it. Ticking a value re-filters the
-   * table underneath, which can scroll it, and a panel that shut every time the
-   * thing it was filtering moved would be unusable.
-   */
-  const reanchor = useCallback(() => {
-    const rect = buttonRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    if (rect.right < 0 || rect.left > window.innerWidth) return setAnchor(null);
-    setAnchor({
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_WIDTH - 8)),
-      // The table sits at the foot of the window, so the panel opens upwards.
-      bottom: window.innerHeight - rect.top + 6,
-    });
-  }, []);
-
-  const toggle = () => {
-    if (anchor) setAnchor(null);
-    else reanchor();
-  };
-
-  return (
-    <>
-      <button
-        ref={buttonRef}
-        type="button"
-        className={active ? "dt-funnel on" : "dt-funnel"}
-        aria-expanded={anchor !== null}
-        title={active ? `Filtering on ${column.name}` : `Filter by ${column.name}`}
-        aria-label={active ? `Filtering on ${column.name}` : `Filter by ${column.name}`}
-        onClick={toggle}
-      >
-        <FunnelIcon />
-      </button>
-      {anchor && (
-        <FilterPopover
-          table={table}
-          column={column}
-          value={value}
-          anchor={anchor}
-          buttonRef={buttonRef}
-          onChange={onChange}
-          onClose={close}
-          onReanchor={reanchor}
-        />
-      )}
-    </>
-  );
-}
-
-interface FilterPopoverProps extends Omit<HeaderFilterProps, "active"> {
-  anchor: { left: number; bottom: number };
-  buttonRef: RefObject<HTMLButtonElement | null>;
-  onClose: () => void;
-  onReanchor: () => void;
-}
-
-function FilterPopover({
-  table,
-  column,
-  value,
-  anchor,
-  buttonRef,
-  onChange,
-  onClose,
-  onReanchor,
-}: FilterPopoverProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const popover = useHeaderPopover(FILTER_WIDTH);
 
   // With nothing set yet the panel starts from a condition that lets every row
   // through, so the first thing the user does is take something out.
@@ -650,52 +609,94 @@ function FilterPopover({
     [value, table, column.name],
   );
 
-  useEffect(() => {
-    const dismiss = (e: Event) => {
-      const target = e.target;
-      if (!(target instanceof Node)) return onClose();
-      if (panelRef.current?.contains(target) || buttonRef.current?.contains(target)) return;
-      onClose();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", onKeyDown);
-    // Capturing, so scrolling the table itself counts and the panel keeps up
-    // with the header it belongs to rather than being left behind by it.
-    window.addEventListener("scroll", onReanchor, true);
-    window.addEventListener("resize", onReanchor);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onReanchor, true);
-      window.removeEventListener("resize", onReanchor);
-    };
-  }, [buttonRef, onClose, onReanchor]);
+  const label = active ? `Filtering on ${column.name}` : `Filter by ${column.name}`;
+  return (
+    <>
+      <button
+        ref={popover.buttonRef}
+        type="button"
+        className={active ? "dt-funnel on" : "dt-funnel"}
+        aria-expanded={popover.open}
+        title={label}
+        aria-label={label}
+        onClick={popover.toggle}
+      >
+        <FunnelIcon />
+      </button>
+      <HeaderPanel popover={popover} width={FILTER_WIDTH} className="dt-filter-pop">
+        <div className="dt-filter-head">
+          <span className="dt-filter-name">{column.name}</span>
+          <button type="button" onClick={() => onChange(null)}>
+            Clear
+          </button>
+        </div>
+        <ColumnCondition
+          rows={table.rows}
+          column={column}
+          value={condition}
+          onChange={(filter) => onChange(filter)}
+        />
+      </HeaderPanel>
+    </>
+  );
+}
 
-  // Hung off the body rather than the header cell: the sticky header carries a
-  // stacking context of its own, and inside it no z-index can lift the panel
-  // over the buttons that ride the edges of the pane.
-  return createPortal(
-    <div
-      ref={panelRef}
-      className="dt-filter-pop"
-      style={{ left: anchor.left, bottom: anchor.bottom, width: POPOVER_WIDTH }}
-    >
-      <div className="dt-filter-head">
-        <span className="dt-filter-name">{column.name}</span>
-        <button type="button" onClick={() => onChange(null)}>
-          Clear
-        </button>
-      </div>
-      <ColumnCondition
-        rows={table.rows}
-        column={column}
-        value={condition}
-        onChange={(filter) => onChange(filter)}
-      />
-    </div>,
-    document.body,
+/**
+ * The pencil in a column header: everything that can be done to the column as a
+ * whole, or to all of its values at once. It sits beside the funnel because
+ * both are the same act of pointing at a column, one to see less of the table
+ * and one to change it.
+ */
+function HeaderMenu({
+  table,
+  target,
+  column,
+  structural,
+  isNodeId,
+  visible,
+  onEdit,
+  onRenameColumn,
+  onDeleteColumn,
+}: {
+  table: Table;
+  target: EditTarget;
+  column: Column;
+  structural: boolean;
+  isNodeId: boolean;
+  visible: ReadonlySet<Row>;
+  onEdit: (label: string, update: (doc: GraphDoc) => GraphDoc) => void;
+  onRenameColumn: (to: string) => void;
+  onDeleteColumn: () => void;
+}) {
+  const popover = useHeaderPopover(MENU_WIDTH);
+  const label = `Edit the ${column.name} column`;
+  return (
+    <>
+      <button
+        ref={popover.buttonRef}
+        type="button"
+        className="dt-more"
+        aria-expanded={popover.open}
+        title={label}
+        aria-label={label}
+        onClick={popover.toggle}
+      >
+        <PencilIcon />
+      </button>
+      <HeaderPanel popover={popover} width={MENU_WIDTH} className="dt-col-pop">
+        <ColumnMenu
+          table={table}
+          target={target}
+          column={column}
+          structural={structural}
+          isNodeId={isNodeId}
+          visible={visible}
+          onEdit={onEdit}
+          onRenameColumn={onRenameColumn}
+          onDeleteColumn={onDeleteColumn}
+          onClose={popover.close}
+        />
+      </HeaderPanel>
+    </>
   );
 }

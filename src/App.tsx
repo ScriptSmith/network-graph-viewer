@@ -42,9 +42,16 @@ import {
   type Position,
   type UrlSource,
 } from "./lib/io";
-import { applyComputedColumns, buildDoc, clearComputedColumns, reconcileNodes } from "./lib/doc";
+import {
+  applyComputedColumns,
+  buildDoc,
+  clearComputedColumns,
+  reconcileNodes,
+  retargetStyle,
+} from "./lib/doc";
+import { deleteColumn, renameColumn } from "./lib/bulk";
 import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
-import { applyChain, findValueStep, newStepId, type FilterStep } from "./lib/filter";
+import { applyChain, findValueStep, newStepId, retargetChain, type FilterStep } from "./lib/filter";
 import { defaultParams, type LayoutId, type LayoutParams, type ParamValue } from "./lib/layouts";
 import { addRow, deleteRows, setCell, type EditTarget } from "./lib/edit";
 import { toMetricGraph, type MetricOptions } from "./lib/metrics";
@@ -630,6 +637,50 @@ export default function App() {
   );
 
   /**
+   * Renaming or deleting a column reaches past the document. Style options and
+   * filter steps name their column by string, so both have to be pointed at the
+   * new name, or off the old one, in the same act that changes it: a rename that
+   * left them behind would silently un-style the graph and drop a filter's
+   * meaning without dropping the filter.
+   */
+  const editColumn = useCallback(
+    (
+      label: string,
+      target: EditTarget,
+      column: string,
+      to: string | null,
+      update: (doc: GraphDoc) => GraphDoc,
+    ) => {
+      if (!doc) return;
+      const next = update(doc);
+      // A refused edit changes nothing, and nothing outside it should move.
+      if (next === doc) return;
+      editDoc(label, () => next);
+      setStyle((s) => retargetStyle(s, next, column, to));
+      setChain((c) => retargetChain(c, target, column, to));
+    },
+    [doc, editDoc],
+  );
+
+  const handleRenameColumn = useCallback(
+    (target: EditTarget, from: string, to: string) => {
+      editColumn(`renaming "${from}" to "${to}"`, target, from, to, (current) =>
+        renameColumn(current, target, from, to),
+      );
+    },
+    [editColumn],
+  );
+
+  const handleDeleteColumn = useCallback(
+    (target: EditTarget, column: string) => {
+      editColumn(`deleting the "${column}" column`, target, column, null, (current) =>
+        deleteColumn(current, target, column),
+      );
+    },
+    [editColumn],
+  );
+
+  /**
    * Run a user script and route its result: a metric becomes a computed column
    * like any built-in one, a layout becomes the targets the canvas morphs to.
    */
@@ -1105,6 +1156,9 @@ export default function App() {
             onEditCell={handleEditCell}
             onAddRow={handleAddRow}
             onDeleteRow={handleDeleteRow}
+            onBulkEdit={editDoc}
+            onRenameColumn={handleRenameColumn}
+            onDeleteColumn={handleDeleteColumn}
             onUndo={undo}
             onRedo={redo}
             undoLabel={undoLabel}

@@ -1,4 +1,5 @@
-import type { CellValue, Column, GraphDoc, Mapping, Row, Table } from "../types";
+import type { CellValue, Column, GraphDoc, GraphStyle, Mapping, Row, Table } from "../types";
+import { styleColumn } from "../types";
 import type { MetricRunResult } from "./metrics";
 import { cellToId, edgeKey } from "./cells";
 import { guessMapping } from "./parse";
@@ -136,6 +137,50 @@ export function edgeStyleColumns(doc: GraphDoc): Column[] {
   return doc.edges.columns.filter(
     (c) => c.name !== doc.mapping.source && c.name !== doc.mapping.target,
   );
+}
+
+/** What each style option falls back to when the column driving it goes away. */
+const STYLE_FALLBACKS = {
+  nodeColor: "none",
+  nodeSize: "metric:degree",
+  nodeImage: "none",
+  edgeWidth: "uniform",
+  edgeColor: "uniform",
+} as const;
+
+/**
+ * Point the style at a column that has just been renamed, or off one that has
+ * just been deleted. Style tokens name columns by string, so a column edit that
+ * left them alone would silently un-style the graph.
+ *
+ * A token is only moved when it no longer resolves against `next`, which is the
+ * document after the change: node styling falls back from the node table to the
+ * edge columns, so renaming one table's copy of a name the other table also
+ * carries should leave the token where it is, still answered.
+ */
+export function retargetStyle(
+  style: GraphStyle,
+  next: GraphDoc,
+  from: string,
+  to: string | null,
+): GraphStyle {
+  const move = <K extends keyof typeof STYLE_FALLBACKS>(key: K, resolves: boolean): string => {
+    const token = style[key];
+    if (styleColumn(token) !== from || resolves) return token;
+    if (to === null) return STYLE_FALLBACKS[key];
+    return `${token.slice(0, token.indexOf(":") + 1)}${to}`;
+  };
+
+  const onNodes = hasColumn(next.nodes, from) || hasColumn(next.edges, from);
+  const onEdges = hasColumn(next.edges, from);
+  return {
+    ...style,
+    nodeColor: move("nodeColor", onNodes),
+    nodeSize: move("nodeSize", onNodes),
+    nodeImage: move("nodeImage", onNodes),
+    edgeWidth: move("edgeWidth", onEdges),
+    edgeColor: move("edgeColor", onEdges),
+  };
 }
 
 /**

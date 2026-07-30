@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { VisibilityState } from "@tanstack/react-table";
 import type { CellValue, ColumnFilter, GraphDoc, GraphSelection, Row } from "../types";
-import type { EditTarget } from "../lib/edit";
+import { deleteRows, type EditTarget } from "../lib/edit";
+import { addColumn, reorderColumns, structuralColumns } from "../lib/bulk";
 import { cellToId } from "../lib/cells";
 import { findColumnStep, narrows, newStepId, type FilterStep } from "../lib/filter";
 import { downloadText, toCsv } from "../lib/io";
@@ -25,6 +26,14 @@ interface TableDrawerProps {
   onEditCell: (target: EditTarget, rowIndex: number, column: string, value: CellValue) => void;
   onAddRow: (target: EditTarget) => void;
   onDeleteRow: (target: EditTarget, rowIndex: number) => void;
+  /** A whole-document transform, which is what every bulk edit already is. */
+  onBulkEdit: (label: string, update: (doc: GraphDoc) => GraphDoc) => void;
+  /**
+   * Column renames and deletes reach past the document into the style and the
+   * filter chain, so the shell makes them and this panel only asks.
+   */
+  onRenameColumn: (target: EditTarget, from: string, to: string) => void;
+  onDeleteColumn: (target: EditTarget, column: string) => void;
   onUndo: () => void;
   onRedo: () => void;
   /** What undo and redo would do, or null when they would do nothing. */
@@ -55,6 +64,9 @@ export function TableDrawer({
   onEditCell,
   onAddRow,
   onDeleteRow,
+  onBulkEdit,
+  onRenameColumn,
+  onDeleteColumn,
   onUndo,
   onRedo,
   undoLabel,
@@ -70,6 +82,8 @@ export function TableDrawer({
     edges: {},
   });
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [newColumn, setNewColumn] = useState("");
   // Where the last Add row landed, so the table can keep it in sight.
   const [addedIndex, setAddedIndex] = useState<number | null>(null);
   const [shownCount, setShownCount] = useState(0);
@@ -190,6 +204,89 @@ export function TableDrawer({
     onChainChange(chain.filter((s) => !(s.kind === "column" && s.table === target)));
   };
 
+  const structural = useMemo(() => structuralColumns(doc, target), [doc, target]);
+
+  /** How the table splits between what the filter chain kept and what it took. */
+  const inViewCount = useMemo(
+    () => table.rows.reduce((n, row) => n + (visible.has(row) ? 1 : 0), 0),
+    [table.rows, visible],
+  );
+
+  /**
+   * Delete a whole side of that split. A row is only ever deleted by something
+   * that says how many it is about to take, and undo covers all of it as one
+   * step, so the only case worth stopping for is the one that empties the table.
+   */
+  const deleteScope = (inView: boolean) => {
+    const indexes: number[] = [];
+    table.rows.forEach((row, i) => {
+      if (visible.has(row) === inView) indexes.push(i);
+    });
+    if (indexes.length === 0) return;
+    if (
+      indexes.length === table.rows.length &&
+      !window.confirm(`Delete all ${indexes.length} rows from this table?`)
+    ) {
+      return;
+    }
+    setDeleteOpen(false);
+    setAddedIndex(null);
+    onBulkEdit(`deleting ${indexes.length} row${indexes.length === 1 ? "" : "s"}`, (current) =>
+      deleteRows(current, target, indexes),
+    );
+  };
+
+  /** A column has moved; write the new order back over the document. */
+  const applyOrder = (order: string[]) => {
+    onBulkEdit("reordering the columns", (current) => reorderColumns(current, target, order));
+  };
+
+  const moveColumn = (name: string, delta: number) => {
+    const order = table.columns.map((c) => c.name);
+    const from = order.indexOf(name);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    applyOrder(order);
+  };
+
+  const dropColumn = (dragged: string, onto: string) => {
+    if (dragged === onto) return;
+    const order = table.columns.map((c) => c.name);
+    const from = order.indexOf(dragged);
+    const to = order.indexOf(onto);
+    if (from < 0 || to < 0) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    applyOrder(order);
+  };
+
+  /**
+   * A rename or a delete changes what the panel's own controls are pointing at,
+   * as well as what the shell's do. The shell repairs the style and the filter
+   * chain; the grouping and the hidden columns are this panel's to repair.
+   */
+  const renameColumn = (from: string, to: string) => {
+    onRenameColumn(target, from, to);
+    setGroupBy((current) => (current === from ? to : current));
+    setVisibility((v) => {
+      if (!(from in v[target])) return v;
+      const next = { ...v[target], [to]: v[target][from] };
+      delete next[from];
+      return { ...v, [target]: next };
+    });
+  };
+
+  const deleteColumn = (name: string) => {
+    onDeleteColumn(target, name);
+    setGroupBy((current) => (current === name ? "" : current));
+    setVisibility((v) => {
+      if (!(name in v[target])) return v;
+      const next = { ...v[target] };
+      delete next[name];
+      return { ...v, [target]: next };
+    });
+  };
+
   /** Download what the table is showing, not what the document holds. */
   const downloadCsv = () => {
     const data = tableRef.current?.visibleData();
@@ -219,6 +316,10 @@ export function TableDrawer({
                 onTargetChange(id);
                 setGroupBy("");
                 setAddedIndex(null);
+                // Both menus name this table's columns and rows, so neither
+                // survives a move to the other one.
+                setColumnsOpen(false);
+                setDeleteOpen(false);
               }}
             >
               {id === "edges" ? "Edges" : "Nodes"}
@@ -305,28 +406,84 @@ export function TableDrawer({
           <button
             type="button"
             className="drawer-btn"
-            onClick={() => setColumnsOpen((v) => !v)}
+            onClick={() => {
+              setColumnsOpen((v) => !v);
+              setDeleteOpen(false);
+            }}
             aria-expanded={columnsOpen}
           >
             Columns
           </button>
           {columnsOpen && (
             <div className="drawer-menu">
-              {table.columns.map((c) => (
-                <label key={c.name} className="check-item">
-                  <input
-                    type="checkbox"
-                    checked={visibility[target][c.name] !== false}
-                    onChange={(e) =>
-                      setVisibility((v) => ({
-                        ...v,
-                        [target]: { ...v[target], [c.name]: e.target.checked },
-                      }))
-                    }
-                  />
-                  <span className="check-name">{c.name}</span>
-                </label>
-              ))}
+              <ColumnList
+                names={table.columns.map((c) => c.name)}
+                hidden={visibility[target]}
+                onToggle={(name, shown) =>
+                  setVisibility((v) => ({ ...v, [target]: { ...v[target], [name]: shown } }))
+                }
+                onMove={moveColumn}
+                onDrop={dropColumn}
+              />
+              <form
+                className="drawer-menu-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = newColumn.trim();
+                  if (name === "") return;
+                  setNewColumn("");
+                  onBulkEdit(`adding the "${name}" column`, (current) =>
+                    addColumn(current, target, name),
+                  );
+                }}
+              >
+                <input
+                  value={newColumn}
+                  onChange={(e) => setNewColumn(e.target.value)}
+                  placeholder="New column"
+                  aria-label="Name for a new column"
+                />
+                <button type="submit" disabled={newColumn.trim() === ""}>
+                  Add
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+
+        <div className="drawer-columns">
+          <button
+            type="button"
+            className="drawer-btn"
+            onClick={() => {
+              setDeleteOpen((v) => !v);
+              setColumnsOpen(false);
+            }}
+            aria-expanded={deleteOpen}
+            title="Delete rows by the side of the filter chain they fell on"
+          >
+            Delete rows
+          </button>
+          {deleteOpen && (
+            <div className="drawer-menu">
+              <button
+                type="button"
+                className="drawer-menu-item"
+                disabled={inViewCount === 0}
+                onClick={() => deleteScope(true)}
+              >
+                Rows in view
+                <span className="drawer-tab-count">{inViewCount}</span>
+              </button>
+              <button
+                type="button"
+                className="drawer-menu-item"
+                disabled={inViewCount === table.rows.length}
+                onClick={() => deleteScope(false)}
+              >
+                Rows the filters removed
+                <span className="drawer-tab-count">{table.rows.length - inViewCount}</span>
+              </button>
             </div>
           )}
         </div>
@@ -383,6 +540,7 @@ export function TableDrawer({
       <DataTable
         ref={tableRef}
         table={table}
+        target={target}
         visible={visible}
         onlyVisible={onlyVisible}
         addedIndex={addedIndex}
@@ -407,7 +565,82 @@ export function TableDrawer({
           setAddedIndex(null);
           onDeleteRow(target, rowIndex);
         }}
+        structuralColumns={structural}
+        nodeIdColumn={target === "nodes" ? doc.nodeIdColumn : null}
+        onBulkEdit={onBulkEdit}
+        onRenameColumn={renameColumn}
+        onDeleteColumn={deleteColumn}
       />
     </section>
+  );
+}
+
+interface ColumnListProps {
+  names: string[];
+  hidden: VisibilityState;
+  onToggle: (name: string, shown: boolean) => void;
+  onMove: (name: string, delta: number) => void;
+  onDrop: (dragged: string, onto: string) => void;
+}
+
+/**
+ * The column list: what is showing, and in what order. Order is the document's,
+ * not the view's, so it travels into a CSV or a GEXF written from here. The grip
+ * is a button as well as a drag handle, so the order can be changed from the
+ * keyboard by something other than a mouse gesture.
+ */
+function ColumnList({ names, hidden, onToggle, onMove, onDrop }: ColumnListProps) {
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+
+  return (
+    <div className="col-list">
+      {names.map((name) => (
+        <div
+          key={name}
+          className={`col-row${over === name && dragging !== name ? " over" : ""}`}
+          onDragOver={(e) => {
+            if (dragging === null) return;
+            e.preventDefault();
+            setOver(name);
+          }}
+          onDragLeave={() => setOver((current) => (current === name ? null : current))}
+          onDrop={(e) => {
+            e.preventDefault();
+            setOver(null);
+            if (dragging !== null) onDrop(dragging, name);
+            setDragging(null);
+          }}
+        >
+          <button
+            type="button"
+            className="col-grip"
+            draggable
+            aria-label={`Move ${name}`}
+            title="Drag, or use the arrow keys"
+            onDragStart={() => setDragging(name)}
+            onDragEnd={() => {
+              setDragging(null);
+              setOver(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              e.preventDefault();
+              onMove(name, e.key === "ArrowUp" ? -1 : 1);
+            }}
+          >
+            <span aria-hidden="true">⠿</span>
+          </button>
+          <label className="check-item">
+            <input
+              type="checkbox"
+              checked={hidden[name] !== false}
+              onChange={(e) => onToggle(name, e.target.checked)}
+            />
+            <span className="check-name">{name}</span>
+          </label>
+        </div>
+      ))}
+    </div>
   );
 }

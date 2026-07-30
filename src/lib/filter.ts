@@ -123,6 +123,34 @@ export function findColumnStep(
   );
 }
 
+/**
+ * Point the chain at a column that has just been renamed, or take off the steps
+ * that named one just deleted. A step holds its column by name and says which
+ * table it belongs to, so this is exact rather than a guess.
+ */
+export function retargetChain(
+  chain: FilterStep[],
+  table: "nodes" | "edges",
+  from: string,
+  to: string | null,
+): FilterStep[] {
+  const out: FilterStep[] = [];
+  for (const step of chain) {
+    if (step.kind === "column" && step.table === table && step.column === from) {
+      // A condition names the values of the column it was built against, so it
+      // survives a rename of the column itself unchanged.
+      if (to !== null) out.push({ ...step, column: to });
+      continue;
+    }
+    if (step.kind === "backbone" && table === "edges" && step.weightColumn === from) {
+      out.push({ ...step, weightColumn: to });
+      continue;
+    }
+    out.push(step);
+  }
+  return out;
+}
+
 /** A condition that lets everything through, so a fresh step is a no-op. */
 export function neutralCondition(table: Table, columnName: string): ColumnFilter {
   const column = table.columns.find((c) => c.name === columnName);

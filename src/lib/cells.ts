@@ -1,4 +1,4 @@
-import type { CellValue } from "../types";
+import type { CellValue, ColumnType } from "../types";
 
 /** A cell as a node id: trimmed, with blanks becoming null. */
 export function cellToId(v: CellValue): string | null {
@@ -10,6 +10,25 @@ export function cellToId(v: CellValue): string | null {
 /** Stable string key for a cell value; blanks collapse to "". */
 export function cellKey(v: CellValue): string {
   return v === null ? "" : String(v).trim();
+}
+
+/**
+ * Read typed text back into a cell, so an edit leaves the column holding what
+ * it held before. Text that will not parse stays text: a number column with one
+ * stray word in it is better than a hole where the word was.
+ */
+export function parseCell(type: ColumnType, raw: string): CellValue {
+  if (raw.trim() === "") return null;
+  if (type === "number") {
+    const value = Number(raw);
+    return isNaN(value) ? raw : value;
+  }
+  if (type === "bool") {
+    const lowered = raw.trim().toLowerCase();
+    if (["true", "yes", "1"].includes(lowered)) return true;
+    if (["false", "no", "0"].includes(lowered)) return false;
+  }
+  return raw;
 }
 
 /**

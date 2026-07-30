@@ -10,13 +10,41 @@ import { reconcileNodes } from "./doc";
 
 export type EditTarget = "nodes" | "edges";
 
-const tableOf = (doc: GraphDoc, target: EditTarget): Table =>
+export const tableOf = (doc: GraphDoc, target: EditTarget): Table =>
   target === "nodes" ? doc.nodes : doc.edges;
 
-function withTable(doc: GraphDoc, target: EditTarget, table: Table): GraphDoc {
+export function withTable(doc: GraphDoc, target: EditTarget, table: Table): GraphDoc {
   return target === "nodes"
     ? { ...doc, nodes: table, nodesDeclared: true }
     : { ...doc, edges: table };
+}
+
+/**
+ * Fold node rows that have come to share an id into the first of them. Two rows
+ * answering to one id is not a state the graph can render: `buildBaseGraph`
+ * takes the first and the rest are a ghost in the Nodes tab. The survivor keeps
+ * everything it had and takes only what it was missing, so a merge never
+ * overwrites an attribute, it only fills a hole.
+ */
+export function coalesceById(rows: Row[], idColumn: string): Row[] {
+  const byId = new Map<string, Row>();
+  const out: Row[] = [];
+  let merged = false;
+  for (const row of rows) {
+    const id = cellToId(row[idColumn]);
+    const kept = id === null ? undefined : byId.get(id);
+    if (kept === undefined) {
+      const copy = { ...row };
+      if (id !== null) byId.set(id, copy);
+      out.push(copy);
+      continue;
+    }
+    merged = true;
+    for (const [key, value] of Object.entries(row)) {
+      if ((kept[key] ?? null) === null && value !== null) kept[key] = value;
+    }
+  }
+  return merged ? out : rows;
 }
 
 /** A node id that is not already taken, based on a preferred stem. */
@@ -57,15 +85,17 @@ export function setCell(
   return target === "edges" ? reconcileNodes(next) : next;
 }
 
-/** Rename a node, carrying the new id into every edge that referenced it. */
+/**
+ * Rename a node, carrying the new id into every edge that referenced it.
+ * Renaming onto an id that already exists is a merge, not a collision: the two
+ * rows become one and every edge that named either now names the survivor.
+ */
 export function renameNode(doc: GraphDoc, from: string, to: string): GraphDoc {
   if (from === to) return doc;
-  const nodes = {
-    ...doc.nodes,
-    rows: doc.nodes.rows.map((row) =>
-      cellToId(row[doc.nodeIdColumn]) === from ? { ...row, [doc.nodeIdColumn]: to } : row,
-    ),
-  };
+  const renamed = doc.nodes.rows.map((row) =>
+    cellToId(row[doc.nodeIdColumn]) === from ? { ...row, [doc.nodeIdColumn]: to } : row,
+  );
+  const nodes = { ...doc.nodes, rows: coalesceById(renamed, doc.nodeIdColumn) };
   const { source, target } = doc.mapping;
   const edges = {
     ...doc.edges,

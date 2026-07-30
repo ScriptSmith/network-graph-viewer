@@ -62,9 +62,27 @@ way to change data is the data table, which edits the underlying rows.
   Links put the data in the fragment, never the query: fragments are not sent
   with the request, so a shared graph stays as private as a dropped file.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
-  table's cell edits, row adds and row deletes.
+  table's cell edits, row adds and row deletes. `coalesceById` is what makes a
+  rename onto an existing id a merge rather than a ghost row the graph ignores.
+- `src/lib/bulk.ts` - the same shape, one act over many cells or a whole
+  column, so each lands in the undo history as one step. Everything at the
+  value level goes through `mapColumn`, which knows the two columns that are
+  not really values: the node id column, where an edit is a rename that has to
+  reach both endpoint columns, and an endpoint column, where an edit can name
+  a node nobody declared. Renaming several ids to one id **is** the node merge.
+  A `RowScope` of `null` means every row; anything else is the rows in view.
+  Column renames and deletes only do the document's half: style tokens and
+  filter steps name columns by string and live outside it, so `retargetStyle`
+  (doc.ts) and `retargetChain` (filter.ts) do the rest, called together from
+  `App.tsx` so one act moves all three.
 - `src/lib/script/` - the QuickJS sandbox and the payload it receives.
 - `src/workers/compute.worker.ts` - metrics and user scripts, off the main thread.
+- `src/components/ColumnMenu.tsx` - the pencil in a column header: rename,
+  duplicate, retype, delete, find and replace, fill, and the value list whose
+  "rename selected" is both a facet rename and, on the id column, a merge. It
+  builds the transforms itself and hands up whole `GraphDoc` updates.
+  `useHeaderPopover` + `HeaderPanel` position it and the filter funnel against
+  the viewport, since the pane they hang in is often two rows tall.
 - `src/components/GraphCanvas.tsx` - the only place d3 touches the DOM. React
   renders the SVG shell; d3 owns joins, ticks, zoom, drag. One simulation
   powers everything: physics layouts use forces, computed layouts use strong

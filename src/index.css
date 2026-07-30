@@ -2244,6 +2244,335 @@ input.swatch::-moz-color-swatch {
   text-align: center;
 }
 
+/* ---- Column menu ---- */
+
+/* Sits beside the funnel and keeps its habits: out of the way until the header
+   is under the pointer, lit while its panel is open. */
+.dt-more {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 8px 0 0;
+  opacity: 0.35;
+}
+
+.dt-table th:hover .dt-more,
+.dt-more:focus-visible,
+.dt-more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.dt-more:hover {
+  color: var(--ink);
+}
+
+.dt-col-pop {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px 11px;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+}
+
+.cm-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cm-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.cm-type,
+.cm-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.cm-back {
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px 0 0;
+}
+
+.cm-back:hover {
+  color: var(--ink);
+}
+
+.cm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cm-list button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.cm-list button:hover:not(:disabled) {
+  background: var(--raised-2);
+  color: var(--ink);
+}
+
+.cm-list button:disabled {
+  color: var(--ink-3);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.cm-sep {
+  border-top: 1px solid var(--hairline);
+}
+
+.cm-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.cm-input {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--ink);
+  font: inherit;
+  padding: 5px 8px;
+}
+
+.cm-input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.cm-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.cm-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.cm-check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.cm-check .cm-count {
+  margin-left: auto;
+}
+
+.cm-toggles,
+.cm-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cm-apply {
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 9px;
+}
+
+.cm-apply:disabled {
+  background: var(--raised-2);
+  border-color: var(--hairline);
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.cm-facets {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cm-facet-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cm-facet-head span:last-child {
+  margin-left: auto;
+}
+
+.cm-values {
+  max-height: 170px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* ---- Column list (reordering) ---- */
+
+.col-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.col-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+  /* The line the dragged column would land on, drawn without moving anything. */
+  border-top: 2px solid transparent;
+}
+
+.col-row.over {
+  border-top-color: var(--accent);
+}
+
+.col-row .check-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.col-grip {
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  cursor: grab;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 1px;
+}
+
+.col-grip:hover,
+.col-grip:focus-visible {
+  color: var(--ink);
+}
+
+.col-grip:active {
+  cursor: grabbing;
+}
+
+.drawer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 6px;
+  text-align: left;
+}
+
+.drawer-menu-item:hover:not(:disabled) {
+  background: var(--raised-2);
+  color: var(--ink);
+}
+
+.drawer-menu-item:disabled {
+  color: var(--ink-3);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.drawer-menu-item .drawer-tab-count {
+  margin-left: auto;
+}
+
+.drawer-menu-form {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+
+.drawer-menu-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+.drawer-menu-form input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.drawer-menu-form button {
+  background: var(--raised-2);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 9px;
+}
+
+.drawer-menu-form button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.drawer-menu-form button:disabled {
+  color: var(--ink-3);
+  cursor: default;
+  opacity: 0.5;
+}
+
 /* ---- Filter chain ---- */
 
 .chain {

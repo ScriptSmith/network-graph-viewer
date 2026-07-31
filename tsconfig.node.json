@@ -14,10 +14,14 @@
     "noEmit": true,
 
     /* Linting */
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts"]
+  /* Both configs: the embed one builds the file the Python package publishes,
+     so leaving it out would mean the widget's build is the one thing here that
+     is never type-checked. */
+  "include": ["vite.config.ts", "vite.embed.config.ts"]
 }

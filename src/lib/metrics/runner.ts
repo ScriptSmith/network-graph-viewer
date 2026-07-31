@@ -1,6 +1,13 @@
 import type { WorkerRequest, WorkerResponse } from "../../workers/compute.worker";
 import { spawnComputeWorker } from "#worker";
-import { runMetrics, type MetricGraph, type MetricOptions, type MetricRunResult } from "./index";
+import {
+  centralityScores,
+  runMetrics,
+  type CentralityKind,
+  type MetricGraph,
+  type MetricOptions,
+  type MetricRunResult,
+} from "./index";
 
 export interface MetricRun {
   result: MetricRunResult;
@@ -90,6 +97,34 @@ export async function computeMetrics(
     const started = performance.now();
     const result = runMetrics(graph, metrics, options);
     return { result, elapsedMs: performance.now() - started, offMainThread: false };
+  }
+}
+
+/**
+ * One ranking, off the main thread.
+ *
+ * The statistics panel offers every centrality it knows, and two of them cost
+ * a breadth-first search per node. Computed where the panel renders, picking
+ * "Harmonic closeness" on a graph of any size would stop the page rather than
+ * rank it, so the work goes to the worker and the panel waits.
+ *
+ * Unlike `computeMetrics` this only falls back to the main thread when there is
+ * no worker to be had. A worker that ran and threw has already told us the
+ * answer is not coming; running the same computation here would freeze the page
+ * on the way to the same error.
+ */
+export async function computeCentrality(
+  graph: MetricGraph,
+  kind: CentralityKind,
+): Promise<Map<string, number>> {
+  const request: WorkerRequest = { kind: "centrality", id: nextId++, graph, centrality: kind };
+  try {
+    const message = await send(request);
+    if (message.kind !== "centrality") throw new Error("Unexpected reply from the compute worker.");
+    return new Map(message.scores);
+  } catch (e) {
+    if (e instanceof Error && e.message === "no-worker") return centralityScores(graph, kind);
+    throw e;
   }
 }
 

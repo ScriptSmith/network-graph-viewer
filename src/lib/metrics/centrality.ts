@@ -11,7 +11,11 @@ import {
  * Per-node importance measures. The four classic ones treat edges as
  * undirected and unweighted, which is how they are normally reported;
  * PageRank and HITS are directed, because direction is the whole point of
- * both. Path-based measures sample their BFS sources on very large graphs.
+ * both.
+ *
+ * Betweenness and closeness sample their BFS sources above `SAMPLE_LIMIT`,
+ * because both are means over pairs and a sample estimates a mean well.
+ * Harmonic closeness does not, for the reason given on it.
  */
 
 /** Number of incident edges, ignoring direction. */
@@ -29,10 +33,13 @@ export function betweenness(u: Undirected): Float64Array {
   const sigma = new Float64Array(n);
   const dist = new Int32Array(n);
   const delta = new Float64Array(n);
+  // Allocated once and emptied per source: rebuilding n arrays for each of up
+  // to `SAMPLE_LIMIT` sources is the same work again in the garbage collector.
+  const pred: number[][] = Array.from({ length: n }, () => []);
 
   for (const s of sources) {
     const stack: number[] = [];
-    const pred: number[][] = Array.from({ length: n }, () => []);
+    for (let i = 0; i < n; i++) pred[i].length = 0;
     sigma.fill(0);
     sigma[s] = 1;
     dist.fill(-1);
@@ -70,22 +77,47 @@ export function betweenness(u: Undirected): Float64Array {
   return bc;
 }
 
-/** Closeness with the Wasserman-Faust correction for disconnected graphs. */
+/**
+ * Closeness with the Wasserman-Faust correction for disconnected graphs: the
+ * share of the graph a node can reach, over the mean distance it takes to get
+ * there, so a node marooned on a small island does not outscore a well-placed
+ * one in the giant component. Sampled on very large graphs.
+ *
+ * Sampling works here because both halves of the formula are means, and a mean
+ * is what a sample estimates well. It is also why the loop is inside out from
+ * the obvious reading: one BFS per node would be O(n(n+m)) and would leave the
+ * unsampled nodes with no answer at all. This runs on the undirected view,
+ * where distance is symmetric, so a single BFS from `s` reports `d(s, w)` and
+ * `d(w, s)` at once and every node learns something from every source.
+ *
+ * `denom` is how many sampled sources were candidates for a given node: the
+ * sample size, less the node itself where it was one of them. That is what
+ * makes the unsampled case the textbook formula exactly rather than an estimate
+ * that merely converges on it.
+ */
 export function closeness(u: Undirected): Float64Array {
   const { n, neighbors } = u;
-  const scores = new Float64Array(n);
+  const sources = sampleSources(n);
+  const sum = new Float64Array(n);
+  const reached = new Float64Array(n);
+  const denom = new Float64Array(n).fill(sources.length);
   const dist = new Int32Array(n);
-  for (let v = 0; v < n; v++) {
-    bfsDistances(neighbors, v, dist);
-    let sum = 0;
-    let reachable = 0;
+
+  for (const s of sources) {
+    bfsDistances(neighbors, s, dist);
+    denom[s] -= 1;
     for (let w = 0; w < n; w++) {
       if (dist[w] > 0) {
-        sum += dist[w];
-        reachable++;
+        sum[w] += dist[w];
+        reached[w] += 1;
       }
     }
-    scores[v] = sum > 0 && n > 1 ? (reachable / (n - 1)) * (reachable / sum) : 0;
+  }
+
+  const scores = new Float64Array(n);
+  for (let v = 0; v < n; v++) {
+    if (sum[v] <= 0 || denom[v] <= 0) continue;
+    scores[v] = (reached[v] / denom[v]) * (reached[v] / sum[v]);
   }
   return scores;
 }
@@ -93,6 +125,14 @@ export function closeness(u: Undirected): Float64Array {
 /**
  * Harmonic closeness: the sum of reciprocal distances, which needs no
  * correction because unreachable nodes simply contribute nothing.
+ *
+ * Exact, and deliberately not sampled the way `closeness` above is. The whole
+ * character of this measure is that it weights near neighbours heavily, and a
+ * sample of a few hundred sources reaches a vanishing share of any one node's
+ * near neighbourhood as the graph grows: measured on a large ring the estimate
+ * came out more than twice the true value, whatever the sampler. Approximating
+ * away the near neighbours is approximating away the measure. So this one is
+ * O(n(n+m)) on purpose, and belongs in the worker rather than on a render path.
  */
 export function harmonic(u: Undirected): Float64Array {
   const { n, neighbors } = u;
@@ -131,10 +171,7 @@ export function eigenvector(u: Undirected): Float64Array {
     [x, next] = [next, x];
     if (diff < 1e-7) break;
   }
-  const max = Math.max(...x);
-  if (max > 0) {
-    for (let i = 0; i < n; i++) x[i] /= max;
-  }
+  scaleToMax(x);
   return x;
 }
 
@@ -197,8 +234,8 @@ export function hits(graph: MetricGraph): Hits {
   const n = d.n;
   let hubs = new Float64Array(n).fill(1);
   let authorities = new Float64Array(n).fill(1);
-  const nextHubs = new Float64Array(n);
-  const nextAuthorities = new Float64Array(n);
+  let nextHubs = new Float64Array(n);
+  let nextAuthorities = new Float64Array(n);
 
   for (let iter = 0; iter < 100; iter++) {
     nextAuthorities.fill(0);
@@ -221,8 +258,10 @@ export function hits(graph: MetricGraph): Hits {
     for (let v = 0; v < n; v++) {
       diff += Math.abs(nextHubs[v] - hubs[v]) + Math.abs(nextAuthorities[v] - authorities[v]);
     }
-    hubs = Float64Array.from(nextHubs);
-    authorities = Float64Array.from(nextAuthorities);
+    // Swapped rather than copied, the way `pagerank` above does it: the old
+    // vectors are about to be overwritten anyway.
+    [hubs, nextHubs] = [nextHubs, hubs];
+    [authorities, nextAuthorities] = [nextAuthorities, authorities];
     if (diff < 1e-9) break;
   }
 

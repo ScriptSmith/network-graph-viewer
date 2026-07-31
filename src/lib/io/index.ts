@@ -82,10 +82,34 @@ export interface ExportedFile {
   mime: string;
 }
 
-/** Escape a value for CSV: quote it when it could otherwise break the row. */
+/**
+ * Characters that make a spreadsheet read a cell as a formula rather than as
+ * text. The last two are here because Excel strips leading whitespace before
+ * deciding, so a tab or a carriage return in front of an `=` hides it.
+ */
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+/**
+ * Escape a value for CSV: quote it when it could otherwise break the row, and
+ * defuse it when it would otherwise be run.
+ *
+ * Quoting is what makes a file parse. It is not what makes it safe to open: a
+ * cell reading `=HYPERLINK("http://…"&A1)` survives quoting intact and executes
+ * the moment the export lands in Excel, LibreOffice or Sheets. The cells here
+ * can have come from a spreadsheet somebody else wrote, or from a shared link
+ * anyone can write, and the whole point of this format is that it goes straight
+ * back into a spreadsheet, so the leading character is neutralised with an
+ * apostrophe. Every spreadsheet reads that as "the rest of this is text", and
+ * drops it again on the way in.
+ */
 function csvCell(value: unknown): string {
   const text = value === null || value === undefined ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  // A number is left alone even when it leads with a sign, because -5 is not a
+  // formula in any spreadsheet and quoting it would land the column back as
+  // text. `-2+3` is a formula, and is not a number, so it still gets caught.
+  const numeric = text.trim() !== "" && isFinite(Number(text));
+  const safe = !numeric && FORMULA_LEAD.test(text) ? `'${text}` : text;
+  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 export function toCsv(columns: string[], rows: Record<string, unknown>[]): string {

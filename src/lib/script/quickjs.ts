@@ -22,6 +22,10 @@ let modulePromise: Promise<QuickJSWASMModule> | null = null;
 /**
  * The engine is ~500 KB of WebAssembly, so it is fetched the first time a
  * script actually runs and never for anyone who does not write one.
+ *
+ * A failed fetch clears the cache rather than keeping the rejection: the usual
+ * reason to be here twice is that the first attempt lost the network, and a
+ * remembered rejection would make that permanent for the rest of the session.
  */
 async function engine(): Promise<QuickJSWASMModule> {
   modulePromise ??= (async () => {
@@ -30,7 +34,10 @@ async function engine(): Promise<QuickJSWASMModule> {
       import("@jitl/quickjs-wasmfile-release-sync"),
     ]);
     return core.newQuickJSWASMModuleFromVariant(variant.default);
-  })();
+  })().catch((e: unknown) => {
+    modulePromise = null;
+    throw e;
+  });
   return modulePromise;
 }
 
@@ -53,6 +60,11 @@ globalThis.Math.random = (() => {
   };
 })();
 globalThis.Date.now = () => 0;
+// The constructor reads the same clock, so pinning only \`now\` would leave
+// \`new Date()\` as a way back to a value that changes between runs.
+globalThis.Date = new Proxy(globalThis.Date, {
+  construct: (target, args) => new target(...(args.length === 0 ? [0] : args)),
+});
 `;
 
 export class ScriptError extends Error {
@@ -81,10 +93,13 @@ export async function runScript<T = unknown>(
   runtime.setMemoryLimit(options.memoryBytes ?? DEFAULT_MEMORY_BYTES);
   runtime.setMaxStackSize(MAX_STACK_BYTES);
 
-  const deadline = Date.now() + (options.deadlineMs ?? DEFAULT_DEADLINE_MS);
+  // `performance.now`, not `Date.now`: the wall clock moves when the system
+  // corrects it, and a correction backwards would extend a deadline whose whole
+  // job is to be the thing a runaway script cannot outlast.
+  const deadline = performance.now() + (options.deadlineMs ?? DEFAULT_DEADLINE_MS);
   let interrupted = false;
   runtime.setInterruptHandler(() => {
-    if (Date.now() <= deadline) return false;
+    if (performance.now() <= deadline) return false;
     interrupted = true;
     return true;
   });

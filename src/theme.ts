@@ -292,12 +292,6 @@ const LIGHT: GraphTheme = {
 
 export const GRAPH_THEMES: Record<ThemeMode, GraphTheme> = { dark: DARK, light: LIGHT };
 
-export const EDGE = DARK.edge;
-export const EDGE_LIT = DARK.edgeLit;
-export const LABEL = DARK.label;
-export const LABEL_HALO = DARK.labelHalo;
-export const SELECT_RING = DARK.selectRing;
-
 /** Groups past the palette's last slot get folded into "Other". */
 export const OTHER_GROUP = "Other";
 

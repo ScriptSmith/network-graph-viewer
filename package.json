@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:widget": "tsc -b && pnpm widget",
-    "lint": "oxlint --ignore-pattern 'python/**'",
+    "lint": "oxlint --deny-warnings --ignore-pattern 'python/**'",
     "test": "pnpm widget && vitest run",
     "format": "oxfmt",
     "format:check": "oxfmt --check",

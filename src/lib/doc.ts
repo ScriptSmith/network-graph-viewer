@@ -268,7 +268,9 @@ export function applyComputedColumns(doc: GraphDoc, result: MetricRunResult): Gr
     const name = nameFor(nodes, column.name);
     nodes = withColumn(nodes, { name, type: column.type, computed: true }, (row) => {
       const id = cellToId(row[doc.nodeIdColumn]);
-      return id === null ? null : (column.values[id] ?? null);
+      // By own property: a node id is whatever a cell said, and a cell saying
+      // "toString" would otherwise read a function off the prototype.
+      return id !== null && Object.hasOwn(column.values, id) ? column.values[id] : null;
     });
   }
 
@@ -279,7 +281,8 @@ export function applyComputedColumns(doc: GraphDoc, result: MetricRunResult): Gr
       const source = cellToId(row[doc.mapping.source]);
       const target = cellToId(row[doc.mapping.target]);
       if (source === null || target === null) return null;
-      return column.values[edgeKey(source, target)] ?? null;
+      const key = edgeKey(source, target);
+      return Object.hasOwn(column.values, key) ? column.values[key] : null;
     });
   }
 

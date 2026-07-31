@@ -52,6 +52,7 @@ import {
 } from "./lib/doc";
 import { deleteColumn, renameColumn } from "./lib/bulk";
 import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
+import { isRemoteSource } from "./lib/images";
 import { applyChain, findValueStep, newStepId, retargetChain, type FilterStep } from "./lib/filter";
 import { defaultParams, type LayoutId, type LayoutParams, type ParamValue } from "./lib/layouts";
 import { addRow, deleteRows, setCell, type EditTarget } from "./lib/edit";
@@ -79,7 +80,8 @@ import iconUrl from "../docs/icon.svg";
 const AMBIENT_TABLE = SAMPLE_DATASET.tables[0];
 const AMBIENT_DOC = buildDoc(SAMPLE_DATASET.fileName, AMBIENT_TABLE);
 const AMBIENT_STYLE: GraphStyle = guessStyle(AMBIENT_TABLE, AMBIENT_DOC.mapping);
-const AMBIENT_GRAPH = applyStyle(buildBaseGraph(AMBIENT_DOC), AMBIENT_DOC, AMBIENT_STYLE);
+const AMBIENT_BASE = buildBaseGraph(AMBIENT_DOC);
+const AMBIENT_GRAPH = applyStyle(AMBIENT_BASE, AMBIENT_DOC, AMBIENT_STYLE);
 const AMBIENT_COLORS = groupColorMap(AMBIENT_GRAPH.groups);
 
 const SIDEBAR_SIZE: PanelSizeOptions = {
@@ -123,6 +125,8 @@ function sourceKey(source: UrlSource): string {
 export interface EmbedProps {
   /** The workspace to open with, in place of the empty state. */
   initial?: Workspace;
+  /** Why there is no `initial`, when the host sent one that would not read. */
+  initialError?: string;
   /**
    * Where this app is served from. Share links are built against it, so a
    * link copied out of a notebook points at the app rather than at the
@@ -166,11 +170,22 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const selectedId = selectedNode(selection);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
-  const [error, setError] = useState<string | null>(null);
+  // Seeded, not set in an effect: a host whose workspace would not read has
+  // nothing to draw, so the reason is the first thing the cell should say.
+  const [error, setError] = useState<string | null>(embed?.initialError ?? null);
   // Something worth saying that is not a failure: so far, that a file held
   // more rows than were read.
   const [notice, setNotice] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  /**
+   * Whether node images may be fetched from the web. A graph can arrive from a
+   * link, a gist or a file somebody else wrote, and an image column in one is a
+   * list of addresses this machine would then go and ask for. That tells
+   * whoever chose them that the graph was opened, and from where, which is the
+   * one thing the rest of the app is careful never to say. So it waits to be
+   * asked, and the answer resets whenever different data arrives.
+   */
+  const [allowRemoteImages, setAllowRemoteImages] = useState(false);
   // Overlays the user has dismissed, so the graph can be presented or
   // screenshotted clean. Nothing underneath changes: showing them again brings
   // each one back as it was.
@@ -288,6 +303,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setSelection(null);
       setError(null);
       setNotice(null);
+      setAllowRemoteImages(false);
     },
     [resetDoc],
   );
@@ -314,6 +330,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setSelection(null);
       setError(null);
       setNotice(null);
+      setAllowRemoteImages(false);
     },
     [resetDoc],
   );
@@ -479,11 +496,15 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // alone; Escape only ever puts things back, so the way out is never hidden
   // along with everything else. Ctrl+Z and its partners walk the document
   // history, except inside a field, where they are the browser's to handle.
+  //
+  // "Inside a field" includes a focused graph node. Single-character shortcuts
+  // have to give way to whatever currently has focus (WCAG 2.1.4), and someone
+  // arrowing around the network is not asking for the window to be cleared.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const inField =
-        e.target instanceof HTMLElement &&
-        e.target.closest("input, textarea, select, [contenteditable]") !== null;
+        e.target instanceof Element &&
+        e.target.closest("input, textarea, select, [contenteditable], [data-nodes]") !== null;
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !inField) {
         const key = e.key.toLowerCase();
         if (key === "z" && !e.shiftKey) {
@@ -526,6 +547,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     (network: SampleNetwork) => {
       forgetUrlSource();
       adoptDataset(network.dataset, { nodeTable: network.nodeTable, style: network.style });
+      // A shipped sample is ours. Its images are a known list on a known CDN,
+      // not somebody else's choice of who this machine should talk to.
+      setAllowRemoteImages(true);
     },
     [adoptDataset, forgetUrlSource],
   );
@@ -958,6 +982,20 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const colorColumn = styleColumn(style.nodeColor);
   const showLegend = graph !== null && hasLegend(graph);
 
+  /**
+   * How many distinct web addresses the current graph would like this machine
+   * to fetch pictures from. Counted rather than merely detected, because "42
+   * images" and "one image" are different questions to be asked.
+   */
+  const heldBackImages = useMemo(() => {
+    if (graph === null || allowRemoteImages) return 0;
+    const sources = new Set<string>();
+    for (const node of graph.nodes) {
+      if (node.image !== null && isRemoteSource(node.image)) sources.add(node.image);
+    }
+    return sources.size;
+  }, [graph, allowRemoteImages]);
+
   // The sidebar owns the one file input; the empty state's dropzone borrows it.
   // Scoped to our own tree, or embedded it would find the host page's inputs.
   const appRef = useRef<HTMLDivElement>(null);
@@ -1097,11 +1135,12 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
       <div className="workspace">
         <main className="stage">
-          {graph && doc ? (
+          {graph && base && doc ? (
             <>
               <GraphCanvas
                 ref={canvasRef}
                 graph={graph}
+                base={base}
                 layout={layout}
                 layoutParams={layoutParams}
                 scriptedTargets={scriptedTargets}
@@ -1116,6 +1155,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 selection={selection}
                 onSelect={handleSelect}
                 seedPositions={seedPositionsRef}
+                allowRemoteImages={allowRemoteImages}
               />
               {hiddenOverlays.has("toolbar") && (
                 <button
@@ -1204,6 +1244,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             <>
               <GraphCanvas
                 graph={AMBIENT_GRAPH}
+                base={AMBIENT_BASE}
                 layout="force"
                 layoutParams={{}}
                 preventOverlap={false}
@@ -1288,8 +1329,25 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
               </div>
             </>
           )}
-          {(error || notice) && (
+          {(error || notice || heldBackImages > 0) && (
             <div className="toast-stack">
+              {heldBackImages > 0 && (
+                <div className="toast" role="status">
+                  <span>
+                    This graph points at {heldBackImages}{" "}
+                    {heldBackImages === 1 ? "picture" : "pictures"} on the web. Loading{" "}
+                    {heldBackImages === 1 ? "it" : "them"} tells{" "}
+                    {heldBackImages === 1 ? "that site" : "those sites"} you opened this graph.
+                  </span>
+                  <button
+                    type="button"
+                    className="toast-action"
+                    onClick={() => setAllowRemoteImages(true)}
+                  >
+                    Load images
+                  </button>
+                </div>
+              )}
               {error && (
                 <div className="toast error" role="alert">
                   <span>{error}</span>
@@ -1338,8 +1396,10 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       </div>
 
       {/* The third panel takes its own column, so the graph gets the width back
-          when it is put away rather than being covered by it. */}
-      {graph && doc && (
+          when it is put away rather than being covered by it. It takes both
+          graphs: the styled one to read colours off, and the structural one it
+          counts, which is the same network whatever the styling says. */}
+      {graph && base && doc && (
         <>
           <div
             className="resizer resizer-stats"
@@ -1351,6 +1411,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             rows={filteredRows}
             totalRows={doc.edges.rows.length}
             graph={graph}
+            base={base}
             colorColumn={graph.ranking ? null : colorColumn}
             palette={palette}
             colors={colors}

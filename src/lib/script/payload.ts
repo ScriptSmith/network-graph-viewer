@@ -1,6 +1,7 @@
 import type { BaseGraph, CellValue, GraphDoc } from "../../types";
 import { cellToId, edgeKey } from "../cells";
 import { endpointId } from "../graph";
+import { emptyValues } from "../metrics";
 
 /**
  * The `graph` object a user script receives. Plain JSON: no methods, no live
@@ -84,7 +85,8 @@ export function interpretResult(mode: ScriptMode, raw: unknown): ScriptOutcome {
     return { positions };
   }
 
-  const values: Record<string, CellValue> = {};
+  // Null-prototyped: a script keys by node id, and a node id can be `__proto__`.
+  const values = emptyValues();
   for (const [key, value] of entries) {
     if (value === null || typeof value === "number" || typeof value === "string") {
       values[key] = value;
@@ -99,7 +101,7 @@ export function interpretResult(mode: ScriptMode, raw: unknown): ScriptOutcome {
 
 /** Edge scripts key their results by endpoint pair, which needs normalizing. */
 export function normalizeEdgeKeys(values: Record<string, CellValue>): Record<string, CellValue> {
-  const out: Record<string, CellValue> = {};
+  const out = emptyValues();
   for (const [key, value] of Object.entries(values)) {
     // Accept "a->b" as a friendlier alternative to the internal separator.
     const arrow = key.indexOf("->");

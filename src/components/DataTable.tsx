@@ -33,6 +33,7 @@ import type {
 import { nodeSelection, sameSelection } from "../types";
 import { cellToId, parseCell } from "../lib/cells";
 import type { EditTarget } from "../lib/edit";
+import { maxOf, minOf } from "../lib/numbers";
 import { asNumber } from "../lib/parse";
 import { displayCell, formatNumber } from "../lib/format";
 import { neutralCondition } from "../lib/filter";
@@ -336,8 +337,10 @@ export function DataTable({
     if (values.length === 0) return null;
     if (aggregation === "sum") return values.reduce((a, b) => a + b, 0);
     if (aggregation === "avg") return values.reduce((a, b) => a + b, 0) / values.length;
-    if (aggregation === "min") return Math.min(...values);
-    return Math.max(...values);
+    // A group can hold every row in the table, which is more values than an
+    // argument list takes; `Math.min(...values)` would throw rather than slow.
+    if (aggregation === "min") return minOf(values);
+    return maxOf(values);
   };
 
   const commit = (row: Row, column: Column, raw: string) => {
@@ -482,13 +485,8 @@ export function DataTable({
                     className="dt-pick"
                     aria-pressed={picked}
                     disabled={target === null}
-                    title={
-                      target === null
-                        ? "This row names nothing to select"
-                        : picked
-                          ? "Clear the selection"
-                          : `Select ${target.label} in the graph`
-                    }
+                    title={pickLabel(target, picked)}
+                    aria-label={pickLabel(target, picked)}
                     onClick={() => onSelect(picked ? null : (target?.selection ?? null))}
                   >
                     ◎
@@ -497,6 +495,7 @@ export function DataTable({
                     type="button"
                     className="dt-delete"
                     title="Delete this row"
+                    aria-label="Delete this row"
                     onClick={() => {
                       const index = indexOf.get(original);
                       if (index !== undefined) onDeleteRow(index);
@@ -565,6 +564,15 @@ export function DataTable({
       </table>
     </div>
   );
+}
+
+/**
+ * What the row's select button is called. A glyph is not a name, and `title` is
+ * the last place the accessible name is looked for, so both say the same thing.
+ */
+function pickLabel(target: { label: string } | null, picked: boolean): string {
+  if (target === null) return "This row names nothing to select";
+  return picked ? "Clear the selection" : `Select ${target.label} in the graph`;
 }
 
 function NodePick({

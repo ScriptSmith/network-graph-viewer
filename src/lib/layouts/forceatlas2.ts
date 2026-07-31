@@ -101,18 +101,34 @@ export function forceAtlas2(
 
   const theta2 = THETA * THETA;
 
-  const linkWeight = (link: GraphLink): number => {
-    if (!weightColumn) return 1;
-    let sum = 0;
-    let seen = 0;
-    for (const row of link.rows) {
-      const v = asNumber(row[weightColumn]);
-      if (v !== null) {
-        sum += v;
-        seen++;
+  /**
+   * Attraction weights, worked out once rather than per tick.
+   *
+   * Nothing here changes while the simulation runs: the rows behind a link are
+   * fixed, and so is the exponent. Read inside the force they would be a walk
+   * over every row of every edge, plus a `Math.pow`, sixty times a second.
+   */
+  let linkWeights = new Float64Array(0);
+
+  const weighLinks = (): void => {
+    linkWeights = new Float64Array(links.length);
+    for (let i = 0; i < links.length; i++) {
+      let weight = 1;
+      if (weightColumn) {
+        let sum = 0;
+        let seen = 0;
+        for (const row of links[i].rows) {
+          const v = asNumber(row[weightColumn]);
+          if (v !== null) {
+            sum += v;
+            seen++;
+          }
+        }
+        // A link whose rows carry no usable number still exists, so it weighs 1.
+        weight = seen === 0 ? 1 : Math.max(0, sum / seen);
       }
+      linkWeights[i] = weight ** params.edgeWeightInfluence;
     }
-    return seen === 0 ? 1 : Math.max(0, sum / seen);
   };
 
   function accumulate(quad: MassQuad): void {
@@ -240,7 +256,8 @@ export function forceAtlas2(
 
     for (let i = 0; i < nodes.length; i++) repel(tree, nodes[i], i);
 
-    for (const link of links) {
+    for (let e = 0; e < links.length; e++) {
+      const link = links[e];
       const source = link.source as GraphNode;
       const target = link.target as GraphNode;
       if (typeof source === "string" || typeof target === "string") continue;
@@ -251,7 +268,7 @@ export function forceAtlas2(
       const dy = (target.y ?? 0) - (source.y ?? 0);
       const d = Math.hypot(dx, dy);
       if (d === 0) continue;
-      const weight = linkWeight(link) ** params.edgeWeightInfluence;
+      const weight = linkWeights[e];
       const factor = params.linLog ? (weight * Math.log(1 + d)) / d : weight;
       fx[si] += dx * factor;
       fy[si] += dy * factor;
@@ -301,6 +318,7 @@ export function forceAtlas2(
     lastFx = new Float64Array(nodes.length);
     lastFy = new Float64Array(nodes.length);
     swing = new Float64Array(nodes.length);
+    weighLinks();
     speed = 1;
     speedEfficiency = 1;
   };

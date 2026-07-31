@@ -122,6 +122,21 @@ button {
   white-space: nowrap;
 }
 
+/* A focused node. The graph's own marks are styled with SVG attributes so an
+   export can carry them, but focus is the one thing an export never has, so it
+   is the one thing that belongs in CSS. Offset outward, since the ring sits on
+   a circle whose fill may be a picture. */
+.graph-svg [data-nodes] circle:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 50%;
+}
+
+/* Nothing is drawn for a pointer click, which already says where it went. */
+.graph-svg [data-nodes] circle:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* ---- Shell ---- */
 
 /* Three panels around a stage, each in a column of its own. A collapsed panel
@@ -1167,6 +1182,55 @@ body.resizing-y {
   font-size: 13.5px;
 }
 
+/* The fallback an error boundary draws. It replaces the whole app rather than
+   sitting over it, because by the time this renders there is no app left
+   underneath: React has already unmounted the tree that threw. */
+.crash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--surface);
+}
+
+.crash-card {
+  width: min(440px, 100%);
+  background: var(--raised);
+  border: 1px solid var(--danger);
+  border-radius: 16px;
+  padding: 26px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
+.crash-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.crash-detail {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--danger-bg);
+  border-radius: var(--radius);
+  color: var(--danger-ink);
+  font-size: 13px;
+}
+
+.crash-hint {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
 .dropzone {
   border: 1.5px dashed var(--hairline-strong);
   border-radius: var(--radius);
@@ -1424,6 +1488,28 @@ body.resizing-y {
   font-size: 17px;
   cursor: pointer;
   padding: 0 6px;
+}
+
+/* A toast that asks for something rather than only reporting it, so this one
+   reads as a control instead of as the dismiss cross beside it. */
+.toast-action {
+  flex: none;
+  background: var(--raised-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toast-action:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .drop-veil {

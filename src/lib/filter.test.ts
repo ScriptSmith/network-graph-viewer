@@ -188,3 +188,36 @@ test("an empty chain leaves the graph alone", () => {
   const doc = branchy();
   expect(idsOf(doc, [])).toEqual(["A", "B", "C", "D", "E", "X", "Y"]);
 });
+
+/**
+ * A fresh column step is seeded with every distinct value, so that adding one
+ * never blanks the canvas. That makes the selection as long as the column, and
+ * testing membership by walking it once per row is quadratic: at this size the
+ * old list scan took about ten seconds, so a regression fails by timeout rather
+ * than by a wall-clock assertion that would be flaky on a loaded machine.
+ */
+test("a values condition over a high-cardinality column does not walk its list per row", () => {
+  const N = 100_000;
+  const rows: Row[] = Array.from({ length: N }, (_, i) => ({
+    From: `n${i}`,
+    To: `n${(i + 1) % N}`,
+  }));
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "From", type: "text" },
+      { name: "To", type: "text" },
+    ],
+    rows,
+  };
+  const doc = buildDoc("wide", edges);
+  const everyValue = step({
+    kind: "column",
+    table: "edges",
+    column: "From",
+    op: { kind: "values", selected: rows.map((r) => String(r.From)) },
+  });
+
+  const { graph } = applyChain(doc, [everyValue], { showIsolated: true });
+  expect(graph.links).toHaveLength(N);
+}, 5000);

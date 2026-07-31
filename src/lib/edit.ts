@@ -41,7 +41,10 @@ export function coalesceById(rows: Row[], idColumn: string): Row[] {
     }
     merged = true;
     for (const [key, value] of Object.entries(row)) {
-      if ((kept[key] ?? null) === null && value !== null) kept[key] = value;
+      // By own property, so a column named after something on the prototype
+      // does not read as already filled on every row it touches.
+      const held = Object.hasOwn(kept, key) ? kept[key] : null;
+      if (held === null && value !== null) kept[key] = value;
     }
   }
   return merged ? out : rows;
@@ -99,10 +102,16 @@ export function renameNode(doc: GraphDoc, from: string, to: string): GraphDoc {
   const { source, target } = doc.mapping;
   const edges = {
     ...doc.edges,
+    // A row that named neither end is handed back as it was. The history keeps
+    // whole documents on the understanding that an edit copies only the rows it
+    // touches, and a rename touches the rows that named the node.
     rows: doc.edges.rows.map((row) => {
+      const hitSource = cellToId(row[source]) === from;
+      const hitTarget = cellToId(row[target]) === from;
+      if (!hitSource && !hitTarget) return row;
       const next = { ...row };
-      if (cellToId(row[source]) === from) next[source] = to;
-      if (cellToId(row[target]) === from) next[target] = to;
+      if (hitSource) next[source] = to;
+      if (hitTarget) next[target] = to;
       return next;
     }),
   };

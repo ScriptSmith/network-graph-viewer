@@ -1,19 +1,10 @@
-import type {
-  BaseGraph,
-  ColumnFilter,
-  Filters,
-  Graph,
-  GraphDoc,
-  GraphLink,
-  GraphNode,
-  GraphStyle,
-  Row,
-} from "../types";
+import type { BaseGraph, Graph, GraphDoc, GraphLink, GraphNode, GraphStyle, Row } from "../types";
 import { isCellStyle, styleColumn } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
 import { findColumn, hasColumn } from "./doc";
 import { imageSource } from "./images";
 import { asNumber } from "./parse";
+import { extentOf, maxOf } from "./numbers";
 import { centralityValues, type CentralityKind } from "./metrics";
 import { NEUTRAL, nodeColor, parseColor, sequentialColor, type Palette } from "../theme";
 
@@ -217,6 +208,8 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       const v = cells.get(node.id);
       node.radius = v === undefined ? fallback : clamp(v, CELL_RADIUS);
     }
+  } else if (style.nodeSize === "metric:uniform") {
+    for (const node of nodes) node.radius = sized?.uniform ?? 8;
   } else {
     const sizeCentrality = CENTRALITY_TOKENS[style.nodeSize];
     const sizeValues =
@@ -226,19 +219,20 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
           ? getCentrality(sizeCentrality)
           : null;
     const sizeMetric = (n: GraphNode): number => {
-      if (style.nodeSize === "metric:uniform") return 1;
       if (style.nodeSize === "metric:in") return n.inDegree;
       if (style.nodeSize === "metric:out") return n.outDegree;
       if (sizeValues) return Math.max(0, sizeValues.get(n.id) ?? 0);
       return n.degree;
     };
-    const maxMetric = Math.max(1e-9, ...nodes.map(sizeMetric));
-    for (const node of nodes) {
-      node.radius =
-        style.nodeSize === "metric:uniform"
-          ? (sized?.uniform ?? 8)
-          : (sized?.floor ?? 4.5) + (sized?.span ?? 17) * Math.sqrt(sizeMetric(node) / maxMetric);
-    }
+    // Measured once and kept: the metric can be a centrality lookup, and asking
+    // for it again inside the loop would be a second pass over every node.
+    const metrics = nodes.map(sizeMetric);
+    const maxMetric = maxOf(metrics, 1e-9);
+    const floor = sized?.floor ?? 4.5;
+    const span = sized?.span ?? 17;
+    nodes.forEach((node, i) => {
+      node.radius = floor + span * Math.sqrt(metrics[i] / maxMetric);
+    });
   }
 
   const links: GraphLink[] = base.links.map((l) => {
@@ -267,11 +261,7 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
   const groups = ranking ? [] : countValues(nodes.map((n) => n.group));
   const edgeGroups = countValues(links.map((l) => l.colorValue));
 
-  let rankRange: Graph["ranking"] = null;
-  if (ranking && nodes.length > 0) {
-    const values = nodes.map((n) => n.value ?? 0);
-    rankRange = { min: Math.min(...values), max: Math.max(...values) };
-  }
+  const rankRange: Graph["ranking"] = ranking ? extentOf(nodes.map((n) => n.value ?? 0)) : null;
 
   return {
     nodes,
@@ -394,31 +384,15 @@ export function markColor(
 export function weightScale(links: GraphLink[], asPixels = false): (l: GraphLink) => number {
   if (asPixels) return (l) => (l.weight === null ? 1.4 : clamp(l.weight, CELL_WIDTH));
   const weights = links.map((l) => l.weight).filter((w): w is number => w !== null);
-  if (weights.length === 0) return () => 1.4;
-  const min = Math.min(...weights);
-  const max = Math.max(...weights);
+  const extent = extentOf(weights);
+  if (extent === null) return () => 1.4;
+  const { min, max } = extent;
   if (min === max) return () => 2;
   return (l) => {
     if (l.weight === null) return 1;
     const t = Math.sqrt((l.weight - min) / (max - min));
     return 1 + t * 5;
   };
-}
-
-/** Rows that pass every active column filter. */
-export function applyFilters(rows: Row[], filters: Filters): Row[] {
-  const active = Object.entries(filters);
-  if (active.length === 0) return rows;
-  return rows.filter((row) => active.every(([column, filter]) => rowPasses(row, column, filter)));
-}
-
-function rowPasses(row: Row, column: string, filter: ColumnFilter): boolean {
-  if (filter.kind === "values") return filter.selected.includes(cellKey(row[column]));
-  const v = asNumber(row[column]);
-  if (v === null) return false;
-  if (filter.min !== null && v < filter.min) return false;
-  if (filter.max !== null && v > filter.max) return false;
-  return true;
 }
 
 /** Distinct values of a column with row counts, most frequent first. */

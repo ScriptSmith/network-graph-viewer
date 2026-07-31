@@ -7,6 +7,11 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 9 8 23h16z' stroke='%23898781' stroke-width='2' fill='none'/%3E%3Ccircle cx='16' cy='9' r='5' fill='%233987e5'/%3E%3Ccircle cx='8' cy='23' r='5' fill='%23d95926'/%3E%3Ccircle cx='24' cy='23' r='5' fill='%23199e70'/%3E%3C/svg%3E"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- A node image column can name any host on the web, and the graph it came
+         in with can have been written by anyone. The request itself waits to be
+         allowed; this makes sure the one that does go out does not also carry
+         which graph is open, since a `#data=` fragment is the graph. -->
+    <meta name="referrer" content="no-referrer" />
     <meta
       name="description"
       content="Turn a spreadsheet edge list into an interactive network graph. Upload CSV or Excel, map your columns, explore five layouts, export SVG or PNG. Everything stays in your browser."

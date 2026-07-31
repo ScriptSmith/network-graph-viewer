@@ -4,7 +4,7 @@
  * The XML formats are read and written with the platform's own DOMParser
  * and XMLSerializer, so these tests need a DOM. Only this file pays for it.
  */
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { SAMPLE_DATASET } from "../../samples";
 import { DEFAULT_STYLE, type Graph, type GraphDoc, type Column, type Row } from "../../types";
 import { buildDoc } from "../doc";
@@ -121,6 +121,82 @@ test("non-workspace JSON is rejected with a useful message", () => {
   expect(() => parseWorkspace('{"nodes":[]}', "x")).toThrow(/not a Network Graph Viewer/);
 });
 
+/**
+ * A workspace can arrive from a `#data=` link, which is to say from anyone. The
+ * document goes onto the render path, where a missing table throws out of a
+ * `useMemo` and takes the whole app down with it, so every one of these has to
+ * be refused here rather than repaired downstream.
+ */
+describe("a damaged workspace is refused at the door", () => {
+  const wrap = (docPatch: unknown) =>
+    JSON.stringify({ format: "network-graph-viewer", version: 1, doc: docPatch });
+
+  const good = {
+    name: "g",
+    edges: {
+      name: "E",
+      columns: [
+        { name: "a", type: "text" },
+        { name: "b", type: "text" },
+      ],
+      rows: [{ a: "1", b: "2" }],
+    },
+    nodes: { name: "N", columns: [{ name: "Id", type: "text" }], rows: [{ Id: "1" }] },
+    nodeIdColumn: "Id",
+    mapping: { source: "a", target: "b", attrs: [] },
+    nodesDeclared: true,
+  };
+
+  test.each([
+    ["no tables at all", { name: "x" }],
+    ["no edge table", { ...good, edges: undefined }],
+    ["no node table", { ...good, nodes: undefined }],
+    ["no mapping", { ...good, mapping: undefined }],
+    ["a mapping naming no columns", { ...good, mapping: { attrs: [] } }],
+    ["a node id column that is not a name", { ...good, nodeIdColumn: 7 }],
+    ["a table whose rows are not rows", { ...good, edges: { ...good.edges, rows: [null] } }],
+    ["a table with no columns array", { ...good, edges: { name: "E", rows: [] } }],
+  ])("%s", (_label, damaged) => {
+    expect(() => parseWorkspace(wrap(damaged), "x")).toThrow(/damaged/);
+  });
+
+  test("a good document still opens", () => {
+    expect(() => parseWorkspace(wrap(good), "x")).not.toThrow();
+  });
+});
+
+/**
+ * Everything outside the document is a view of it, so a value the app does not
+ * recognise is dropped and the graph still opens. Each of these would otherwise
+ * reach code that assumes it is the shape it claims to be.
+ */
+test("unrecognised chain steps, layouts, styles and positions are dropped, not obeyed", () => {
+  const text = JSON.stringify({
+    format: "network-graph-viewer",
+    version: 1,
+    doc,
+    chain: [
+      { id: "a", enabled: true, kind: "not-a-filter" },
+      { id: "b", enabled: true, kind: "degree" }, // right kind, missing its fields
+      { id: "c", enabled: true, kind: "kcore", k: 2 }, // the only real one
+    ],
+    layout: "definitely-not-a-layout",
+    layoutParams: "not an object",
+    style: { nodeColor: 42, spacing: "wide", arrows: "yes" },
+    positions: { a: { x: 1, y: 2 }, b: { x: "no", y: 2 }, c: null },
+  });
+  const { workspace, positions } = parseWorkspace(text, "x");
+
+  expect(workspace.chain.map((s) => s.id)).toEqual(["c"]);
+  expect(workspace.layout).toBe("force");
+  expect(workspace.layoutParams).toEqual({});
+  // A token the app calls startsWith on has to be a string or nothing draws.
+  expect(workspace.style.nodeColor).toBe(DEFAULT_STYLE.nodeColor);
+  expect(workspace.style.spacing).toBe(DEFAULT_STYLE.spacing);
+  expect(workspace.style.arrows).toBe(DEFAULT_STYLE.arrows);
+  expect([...(positions ?? [])]).toEqual([["a", { x: 1, y: 2 }]]);
+});
+
 test("formats are detected from the name or, failing that, the content", () => {
   expect(detectFormat("x.gexf", "")).toBe("gexf");
   expect(detectFormat("x.graphml", "")).toBe("graphml");
@@ -159,4 +235,31 @@ test("CSV quotes anything that would otherwise break a row", () => {
     ],
   );
   expect(csv).toBe('a,b\n"say ""hi""","x,y"\n"line\nbreak",');
+});
+
+/**
+ * A cell can have arrived from a spreadsheet somebody else wrote or from a
+ * shared link anyone can write, and this file is going straight back into a
+ * spreadsheet. Quoting keeps the row parseable; it does nothing about the row
+ * being executed.
+ */
+test("CSV defuses cells a spreadsheet would run as a formula", () => {
+  const csv = toCsv(
+    ["a"],
+    [
+      { a: '=HYPERLINK("http://evil.example","click")' },
+      { a: "+1+1" },
+      { a: "-2+3" },
+      { a: "@SUM(A1:A9)" },
+      { a: "\t=1+1" },
+    ],
+  );
+  const cells = csv.split("\n").slice(1);
+  expect(cells.every((c) => /^'|^"'/.test(c))).toBe(true);
+  expect(cells[0]).toContain("'=HYPERLINK");
+});
+
+test("CSV leaves plain numbers alone, sign and all", () => {
+  const csv = toCsv(["a"], [{ a: -5 }, { a: "-5" }, { a: 12.5 }, { a: "+3" }, { a: "1e6" }]);
+  expect(csv).toBe("a\n-5\n-5\n12.5\n+3\n1e6");
 });

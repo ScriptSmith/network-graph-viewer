@@ -11,8 +11,8 @@ Jupyter widget, packaged from `python/`.
 ```sh
 pnpm dev            # dev server at /network-graph-viewer/
 pnpm build          # tsc -b && vite build (run this to type-check)
-pnpm build:widget   # the notebook bundle; commit the result (see python/)
-pnpm lint           # oxlint
+pnpm build:widget   # the notebook bundle; generated, not committed (see python/)
+pnpm lint           # oxlint, warnings included (--deny-warnings)
 pnpm test           # vitest run
 pnpm format         # oxfmt (CI runs format:check; always format before commit)
 ```
@@ -67,11 +67,13 @@ way to change data is the data table, which edits the underlying rows.
   Barnes-Hut repulsion via `d3-quadtree`.
 - `src/lib/images.ts` - node image cells (`https` links, data URIs, bare
   base64, raw SVG markup) into something an `<image>` can draw, or null.
-  Nothing else is let through: a cell is untrusted text.
+  Nothing else is let through: a cell is untrusted text. `isRemoteSource` marks
+  the `https` ones, which the canvas holds back until the reader allows them.
 - `src/lib/io/` - GEXF, GraphML, the native `.ngv.json` workspace, gists, and
   `url.ts`, which packs a workspace into a link's fragment and reads one back.
-  Links put the data in the fragment, never the query: fragments are not sent
-  with the request, so a shared graph stays as private as a dropped file.
+  Data goes in the fragment and is read back from the fragment only: fragments
+  are not sent with the request, so a shared graph stays as private as a dropped
+  file, and honouring `?data=` too would undo that.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
   table's cell edits, row adds and row deletes. `coalesceById` is what makes a
   rename onto an existing id a merge rather than a ghost row the graph ignores.
@@ -183,7 +185,46 @@ way to change data is the data table, which edits the underlying rows.
   are shown exactly as they arrived.
 - Vite `base` is `/network-graph-viewer/`; renaming the repo breaks Pages.
 - `xlsx` is installed from the SheetJS CDN tarball (npm version is outdated
-  and vulnerable); don't switch it to the npm registry version.
+  and vulnerable); don't switch it to the npm registry version. Its lockfile
+  entry carries an `integrity` hash added by hand, since a URL dependency does
+  not get one; bumping the version means recomputing it (`openssl dgst -sha512
+  -binary <tgz> | base64 -w0`, prefixed `sha512-`).
+- Nothing aggregates a data-sized array with `Math.max(...values)`: an argument
+  list runs out around 125,000 and `PARQUET_ROW_LIMIT` allows 200,000 rows, so
+  the spread throws rather than slows. `lib/numbers.ts` has `maxOf`, `minOf`
+  and `extentOf`.
+- `GraphCanvas` takes both graphs: `base` is the structure and keys the scene
+  rebuild, `graph` is the appearance and is copied onto the nodes the simulation
+  is already running. Restyling must never rebuild, or it throws away the layout
+  to arrive back where it started. Radius is the exception, since d3 caches the
+  collide radius and link distance off it, so a resize rebuilds the forces.
+- The canvas is operable from the keyboard: one node in the tab order at a time,
+  arrows to walk the graph, Enter to select. New marks need an `aria-label`, and
+  new keys must not collide with the app's single-key shortcuts, which give way
+  to a focused node via the `[data-nodes]` check in `App.tsx`.
+- Movement that is decoration gives way to `prefers-reduced-motion`:
+  `useReducedMotion.ts` is the one place that asks. The layout still runs, it is
+  just run out rather than watched, up to `SETTLE_LIMIT` nodes.
+- `applyChain` and `applyStyle` run in a `useMemo`, which is during render, on
+  every keystroke of a cell edit. Nothing worse than O(rows) belongs there:
+  compile a condition once (`compileCondition`) rather than testing a list per
+  row, and send anything heavier to the worker. `StatsPanel` takes `base` for
+  the same reason, so restyling does not recount an unchanged network.
+- Maps keyed by data (node ids, edge keys, column names) are `Object.create(null)`
+  via `emptyValues()`, read with `Object.hasOwn`. On an ordinary object the key
+  `__proto__` stores nothing and a column named `toString` tests as present on
+  every row.
+- Anything reached by `parseWorkspace` arrived from a link anyone can write, so
+  shapes are checked there and unknown chain steps, layouts and style tokens are
+  dropped. What still gets through meets the `ErrorBoundary` in `main.tsx` and
+  `embed.tsx`: a throw during render unmounts the tree, taking any recovery UI
+  inside it.
+- Node images that are `http(s)` wait for the reader to allow them
+  (`allowRemoteImages`): a cell naming a host is an instruction to tell that
+  host the graph was opened, and the graph can be a stranger's. Data URIs and
+  inline SVG are unaffected.
+- CSV export neutralises leading `=`, `+`, `-`, `@`, tab and CR. Quoting makes
+  a row parse; it does nothing about a spreadsheet running it.
 - `python/src/network_graph_viewer/static/widget.js` is **generated, not
   committed**. `pnpm build:widget` writes it; a fresh clone has none, which is
   why `pnpm test` builds it first (`widget.test.ts` reads the built file) and

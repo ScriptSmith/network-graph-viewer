@@ -17,6 +17,7 @@ import { createRoot } from "react-dom/client";
 // there was a second.
 import css from "./index.css?inline";
 import App, { type EmbedProps } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RootContext } from "./RootContext";
 import { parseWorkspace, type Workspace } from "./lib/io";
 import { isThemePreference, type ThemePreference } from "./lib/hostTheme";
@@ -54,9 +55,19 @@ export interface EmbedHandle {
 
 const DEFAULT_HEIGHT = "700px";
 
-function readWorkspace(text: string | undefined): Workspace | undefined {
-  if (!text) return undefined;
-  return parseWorkspace(text, "Graph").workspace;
+/**
+ * A host's workspace text, or the reason it could not be read. Thrown out of
+ * `mount` this would leave the cell holding nothing at all, with the reason
+ * only in the browser console, which is not where the person who called
+ * `show()` is looking.
+ */
+function readWorkspace(text: string | undefined): { workspace?: Workspace; error?: string } {
+  if (!text) return {};
+  try {
+    return { workspace: parseWorkspace(text, "Graph").workspace };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "That workspace could not be read." };
+  }
 }
 
 export function mount(el: HTMLElement, options: EmbedOptions = {}): EmbedHandle {
@@ -75,8 +86,10 @@ export function mount(el: HTMLElement, options: EmbedOptions = {}): EmbedHandle 
 
   shadow.append(style, container);
 
+  const opened = readWorkspace(options.workspace);
   const embed: EmbedProps = {
-    initial: readWorkspace(options.workspace),
+    initial: opened.workspace,
+    initialError: opened.error,
     appUrl: options.appUrl,
     // Both come across a language boundary, so neither is trusted to be one of
     // the words it is supposed to be.
@@ -90,7 +103,17 @@ export function mount(el: HTMLElement, options: EmbedOptions = {}): EmbedHandle 
   root.render(
     <StrictMode>
       <RootContext.Provider value={shadow}>
-        <App embed={embed} />
+        {/* Embedded there is no address bar to clear, so what the remount has
+            to be rid of is the workspace the host handed over: `embed` is ours
+            and the element holding it is about to be mounted again, which is
+            the whole of why dropping the field here is enough. */}
+        <ErrorBoundary
+          onReset={() => {
+            delete embed.initial;
+          }}
+        >
+          <App embed={embed} />
+        </ErrorBoundary>
       </RootContext.Provider>
     </StrictMode>,
   );

@@ -3,7 +3,7 @@ import { centrality, hits, pagerank } from "./centrality";
 import { louvain } from "./community";
 import { disparity, embeddedness, simmelian } from "./edges";
 import { components, coreness, triangles } from "./structure";
-import { undirected, type MetricGraph } from "./model";
+import { SAMPLE_LIMIT, undirected, type MetricGraph } from "./model";
 
 /** Build a metric graph from an explicit edge list, with optional weights. */
 function graphOf(edges: [string, string, number?][], extraNodes: string[] = []): MetricGraph {
@@ -232,4 +232,54 @@ test("a degree-one endpoint always keeps its edge", () => {
   ]);
   // Every leaf has degree one, so each edge is maximally significant.
   expect([...disparity(g)]).toEqual([0, 0, 0]);
+});
+
+/**
+ * Closeness samples its BFS sources above `SAMPLE_LIMIT`. Below it the sample
+ * is every node, and the result has to be the textbook formula exactly rather
+ * than an estimate that merely converges on it, or every graph anyone actually
+ * loads would be reading a slightly wrong number.
+ */
+test("closeness on a path graph is exact", () => {
+  // A-B-C-D. From A the distances are 1, 2, 3: reach 3/3, mean 2, so 0.5.
+  const graph = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "D"],
+  ]);
+  expect([...centrality(graph, "closeness")]).toEqual([0.5, 0.75, 0.75, 0.5]);
+});
+
+test("harmonic closeness on a path graph is exact", () => {
+  const graph = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "D"],
+  ]);
+  const scores = centrality(graph, "harmonic");
+  expect(scores[0]).toBeCloseTo((1 + 1 / 2 + 1 / 3) / 3, 10);
+  expect(scores[1]).toBeCloseTo((1 + 1 + 1 / 2) / 3, 10);
+});
+
+test("closeness on a disconnected graph does not reward the small island", () => {
+  // A triangle and a single pair. Everyone reaches their own component in one
+  // step, so only the Wasserman-Faust reach term separates them.
+  const graph = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "A"],
+    ["X", "Y"],
+  ]);
+  const scores = centrality(graph, "closeness");
+  expect(scores[0]).toBeCloseTo(2 / 4, 10);
+  expect(scores[3]).toBeCloseTo(1 / 4, 10);
+});
+
+test("closeness past the sampling limit stays finite and keeps the hub on top", () => {
+  const n = SAMPLE_LIMIT * 3;
+  const spokes = Array.from({ length: n - 1 }, (_, i) => ["hub", `n${i}`] as [string, string]);
+  const scores = centrality(graphOf(spokes), "closeness");
+  expect([...scores].every((s) => isFinite(s) && s > 0)).toBe(true);
+  // The hub is index 0: it reaches everyone in one step and must outrank them.
+  expect([...scores].slice(1).every((s) => s < scores[0])).toBe(true);
 });

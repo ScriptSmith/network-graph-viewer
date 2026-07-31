@@ -305,13 +305,16 @@ export function reorderColumns(doc: GraphDoc, target: EditTarget, order: string[
     columns,
     // The rows carry the order too: a CSV or a GEXF written straight from them
     // should come out in the order the table is showing.
+    // `Object.hasOwn`, not `in`: a column named after something on the object
+    // prototype ("toString", "constructor") would otherwise test as present on
+    // every row and copy a function into the cell.
     rows: table.rows.map((row) => {
       const next: Row = {};
       for (const name of names) {
-        if (name in row) next[name] = row[name];
+        if (Object.hasOwn(row, name)) next[name] = row[name];
       }
       for (const [key, value] of Object.entries(row)) {
-        if (!(key in next)) next[key] = value;
+        if (!Object.hasOwn(next, key)) next[key] = value;
       }
       return next;
     }),

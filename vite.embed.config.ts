@@ -32,8 +32,8 @@ export default defineConfig({
   build: {
     outDir: src("./python/src/network_graph_viewer/static"),
     emptyOutDir: true,
-    // This file is committed, so every byte saved is a byte the repository
-    // does not carry again on the next rebuild.
+    // The output is not committed, but it is what ships inside the wheel and
+    // what a notebook downloads before it can draw anything.
     minify: true,
     // The wasm-in-JS variant is one large string; warning about it every build
     // would only train us to ignore the warning.

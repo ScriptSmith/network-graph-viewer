@@ -230,17 +230,21 @@ export function writeGexf({
     return block;
   };
 
+  // Every node is looked up twice below, once for its geometry and once for its
+  // colour, so the index comes first: finding each by a scan would make writing
+  // the file quadratic in the size of the graph it is writing.
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+
   // Colour is resolved the same way the canvas resolves it, so a file opened
   // in Gephi matches what was on screen.
   const fillFor = (id: string): string => {
-    const node = graph.nodes.find((n) => n.id === id);
+    const node = byId.get(id);
     if (!node) return NEUTRAL;
     if (node.color === null && style.nodeColor === "none") return palette.categorical[0];
     return markColor(node, graph.ranking, colors, palette);
   };
 
   const nodesEl = make("nodes");
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   for (const row of doc.nodes.rows) {
     const id = cellToId(row[doc.nodeIdColumn]);
     if (id === null) continue;

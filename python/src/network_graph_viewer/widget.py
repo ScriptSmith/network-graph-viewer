@@ -2,8 +2,10 @@
 
 anywidget carries one ES module and a handful of traitlets between the kernel
 and the browser. The module is the whole app, built by ``pnpm build:widget``
-and committed alongside this file, so installing from git is enough and no
-JavaScript toolchain has to exist on the machine that installs it.
+into ``static/widget.js``. That file is generated and git-ignored: a released
+wheel carries it, so installing from PyPI needs no JavaScript toolchain, but a
+checkout does not, and installing straight from the repository means building
+it first.
 
 What crosses the wire is deliberately lopsided. The graph goes out as workspace
 text, which is the app's own format. What comes back is the selection and the
@@ -23,7 +25,8 @@ import traitlets
 
 from .workspace import build_workspace
 
-#: The built app. One file, committed, because a git install cannot build it.
+#: The built app: one file, generated rather than committed, and packaged into
+#: the wheel by ``artifacts`` in pyproject.toml. See the module docstring.
 BUNDLE = pathlib.Path(__file__).parent / "static" / "widget.js"
 
 #: Where the app is published. Share links built inside a notebook point here,

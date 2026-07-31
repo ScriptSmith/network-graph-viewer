@@ -149,6 +149,11 @@ export function layoutDefinition(id: LayoutId): LayoutDefinition {
   return LAYOUTS.find((l) => l.id === id) ?? LAYOUTS[0];
 }
 
+/** Whether a value names a layout. A workspace can arrive from a link anyone wrote. */
+export function isLayoutId(value: unknown): value is LayoutId {
+  return typeof value === "string" && LAYOUTS.some((l) => l.id === value);
+}
+
 export function defaultParams(id: LayoutId): LayoutParams {
   const params: LayoutParams = {};
   for (const param of layoutDefinition(id).params) params[param.key] = param.default;

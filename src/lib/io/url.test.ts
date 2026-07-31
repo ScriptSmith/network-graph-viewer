@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  MAX_PAYLOAD_BYTES,
   dataLink,
   decodePayload,
   encodePayload,
@@ -40,9 +41,17 @@ test("a link carries its payload in the fragment, never the query", async () => 
   expect(new URL(link).hash.startsWith("#data=")).toBe(true);
 });
 
-test("the fragment is read first, then the query", async () => {
+test("a carried graph is read from the fragment and nowhere else", async () => {
   expect(readUrlSource(`${HOME}#data=zabc`)).toEqual({ kind: "data", payload: "zabc" });
-  expect(readUrlSource(`${HOME}?data=zabc`)).toEqual({ kind: "data", payload: "zabc" });
+  // Not from the query. The fragment is the one part of a URL the browser
+  // keeps out of the request, and that is the whole privacy claim; honouring
+  // `?data=` would put the graph in the server's log on the way to opening it.
+  expect(readUrlSource(`${HOME}?data=zabc`)).toBeNull();
+  expect(readUrlSource(HOME)).toBeNull();
+  expect(readUrlSource("not a url")).toBeNull();
+});
+
+test("a gist reference is read from either, naming something already published", async () => {
   expect(readUrlSource(`${HOME}?gist=deadbeef`)).toEqual({ kind: "gist", reference: "deadbeef" });
   expect(readUrlSource(`${HOME}#gist=deadbeef`)).toEqual({ kind: "gist", reference: "deadbeef" });
   // Data beats a gist: it needs no network and is already in hand.
@@ -50,8 +59,6 @@ test("the fragment is read first, then the query", async () => {
     kind: "data",
     payload: "zabc",
   });
-  expect(readUrlSource(HOME)).toBeNull();
-  expect(readUrlSource("not a url")).toBeNull();
 });
 
 test("a round trip through a link finds its way back to the source", async () => {
@@ -70,4 +77,13 @@ test("dropping the source leaves the rest of the address alone", () => {
   expect(withoutUrlSource(`${HOME}#data=zabc`)).toBe(HOME);
   expect(withoutUrlSource(`${HOME}?keep=1&gist=abc`)).toBe(`${HOME}?keep=1`);
   expect(withoutUrlSource(`${HOME}#data=zabc&keep=1`)).toBe(`${HOME}#keep=1`);
+});
+
+test("a link that unpacks to more than the app will open is refused", async () => {
+  // Deflate turns a long run of one byte into almost nothing, which is exactly
+  // the shape of a link built to be opened rather than read.
+  const huge = "a".repeat(MAX_PAYLOAD_BYTES + 1024);
+  const payload = await encodePayload(huge);
+  expect(payload.length).toBeLessThan(200_000);
+  await expect(decodePayload(payload)).rejects.toThrow(/more data than this app will open/);
 });

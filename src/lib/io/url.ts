@@ -29,9 +29,17 @@ function hashParams(url: URL): URLSearchParams {
 }
 
 /**
- * The graph a location asks for, if any. The fragment is read first because
- * that is where links written here put the data; the query still works, for
- * `?gist=` links already in the wild and for anything hand-written.
+ * The graph a location asks for, if any.
+ *
+ * A carried graph is read from the fragment and from nowhere else, because the
+ * fragment is the whole reason this is private: it is the one part of a URL the
+ * browser does not put in the request. Honouring `?data=` as well would mean a
+ * hand-written link quietly posting somebody's graph to the server's access log
+ * on the way to opening it, which is the promise the rest of this file makes.
+ *
+ * A gist reference is different and is read from either: it names something
+ * already published, `?gist=` is the form this app writes, and links in that
+ * shape are already out there.
  */
 export function readUrlSource(href: string = window.location.href): UrlSource | null {
   let url: URL;
@@ -40,12 +48,10 @@ export function readUrlSource(href: string = window.location.href): UrlSource | 
   } catch {
     return null;
   }
-  const places = [hashParams(url), url.searchParams];
-  for (const place of places) {
-    const payload = place.get(DATA_KEY);
-    if (payload) return { kind: "data", payload };
-  }
-  for (const place of places) {
+  const hash = hashParams(url);
+  const payload = hash.get(DATA_KEY);
+  if (payload) return { kind: "data", payload };
+  for (const place of [hash, url.searchParams]) {
     const reference = place.get(GIST_KEY);
     if (reference) return { kind: "gist", reference };
   }
@@ -112,6 +118,24 @@ function concat(chunks: Uint8Array[]): Bytes {
   return out;
 }
 
+/**
+ * The most a link is allowed to turn into once unpacked.
+ *
+ * Deflate is happy to take a few kilobytes of address bar and hand back
+ * hundreds of megabytes, and the reader below would keep collecting all of it.
+ * Generous next to any real workspace, and small enough that a link built to be
+ * a bomb runs out before the tab does.
+ */
+export const MAX_PAYLOAD_BYTES = 64 * 1024 * 1024;
+
+/**
+ * A failure worth reporting as itself. Everything else that goes wrong while
+ * unpacking means the same thing, so it gets one message; these two do not,
+ * and matching on the text of a message to tell them apart was a knot waiting
+ * to be pulled.
+ */
+class LinkError extends Error {}
+
 /** Push bytes through a compression stream and collect what comes out. */
 async function pump(bytes: Bytes, stream: TransformStream<BufferSource, Uint8Array>) {
   const writer = stream.writable.getWriter();
@@ -120,9 +144,15 @@ async function pump(bytes: Bytes, stream: TransformStream<BufferSource, Uint8Arr
   void writer.close().catch(() => {});
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
+  let total = 0;
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
+    total += value.length;
+    if (total > MAX_PAYLOAD_BYTES) {
+      await reader.cancel();
+      throw new LinkError("That link unpacks to more data than this app will open.");
+    }
     chunks.push(value);
   }
   return concat(chunks);
@@ -153,12 +183,14 @@ export async function decodePayload(payload: string): Promise<string> {
     bytes = fromBase64Url(payload.slice(1));
     if (flag === DEFLATED) {
       if (typeof DecompressionStream === "undefined") {
-        throw new Error("This browser cannot unpack compressed links.");
+        throw new LinkError("This browser cannot unpack compressed links.");
       }
       bytes = await pump(bytes, new DecompressionStream("deflate-raw"));
     }
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith("This browser")) throw e;
+    // A reason worth keeping is thrown as one. Everything else that can go
+    // wrong in here says the same thing: the bytes are not what they claimed.
+    if (e instanceof LinkError) throw e;
     throw new Error("That link is damaged or was cut short somewhere along the way.");
   }
   return new TextDecoder().decode(bytes);

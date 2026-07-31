@@ -1,5 +1,7 @@
 import {
+  centralityScores,
   runMetrics,
+  type CentralityKind,
   type MetricGraph,
   type MetricOptions,
   type MetricRunResult,
@@ -7,9 +9,10 @@ import {
 import { runScript, ScriptError } from "../lib/script/quickjs";
 
 /**
- * One worker serves both the built-in metrics and user scripts. Louvain on a
- * large graph and a slow script are the same problem from the main thread's
- * point of view: work that must not happen on it.
+ * One worker serves the built-in metrics, the statistics panel's rankings and
+ * user scripts. Louvain on a large graph, harmonic closeness on one, and a slow
+ * script are the same problem from the main thread's point of view: work that
+ * must not happen on it.
  */
 
 export interface MetricsRequest {
@@ -18,6 +21,18 @@ export interface MetricsRequest {
   graph: MetricGraph;
   metrics: string[];
   options: MetricOptions;
+}
+
+/**
+ * One ranking over one graph, for the statistics panel. Separate from the
+ * metrics request because nothing is written back to the document: the answer
+ * is a column of numbers the panel sorts by and then forgets.
+ */
+export interface CentralityRequest {
+  kind: "centrality";
+  id: number;
+  graph: MetricGraph;
+  centrality: CentralityKind;
 }
 
 export interface ScriptRequest {
@@ -29,10 +44,17 @@ export interface ScriptRequest {
   memoryBytes: number;
 }
 
-export type WorkerRequest = MetricsRequest | ScriptRequest;
+export type WorkerRequest = MetricsRequest | CentralityRequest | ScriptRequest;
 
 export type WorkerResponse =
   | { id: number; ok: true; kind: "metrics"; result: MetricRunResult; elapsedMs: number }
+  | {
+      id: number;
+      ok: true;
+      kind: "centrality";
+      scores: [string, number][];
+      elapsedMs: number;
+    }
   | { id: number; ok: true; kind: "script"; result: unknown; elapsedMs: number }
   | { id: number; ok: false; error: string; detail?: string };
 
@@ -53,16 +75,25 @@ ctx.addEventListener("message", (event) => {
   const request = event.data;
   const started = performance.now();
 
-  if (request.kind === "metrics") {
+  if (request.kind === "metrics" || request.kind === "centrality") {
     try {
-      const result = runMetrics(request.graph, request.metrics, request.options);
-      ctx.postMessage({
-        id: request.id,
-        ok: true,
-        kind: "metrics",
-        result,
-        elapsedMs: performance.now() - started,
-      });
+      const message: WorkerResponse =
+        request.kind === "metrics"
+          ? {
+              id: request.id,
+              ok: true,
+              kind: "metrics",
+              result: runMetrics(request.graph, request.metrics, request.options),
+              elapsedMs: performance.now() - started,
+            }
+          : {
+              id: request.id,
+              ok: true,
+              kind: "centrality",
+              scores: [...centralityScores(request.graph, request.centrality)],
+              elapsedMs: performance.now() - started,
+            };
+      ctx.postMessage(message);
     } catch (e) {
       ctx.postMessage({
         id: request.id,

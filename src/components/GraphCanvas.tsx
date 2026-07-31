@@ -18,10 +18,11 @@ import {
   type Simulation,
 } from "d3-force";
 import { select, type Selection } from "d3-selection";
-import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
+import { zoom, zoomIdentity, zoomTransform, type ZoomBehavior } from "d3-zoom";
 import { drag } from "d3-drag";
 import "d3-transition";
 import type {
+  BaseGraph,
   Graph,
   GraphLink,
   GraphNode,
@@ -41,9 +42,12 @@ import {
   type LayoutParams,
 } from "../lib/layouts";
 import { endpointId as endpoint, markColor, weightScale } from "../lib/graph";
+import { edgeKey } from "../lib/cells";
+import { isRemoteSource } from "../lib/images";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { formatMetric } from "../lib/format";
 import { DEFAULT_COLORS, type GraphTheme, type Palette } from "../theme";
+import { useReducedMotionRef } from "../useReducedMotion";
 
 export interface GraphCanvasHandle {
   fit: () => void;
@@ -54,7 +58,22 @@ export interface GraphCanvasHandle {
 }
 
 interface GraphCanvasProps {
+  /**
+   * The graph with its appearance resolved: colours, radii, images, weights.
+   * A new object every time any style setting changes.
+   */
   graph: Graph;
+  /**
+   * The same graph before styling, which changes only when the network does.
+   *
+   * The two are separate props because they answer different questions. Whether
+   * the scene has to be rebuilt, the simulation replaced and the view refitted
+   * is a question about `base`; whether the marks need repainting is a question
+   * about `graph`. Keying the rebuild on `graph` meant that picking a different
+   * palette threw away the simulation and re-ran the physics, and the graph
+   * visibly flew apart to arrive at the same layout in different colours.
+   */
+  base: BaseGraph;
   layout: LayoutId;
   layoutParams: LayoutParams;
   /** Targets for the "script" layout, produced by a user layout script. */
@@ -72,6 +91,13 @@ interface GraphCanvasProps {
   attrColumns: string[];
   selection: GraphSelection | null;
   onSelect: (next: GraphSelection | null) => void;
+  /**
+   * Whether node images may be fetched from the web. Off until the reader says
+   * otherwise: an image cell in a shared graph is a request to somebody else's
+   * server, made from the reader's machine, chosen by whoever wrote the link.
+   * Data URIs and inline SVG are unaffected, being part of the graph already.
+   */
+  allowRemoteImages?: boolean;
   /** Edit mode: adds the create, connect and delete affordances. */
   editing?: boolean;
   /**
@@ -99,6 +125,22 @@ function escapeHtml(v: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Identity of a link across rebuilds and restyles: the pair of endpoints it
+ * joins. Through `edgeKey`, so an id holding whatever a spreadsheet held cannot
+ * collide with the pair beside it, and so the separator is spelled in exactly
+ * one place.
+ */
+const linkKeyOf = (l: GraphLink) => edgeKey(endpoint(l.source), endpoint(l.target));
+
+/**
+ * How big a graph will still be settled in one go for a reader who asked for
+ * less movement, and how many steps that takes. The tick count is roughly where
+ * d3's default decay has the simulation cool anyway.
+ */
+const SETTLE_LIMIT = 2000;
+const SETTLE_TICKS = 200;
+
 /** Marker id matching an edge stroke color; markers are pre-defined per color. */
 function markerFor(stroke: string, arrowColors: string[], theme: GraphTheme): string {
   if (stroke === theme.edgeLit) return "url(#arrow-lit)";
@@ -109,6 +151,7 @@ function markerFor(stroke: string, arrowColors: string[], theme: GraphTheme): st
 
 export function GraphCanvas({
   graph,
+  base,
   layout,
   layoutParams,
   scriptedTargets,
@@ -123,6 +166,7 @@ export function GraphCanvas({
   selection,
   onSelect,
   seedPositions,
+  allowRemoteImages = false,
   ambient = false,
   ref,
 }: GraphCanvasProps) {
@@ -143,6 +187,8 @@ export function GraphCanvas({
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
   const baseLabelsRef = useRef<Set<string>>(new Set());
   const hoverNodeRef = useRef<string | null>(null);
+  /** Paint the marks at the positions the simulation currently holds. */
+  const drawRef = useRef<() => void>(() => {});
 
   const edgeWidth = useMemo(
     () => weightScale(graph.links, isCellStyle(style.edgeWidth)),
@@ -167,6 +213,13 @@ export function GraphCanvas({
   const probedImages = useRef<Set<string>>(new Set());
 
   /**
+   * Whether a source is one this canvas will actually draw: not broken, and
+   * not waiting on permission to leave the machine.
+   */
+  const drawable = (source: string | null): source is string =>
+    source !== null && !brokenImages.has(source) && (allowRemoteImages || !isRemoteSource(source));
+
+  /**
    * A pattern per distinct image, not per node: a pattern in bounding-box units
    * sizes itself to whichever circle carries it, so one definition serves every
    * node sharing a picture whatever radius each ended up with.
@@ -174,27 +227,32 @@ export function GraphCanvas({
   const imagePatterns = useMemo(() => {
     const ids = new Map<string, string>();
     for (const node of graph.nodes) {
-      if (node.image !== null && !brokenImages.has(node.image) && !ids.has(node.image)) {
+      if (drawable(node.image) && !ids.has(node.image)) {
         ids.set(node.image, `node-image-${ids.size}`);
       }
     }
     return ids;
-  }, [graph, brokenImages]);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, brokenImages, allowRemoteImages]);
 
   // Each source is tried once, in an image of its own. Anything that fails
-  // drops its pattern and the node falls back to its color.
+  // drops its pattern and the node falls back to its color. A source waiting
+  // on permission is not probed either: the probe is the request.
   useEffect(() => {
     for (const node of graph.nodes) {
       const source = node.image;
-      if (source === null || probedImages.current.has(source)) continue;
+      if (!drawable(source) || probedImages.current.has(source)) continue;
       probedImages.current.add(source);
       const probe = new Image();
+      // Nothing about which graph is open is any of the far end's business.
+      probe.referrerPolicy = "no-referrer";
       probe.onerror = () => {
         setBrokenImages((current) => new Set(current).add(source));
       };
       probe.src = source;
     }
-  }, [graph]);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, allowRemoteImages]);
 
   // Live values for callbacks created inside effects.
   const liveRef = useRef({
@@ -214,6 +272,7 @@ export function GraphCanvas({
     ambient,
     style,
     brokenImages,
+    allowRemoteImages,
     theme,
   });
   liveRef.current = {
@@ -233,6 +292,7 @@ export function GraphCanvas({
     ambient,
     style,
     brokenImages,
+    allowRemoteImages,
     theme,
   };
 
@@ -342,6 +402,12 @@ export function GraphCanvas({
     });
   };
 
+  // Installed handlers outlive the render that created them, and after the
+  // split the scene is not rebuilt on every restyle, so reaching for the
+  // current one through a ref is what keeps a hover repaint up to date.
+  const refreshStylesRef = useRef(refreshStyles);
+  refreshStylesRef.current = refreshStyles;
+
   const computeBaseLabels = () => {
     const { labelMode: mode, ambient: amb } = liveRef.current;
     const nodes = nodesRef.current;
@@ -433,14 +499,178 @@ export function GraphCanvas({
     if (!amb && separate && !sim.force("collide")) {
       sim.force("collide", forceCollide<GraphNode>((d) => d.radius + 4).strength(0.9));
     }
+
+    /*
+     * Asked for less movement, the layout is run out here instead of over the
+     * next few seconds of frames, so it arrives already arranged. The result is
+     * the same layout either way: what is skipped is watching it happen, which
+     * is the part that is decoration rather than answer.
+     *
+     * Only up to a size, though. Past a few thousand nodes the settle takes
+     * longer than the animation would have, and a page that stops responding is
+     * not an improvement on a page that moves.
+     */
+    if (reducedMotion.current && !amb && nodes.length <= SETTLE_LIMIT) {
+      sim.alpha(kick).stop();
+      sim.tick(SETTLE_TICKS);
+      drawRef.current();
+      return;
+    }
     sim.alpha(kick).restart();
   };
 
+  /* ---- Reaching the graph from the keyboard ---- */
+
+  /**
+   * A graph is not a list, and tabbing through one node at a time would be a
+   * poor way to read even a small one. So there are two movements, and no mode
+   * to be in: left and right walk every node in turn, most connected first,
+   * which is a tour of the graph; up and down walk the neighbours of wherever
+   * you are, which is the structure itself. Enter selects, Escape lets go.
+   *
+   * Focus is a real DOM focus on a real circle, so the browser's own focus ring
+   * and a screen reader's own reporting both work. Only one node carries a
+   * tabindex at a time, or a graph of any size would fill the tab order.
+   */
+  const orderRef = useRef<string[]>([]);
+  const neighborListRef = useRef<Map<string, string[]>>(new Map());
+  const focusedIdRef = useRef<string | null>(null);
+  const liveRegionRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotionRef();
+
+  /** Say something once, for whoever is listening rather than looking. */
+  const announce = (message: string): void => {
+    const region = liveRegionRef.current;
+    if (region) region.textContent = message;
+  };
+
+  const describeNode = (d: GraphNode): string => {
+    const neighbors = neighborListRef.current.get(d.id)?.length ?? 0;
+    const parts = [d.id];
+    if (d.group !== null) parts.push(d.group);
+    if (graph.ranking && d.value !== null) parts.push(formatMetric(d.value));
+    parts.push(`${d.inDegree} in, ${d.outDegree} out`);
+    parts.push(neighbors === 1 ? "1 neighbour" : `${neighbors} neighbours`);
+    return parts.join(", ");
+  };
+
+  /** Bring a node into view, but only when it is not already in it. */
+  const revealNode = (d: GraphNode): void => {
+    const svg = svgRef.current;
+    const container = containerRef.current;
+    const behavior = zoomRef.current;
+    if (!svg || !container || !behavior) return;
+    const transform = zoomTransform(svg);
+    const [sx, sy] = transform.apply([d.x ?? 0, d.y ?? 0]);
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    const pad = 70;
+    if (sx >= pad && sx <= w - pad && sy >= pad && sy <= h - pad) return;
+    const k = transform.k;
+    const next = zoomIdentity.translate(w / 2 - k * (d.x ?? 0), h / 2 - k * (d.y ?? 0)).scale(k);
+    const sel = select(svg);
+    if (reducedMotion.current) sel.call(behavior.transform, next);
+    else sel.transition().duration(220).call(behavior.transform, next);
+  };
+
+  /**
+   * Move focus to a node: the tabindex, the browser focus, the tooltip, the
+   * announcement and the view all follow from here, so nothing can drift out of
+   * step with what is actually focused.
+   */
+  const focusNode = (id: string | null, options: { move?: boolean } = {}): void => {
+    const sels = selsRef.current;
+    if (!sels) return;
+    focusedIdRef.current = id;
+    sels.node.attr("tabindex", (d) => (d.id === id ? 0 : null));
+    if (id === null) {
+      hoverNodeRef.current = null;
+      hideTooltip();
+      refreshStyles();
+      return;
+    }
+    const datum = nodesRef.current.find((n) => n.id === id);
+    if (!datum) return;
+    const element = sels.node.filter((d) => d.id === id).node();
+    if (options.move !== false) element?.focus({ preventScroll: true });
+    hoverNodeRef.current = id;
+    refreshStyles();
+    revealNode(datum);
+    showTooltipOn(element, nodeTooltip(datum));
+    announce(describeNode(datum));
+  };
+
+  /** Step along one of the two orderings, wrapping at either end. */
+  const step = (list: string[], from: string | null, delta: number): string | null => {
+    if (list.length === 0) return null;
+    const at = from === null ? -1 : list.indexOf(from);
+    if (at === -1) return list[delta > 0 ? 0 : list.length - 1];
+    return list[(at + delta + list.length) % list.length];
+  };
+
+  const onNodeKeyDown = (event: KeyboardEvent, d: GraphNode): void => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const order = orderRef.current;
+    const neighbors = neighborListRef.current.get(d.id) ?? [];
+    let next: string | null | undefined;
+
+    switch (event.key) {
+      case "ArrowRight":
+        next = step(order, d.id, 1);
+        break;
+      case "ArrowLeft":
+        next = step(order, d.id, -1);
+        break;
+      case "ArrowDown":
+        next = step(neighbors, null, 1);
+        break;
+      case "ArrowUp":
+        next = step(neighbors, null, -1);
+        break;
+      case "Home":
+        next = order[0];
+        break;
+      case "End":
+        next = order[order.length - 1];
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        event.stopPropagation();
+        liveRef.current.onSelect({ kind: "node", id: d.id });
+        announce(`${d.id} selected`);
+        return;
+      case "Escape":
+        event.stopPropagation();
+        hideTooltip();
+        announce("");
+        liveRef.current.onSelect(null);
+        return;
+      default:
+        return;
+    }
+
+    // Arrows and Home/End are ours: the page would otherwise scroll under the
+    // graph, and the app's own single-key shortcuts are not meant for someone
+    // who is in the middle of reading a network.
+    event.preventDefault();
+    event.stopPropagation();
+    if (next !== undefined && next !== null) focusNode(next);
+    else if (neighbors.length === 0) announce(`${d.id} has no neighbours`);
+  };
+
+  /**
+   * Ease the view onto the whole graph. The easing is the point: a view that
+   * jumps loses the reader's place, where one that travels keeps it. Asked for
+   * less movement, it jumps anyway, because keeping someone's place is not
+   * worth making them unwell.
+   */
   const fit = (duration = 600) => {
     const container = containerRef.current;
     const svg = svgRef.current;
     const behavior = zoomRef.current;
     if (!container || !svg || !behavior || nodesRef.current.length === 0) return;
+    if (reducedMotion.current) duration = 0;
     const box = contentBounds(nodesRef.current, 60);
     const w = container.clientWidth;
     const h = container.clientHeight;
@@ -459,20 +689,46 @@ export function GraphCanvas({
     }
   };
 
-  const showTooltip = (event: MouseEvent, html: string) => {
+  // Installed once, with the zoom behaviour, and so reached the same way the
+  // repaint is: through a ref, rather than through whichever render was current
+  // when the double-click handler was attached.
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+
+  /** Place the tooltip near a point in the container's own coordinates. */
+  const showTooltipAt = (px: number, py: number, html: string) => {
     const tip = tooltipRef.current;
     const container = containerRef.current;
     if (!tip || !container) return;
     tip.innerHTML = html;
     tip.style.display = "block";
     const rect = container.getBoundingClientRect();
-    let x = event.clientX - rect.left + 16;
-    let y = event.clientY - rect.top + 12;
+    let x = px + 16;
+    let y = py + 12;
     const tw = tip.offsetWidth;
     const th = tip.offsetHeight;
-    if (x + tw > rect.width - 8) x = event.clientX - rect.left - tw - 12;
-    if (y + th > rect.height - 8) y = event.clientY - rect.top - th - 10;
+    if (x + tw > rect.width - 8) x = px - tw - 12;
+    if (y + th > rect.height - 8) y = py - th - 10;
     tip.style.transform = `translate(${x}px, ${y}px)`;
+  };
+
+  const showTooltip = (event: MouseEvent, html: string) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    showTooltipAt(event.clientX - rect.left, event.clientY - rect.top, html);
+  };
+
+  /**
+   * The same tooltip, anchored to a mark rather than to a pointer. Keyboard
+   * focus has no coordinates of its own, and a tooltip that only ever appears
+   * under a mouse is one half of the readers cannot get to (WCAG 1.4.13).
+   */
+  const showTooltipOn = (element: Element | null | undefined, html: string) => {
+    const container = containerRef.current;
+    if (!container || !element) return;
+    const rect = container.getBoundingClientRect();
+    const at = element.getBoundingClientRect();
+    showTooltipAt(at.left - rect.left + at.width / 2, at.bottom - rect.top, html);
   };
 
   const hideTooltip = () => {
@@ -487,9 +743,15 @@ export function GraphCanvas({
         ? `<div class="tip-sub">${escapeHtml(formatMetric(d.value))}</div>`
         : "";
     // The mark is too small to read a picture in, so the tooltip carries one
-    // at a size that can be. The source was vetted on the way in.
-    const source = d.image !== null && !liveRef.current.brokenImages.has(d.image) ? d.image : null;
-    const image = source === null ? "" : `<img class="tip-image" src="${escapeHtml(source)}" />`;
+    // at a size that can be. The source was vetted on the way in, and a remote
+    // one waits on the same permission the mark itself waits on.
+    const { brokenImages: broken, allowRemoteImages: allowed } = liveRef.current;
+    const remoteAndUnasked = d.image !== null && !allowed && isRemoteSource(d.image);
+    const source = d.image !== null && !broken.has(d.image) && !remoteAndUnasked ? d.image : null;
+    const image =
+      source === null
+        ? ""
+        : `<img class="tip-image" referrerpolicy="no-referrer" src="${escapeHtml(source)}" />`;
     return (
       `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}${image}` +
       `<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
@@ -513,7 +775,11 @@ export function GraphCanvas({
     return head + lines + more;
   };
 
-  // Rebuild the scene when the graph changes.
+  /**
+   * Build the scene. Only the network itself brings us back here: new nodes,
+   * new links, or the same ones filtered differently. Everything about how they
+   * look is the effect below, which does not throw the simulation away.
+   */
   useLayoutEffect(() => {
     const svg = svgRef.current;
     const viewport = viewportRef.current;
@@ -562,6 +828,22 @@ export function GraphCanvas({
     adjacencyRef.current = adjacency;
     hoverNodeRef.current = null;
 
+    // The two keyboard orderings. Most connected first in both, because that is
+    // the order someone reading a network wants to meet it in, and because it
+    // makes the tour deterministic rather than dependent on row order.
+    const byDegree = (a: string, b: string) =>
+      (byId.get(b)?.degree ?? 0) - (byId.get(a)?.degree ?? 0) || a.localeCompare(b);
+    orderRef.current = nodes.map((n) => n.id).sort(byDegree);
+    const neighborList = new Map<string, string[]>();
+    for (const [id, set] of adjacency) {
+      neighborList.set(id, [...set].filter((other) => other !== id).sort(byDegree));
+    }
+    neighborListRef.current = neighborList;
+    // Whoever was focused may not be here any more.
+    if (focusedIdRef.current !== null && !byId.has(focusedIdRef.current)) {
+      focusedIdRef.current = null;
+    }
+
     const { ambient: amb, style: st } = liveRef.current;
     const root = select(viewport);
     const linkLayer = root.select<SVGGElement>("[data-links]");
@@ -569,11 +851,9 @@ export function GraphCanvas({
     const nodeLayer = root.select<SVGGElement>("[data-nodes]");
     const labelLayer = root.select<SVGGElement>("[data-labels]");
 
-    const linkKey = (l: GraphLink) => `${endpoint(l.source)}\u001F${endpoint(l.target)}`;
-
     const link = linkLayer
       .selectAll<SVGPathElement, GraphLink>("path")
-      .data(links, linkKey)
+      .data(links, linkKeyOf)
       .join("path")
       .attr("fill", "none")
       .attr("stroke", (d) => edgeBase(d))
@@ -585,7 +865,7 @@ export function GraphCanvas({
 
     const hit = hitLayer
       .selectAll<SVGPathElement, GraphLink>("path")
-      .data(amb ? [] : links, linkKey)
+      .data(amb ? [] : links, linkKeyOf)
       .join("path")
       .attr("fill", "none")
       .attr("stroke", "transparent")
@@ -610,7 +890,7 @@ export function GraphCanvas({
       .on("mousemove", (event: MouseEvent, d) => showTooltip(event, linkTooltip(d)))
       .on("mouseleave", () => {
         hideTooltip();
-        refreshStyles();
+        refreshStylesRef.current();
       });
 
     const node = nodeLayer
@@ -623,6 +903,16 @@ export function GraphCanvas({
       .attr("stroke", nodeStroke)
       .attr("stroke-width", nodeStrokeWidth)
       .style("cursor", amb ? "default" : "pointer");
+
+    if (!amb) {
+      // Exactly one node is in the tab order at a time. Reaching the graph puts
+      // focus on the most connected node, which is the one worth arriving at.
+      const entry = focusedIdRef.current ?? orderRef.current[0] ?? null;
+      node
+        .attr("role", "button")
+        .attr("aria-label", (d) => describeNode(d))
+        .attr("tabindex", (d) => (d.id === entry ? 0 : null));
+    }
 
     const label = labelLayer
       .selectAll<SVGTextElement, GraphNode>("text")
@@ -644,19 +934,28 @@ export function GraphCanvas({
       node
         .on("mouseenter", (event: MouseEvent, d) => {
           hoverNodeRef.current = d.id;
-          refreshStyles();
+          refreshStylesRef.current();
           showTooltip(event, nodeTooltip(d));
         })
         .on("mousemove", (event: MouseEvent, d) => showTooltip(event, nodeTooltip(d)))
         .on("mouseleave", () => {
           hoverNodeRef.current = null;
-          refreshStyles();
+          refreshStylesRef.current();
           hideTooltip();
         })
         .on("click", (event: MouseEvent, d) => {
           event.stopPropagation();
           liveRef.current.onSelect({ kind: "node", id: d.id });
-        });
+        })
+        // Focus does what hover does, so the graph reads the same whether it is
+        // being pointed at or tabbed through.
+        .on("focus", (_event: FocusEvent, d) => focusNode(d.id, { move: false }))
+        .on("blur", () => {
+          hoverNodeRef.current = null;
+          hideTooltip();
+          refreshStylesRef.current();
+        })
+        .on("keydown", (event: KeyboardEvent, d) => onNodeKeyDown(event, d));
 
       node.call(
         drag<SVGCircleElement, GraphNode>()
@@ -686,35 +985,39 @@ export function GraphCanvas({
       );
     }
 
+    // Named, because it is wanted twice: on every frame while the layout runs,
+    // and once at the end when the layout was run out rather than watched.
+    const draw = () => {
+      link.attr("d", linkPath);
+      hit.attr("d", linkPath);
+      node.attr("cx", (d) => d.x ?? 0).attr("cy", (d) => d.y ?? 0);
+      // On ring-shaped layouts labels radiate outward from the origin so
+      // they don't pile up at the top and bottom of the circle.
+      const rings = liveRef.current.layout === "circle" || liveRef.current.layout === "radial";
+      label
+        .attr("text-anchor", (d) => {
+          if (!rings) return "middle";
+          const c = Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0));
+          return c > 0.2 ? "start" : c < -0.2 ? "end" : "middle";
+        })
+        .attr("x", (d) => {
+          if (!rings) return d.x ?? 0;
+          return (d.x ?? 0) + Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0)) * (d.radius + 8);
+        })
+        .attr("y", (d) => {
+          if (!rings) return (d.y ?? 0) - d.radius - 6;
+          const s = Math.sin(Math.atan2(d.y ?? 0, d.x ?? 0));
+          return (d.y ?? 0) + s * (d.radius + 8) + (s > 0.35 ? 10 : s < -0.35 ? -4 : 4);
+        });
+    };
+    drawRef.current = draw;
+
     const sim = forceSimulation<GraphNode, GraphLink>(nodes)
       .velocityDecay(amb ? 0.35 : 0.45)
-      .on("tick", () => {
-        link.attr("d", linkPath);
-        hit.attr("d", linkPath);
-        node.attr("cx", (d) => d.x ?? 0).attr("cy", (d) => d.y ?? 0);
-        // On ring-shaped layouts labels radiate outward from the origin so
-        // they don't pile up at the top and bottom of the circle.
-        const rings = liveRef.current.layout === "circle" || liveRef.current.layout === "radial";
-        label
-          .attr("text-anchor", (d) => {
-            if (!rings) return "middle";
-            const c = Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0));
-            return c > 0.2 ? "start" : c < -0.2 ? "end" : "middle";
-          })
-          .attr("x", (d) => {
-            if (!rings) return d.x ?? 0;
-            return (d.x ?? 0) + Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0)) * (d.radius + 8);
-          })
-          .attr("y", (d) => {
-            if (!rings) return (d.y ?? 0) - d.radius - 6;
-            const s = Math.sin(Math.atan2(d.y ?? 0, d.x ?? 0));
-            return (d.y ?? 0) + s * (d.radius + 8) + (s > 0.35 ? 10 : s < -0.35 ? -4 : 4);
-          });
-      });
-    if (amb) {
-      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (!still) sim.alphaDecay(0.002).alphaMin(0);
-    }
+      .on("tick", draw);
+    // The empty state's background drifts forever, which is exactly the kind of
+    // motion the setting is about, so it settles and stops instead.
+    if (amb && !reducedMotion.current) sim.alphaDecay(0.002).alphaMin(0);
     simRef.current?.stop();
     simRef.current = sim;
 
@@ -727,8 +1030,56 @@ export function GraphCanvas({
       window.clearTimeout(timer);
       sim.stop();
     };
-    // The scene is rebuilt only when the graph itself changes; everything
-    // else flows through liveRef.
+    // Keyed on the structure alone. `graph` is read here for the appearance the
+    // first paint needs, but a change to it on its own is the next effect's.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [base]);
+
+  /**
+   * Appearance, written onto the nodes the simulation is already running.
+   *
+   * `applyStyle` hands back new objects, but the simulation owns the ones on
+   * screen, along with their positions and velocities. So the new values are
+   * copied across rather than swapped in, and the marks repaint from the same
+   * objects d3 is already bound to.
+   *
+   * Radius is the one that is not only drawn. The collide radius and the link
+   * distance are both read off it, and d3 caches those when a force is
+   * initialized, so a resize has to rebuild the forces and nudge the simulation
+   * to settle into the room the new sizes need. A recolour does not, and that
+   * is the whole difference between this and a rebuild.
+   */
+  useLayoutEffect(() => {
+    const sels = selsRef.current;
+    if (!sels) return;
+
+    let resized = false;
+    const incoming = new Map(graph.nodes.map((n) => [n.id, n]));
+    for (const live of nodesRef.current) {
+      const next = incoming.get(live.id);
+      if (!next) continue;
+      if (live.radius !== next.radius) resized = true;
+      live.group = next.group;
+      live.value = next.value;
+      live.color = next.color;
+      live.image = next.image;
+      live.radius = next.radius;
+    }
+
+    const incomingLinks = new Map(graph.links.map((l) => [linkKeyOf(l), l]));
+    for (const live of linksRef.current) {
+      const next = incomingLinks.get(linkKeyOf(live));
+      if (!next) continue;
+      live.weight = next.weight;
+      live.colorValue = next.colorValue;
+      live.color = next.color;
+    }
+
+    sels.node.attr("r", (d) => d.radius);
+    if (!liveRef.current.ambient) sels.node.attr("aria-label", (d) => describeNode(d));
+    computeBaseLabels();
+    refreshStyles();
+    if (resized) applyLayoutForces(0.3);
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
 
@@ -755,7 +1106,7 @@ export function GraphCanvas({
     computeBaseLabels();
     refreshStyles();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelMode, selection, graph, style.arrows, theme]);
+  }, [labelMode, selection, style.arrows, theme]);
 
   // A pattern that has just been dropped from the defs must stop being named
   // before anything paints, or the node it filled would come out blank. Fills
@@ -805,7 +1156,7 @@ export function GraphCanvas({
     // The background is the only thing a double-click reaches, d3's own
     // dblclick zoom having been unhooked above, so it is free to mean "fit".
     sel.on("dblclick", (event: MouseEvent) => {
-      if (event.target === svg) fit(600);
+      if (event.target === svg) fitRef.current(600);
     });
     return () => {
       sel.on(".zoom", null).on("click", null).on("dblclick", null);
@@ -830,9 +1181,22 @@ export function GraphCanvas({
     },
   }));
 
+  // Ids for the bits the svg points at. Two canvases are never mounted at once
+  // (the ambient one stands in for the real one), so a fixed id is safe, and a
+  // shadow root scopes them anyway.
+  const helpId = "graph-keys-help";
   return (
     <div className={ambient ? "graph-canvas ambient" : "graph-canvas"} ref={containerRef}>
-      <svg ref={svgRef} className="graph-svg" role="img" aria-label="Network graph">
+      <svg
+        ref={svgRef}
+        className="graph-svg"
+        /* Ambient it is decoration and says so; otherwise it is something to be
+           operated, and "application" is what tells a screen reader to hand the
+           arrow keys over rather than reading the page with them. */
+        role={ambient ? "img" : "application"}
+        aria-label={ambient ? "Decorative network animation" : "Network graph"}
+        aria-describedby={ambient ? undefined : helpId}
+      >
         <defs>
           <Arrow id="arrow-dim" fill={theme.arrowDim} />
           <Arrow id="arrow-lit" fill={theme.edgeLit} />
@@ -852,6 +1216,20 @@ export function GraphCanvas({
         </g>
       </svg>
       {!ambient && <div className="graph-tooltip" ref={tooltipRef} />}
+      {!ambient && (
+        <>
+          <p id={helpId} className="visually-hidden">
+            Left and right arrows move through every node, most connected first. Up and down move
+            between the neighbours of the current node. Enter selects it, Escape clears the
+            selection.
+          </p>
+          {/* Written to directly rather than rendered from state: focus moves on
+              every arrow press, and re-rendering the whole canvas to say so
+              would be a great deal of work to announce one name. React is given
+              no children here, so nothing it owns is being overwritten. */}
+          <div ref={liveRegionRef} className="visually-hidden" role="status" aria-live="polite" />
+        </>
+      )}
     </div>
   );
 }

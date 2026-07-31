@@ -59,10 +59,9 @@ export function parseGraphml(text: string, name: string): ImportedGraph {
   const labelKey = [...keys.values()].find((k) => k.isLabel) ?? null;
 
   const readData = (element: Element, row: Row, scope: "node" | "edge"): void => {
-    for (const [id, key] of keys) {
+    for (const key of keys.values()) {
       if (key.scope !== scope || key.default === null) continue;
       row[key.column.name] = coerce(key.default, key.column.type);
-      void id;
     }
     for (const data of element.querySelectorAll(":scope > data")) {
       const key = keys.get(data.getAttribute("key") ?? "");

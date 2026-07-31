@@ -30,6 +30,19 @@ const BASE64_TYPES: [string, string][] = [
 
 const BASE64_ONLY = /^[A-Za-z0-9+/=]+$/;
 
+/**
+ * Whether drawing this source means a request to somebody else's server.
+ *
+ * Worth telling apart from the rest, because the rest are the file itself: a
+ * data URI or inline markup draws out of the graph that is already loaded,
+ * where an `https` cell is an instruction to go and fetch something. A graph
+ * can arrive from a link anyone can write, and the fetch would carry the
+ * reader's address to whatever host the link chose, so it waits for a yes.
+ */
+export function isRemoteSource(source: string): boolean {
+  return /^https?:\/\//i.test(source);
+}
+
 /** Markup, rather than a reference to it: an XML prolog or a comment may lead. */
 function isSvgMarkup(text: string): boolean {
   return text.startsWith("<") && /<svg[\s>]/i.test(text) && /<\/svg\s*>/i.test(text);
@@ -48,7 +61,7 @@ export function imageSource(value: CellValue): string | null {
   if (/^data:/i.test(text)) {
     return /^data:image\/[a-z0-9.+-]+[;,]/i.test(text) ? text : null;
   }
-  if (/^https?:\/\//i.test(text)) return text;
+  if (isRemoteSource(text)) return text;
   if (isSvgMarkup(text)) {
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
   }

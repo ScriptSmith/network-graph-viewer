@@ -86,6 +86,63 @@ export const FILTER_KINDS: { kind: FilterSpec["kind"]; name: string; blurb: stri
   },
 ];
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
+const isNumberOrNull = (v: unknown): boolean => v === null || typeof v === "number";
+
+function isColumnFilter(value: unknown): value is ColumnFilter {
+  if (!isRecord(value)) return false;
+  if (value.kind === "values") {
+    return Array.isArray(value.selected) && value.selected.every((s) => typeof s === "string");
+  }
+  return value.kind === "range" && isNumberOrNull(value.min) && isNumberOrNull(value.max);
+}
+
+/**
+ * Whether a value is a step `applyStep` can actually run. A chain arrives inside
+ * a workspace, which arrives from a link anyone wrote, and every branch below
+ * reads fields the switch would otherwise dereference off `undefined`.
+ */
+export function isFilterStep(value: unknown): value is FilterStep {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== "string" || typeof value.enabled !== "boolean") return false;
+  switch (value.kind) {
+    case "column":
+      return (
+        (value.table === "nodes" || value.table === "edges") &&
+        typeof value.column === "string" &&
+        isColumnFilter(value.op)
+      );
+    case "degree":
+      return (
+        (value.mode === "all" || value.mode === "in" || value.mode === "out") &&
+        isNumberOrNull(value.min) &&
+        isNumberOrNull(value.max)
+      );
+    case "kcore":
+      return typeof value.k === "number";
+    case "component":
+      return typeof value.count === "number";
+    case "ego":
+      return (
+        Array.isArray(value.centers) &&
+        value.centers.every((c) => typeof c === "string") &&
+        typeof value.depth === "number" &&
+        (value.direction === "any" || value.direction === "out" || value.direction === "in")
+      );
+    case "mutual":
+      return true;
+    case "backbone":
+      return (
+        typeof value.alpha === "number" &&
+        (value.weightColumn === null || typeof value.weightColumn === "string")
+      );
+    default:
+      return false;
+  }
+}
+
 /**
  * The step a single click adds: one column pinned to one value. A legend entry
  * and a breakdown bar both add exactly this, so both can find their own step
@@ -228,16 +285,18 @@ function applyStep(
   keepNodes: ReadonlySet<string> | null,
 ): Narrowing {
   switch (step.kind) {
-    case "column":
+    case "column": {
+      const test = compileCondition(step.op);
       return step.table === "edges"
-        ? { rows: rows.filter((row) => passes(row, step.column, step.op)), keepNodes }
+        ? { rows: rows.filter((row) => test(row, step.column)), keepNodes }
         : {
             rows,
             keepNodes: intersect(
               keepNodes,
-              nodeIdsWhere(doc, (row) => passes(row, step.column, step.op)),
+              nodeIdsWhere(doc, (row) => test(row, step.column)),
             ),
           };
+    }
 
     case "degree": {
       const keep = new Set<string>();
@@ -394,12 +453,35 @@ export function narrows(rows: Row[], column: string, filter: ColumnFilter): bool
   return distinctValues(rows, column).some((v) => !selected.has(v.key));
 }
 
-/** Whether one row satisfies a column condition. */
+/**
+ * Compile a condition into a test over one row.
+ *
+ * The compile step is the point. A values condition holds a list, and a fresh
+ * step is seeded with *every* distinct value so that adding one never blanks
+ * the canvas, which means the list is as long as the column's cardinality.
+ * Searching it per row makes a filter that changes nothing cost rows x values,
+ * and this runs inside a render on every keystroke of a cell edit. Built once
+ * per step, the same work is a hash lookup.
+ */
+export function compileCondition(filter: ColumnFilter): (row: Row, column: string) => boolean {
+  if (filter.kind === "values") {
+    const selected = new Set(filter.selected);
+    return (row, column) => selected.has(cellKey(row[column]));
+  }
+  const { min, max } = filter;
+  return (row, column) => {
+    const v = asNumber(row[column]);
+    if (v === null) return false;
+    if (min !== null && v < min) return false;
+    if (max !== null && v > max) return false;
+    return true;
+  };
+}
+
+/**
+ * Whether one row satisfies a column condition. For a single row; anything
+ * walking a table should compile the condition once with `compileCondition`.
+ */
 export function passes(row: Row, column: string, filter: ColumnFilter): boolean {
-  if (filter.kind === "values") return filter.selected.includes(cellKey(row[column]));
-  const v = asNumber(row[column]);
-  if (v === null) return false;
-  if (filter.min !== null && v < filter.min) return false;
-  if (filter.max !== null && v > filter.max) return false;
-  return true;
+  return compileCondition(filter)(row, column);
 }

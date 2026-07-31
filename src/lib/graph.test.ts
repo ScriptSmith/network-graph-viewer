@@ -1,10 +1,10 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { SAMPLE_DATASET } from "../samples";
 import { guessStyle } from "./parse";
 import { buildDoc } from "./doc";
 import { applyStyle, buildBaseGraph, CELL_RADIUS, CELL_WIDTH, weightScale } from "./graph";
 import { applyChain, type FilterStep } from "./filter";
-import { DEFAULT_STYLE, type GraphStyle } from "../types";
+import { DEFAULT_STYLE, type GraphDoc, type GraphStyle } from "../types";
 import { NEUTRAL } from "../theme";
 
 /**
@@ -211,4 +211,62 @@ test("node table attributes take precedence over projected edge columns", () => 
     nodeColor: "column:Department",
   });
   expect(graph.groups).toEqual(["Overridden"]);
+});
+
+/**
+ * Everything counted per node or per link is aggregated with a loop rather
+ * than by spreading an array into `Math.max`, because an argument list runs
+ * out somewhere around 125,000 and `PARQUET_ROW_LIMIT` alone allows 200,000
+ * rows. This is the size at which the spread stops working, so it is the size
+ * worth building once.
+ */
+describe("at the scale the readers actually allow", () => {
+  const N = 150_000;
+  const rows = Array.from({ length: N }, (_, i) => ({
+    From: `n${i}`,
+    To: `n${(i + 1) % N}`,
+    Weight: i % 97,
+  }));
+  const big: GraphDoc = {
+    name: "big",
+    edges: {
+      name: "Edges",
+      columns: [
+        { name: "From", type: "text" },
+        { name: "To", type: "text" },
+        { name: "Weight", type: "number" },
+      ],
+      rows,
+    },
+    nodes: {
+      name: "Nodes",
+      columns: [{ name: "Id", type: "text" }],
+      rows: rows.map((r) => ({ Id: r.From })),
+    },
+    nodeIdColumn: "Id",
+    mapping: { source: "From", target: "To", attrs: ["Weight"] },
+    nodesDeclared: true,
+  };
+  const base = buildBaseGraph(big);
+
+  test("the structure is all there", () => {
+    expect(base.nodes).toHaveLength(N);
+    expect(base.links).toHaveLength(N);
+  });
+
+  test("sizing every node gives every node a radius", () => {
+    const graph = applyStyle(base, big, DEFAULT_STYLE);
+    expect(graph.nodes.every((n) => isFinite(n.radius) && n.radius > 0)).toBe(true);
+  });
+
+  test("a numeric ranking still finds both ends of its range", () => {
+    const graph = applyStyle(base, big, { ...DEFAULT_STYLE, nodeColor: "metric:degree" });
+    expect(graph.ranking).toEqual({ min: 2, max: 2 });
+  });
+
+  test("scaling edge widths finds both ends of theirs", () => {
+    const graph = applyStyle(base, big, { ...DEFAULT_STYLE, edgeWidth: "column:Weight" });
+    const width = weightScale(graph.links);
+    expect(graph.links.every((l) => isFinite(width(l)))).toBe(true);
+  });
 });

@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Graph, GraphDoc, GraphSelection, Row } from "../types";
+import type { BaseGraph, Graph, GraphDoc, GraphSelection, Row } from "../types";
 import { findValueStep, type FilterStep } from "../lib/filter";
 import { cellKey } from "../lib/cells";
 import { componentCount, distinctValues } from "../lib/graph";
-import {
-  CENTRALITY_NAMES,
-  centralityValues,
-  graphMetrics,
-  type CentralityKind,
-} from "../lib/metrics";
+import { CENTRALITY_NAMES, graphMetrics, toMetricGraph, type CentralityKind } from "../lib/metrics";
+import { computeCentrality } from "../lib/metrics/runner";
+import { maxOf } from "../lib/numbers";
 import { asNumber } from "../lib/parse";
 import { parseColor, type Palette } from "../theme";
 import { formatMetric, formatNumber } from "../lib/format";
@@ -59,6 +56,12 @@ interface StatsPanelProps {
   rows: Row[];
   totalRows: number;
   graph: Graph;
+  /**
+   * The same graph before any appearance settings were applied. Everything
+   * counted rather than drawn reads this one, so restyling the graph does not
+   * make the panel recount a network that did not change.
+   */
+  base: BaseGraph;
   /** The partition column currently coloring nodes, if any. */
   colorColumn: string | null;
   palette: Palette;
@@ -118,6 +121,7 @@ export function StatsPanel({
   rows,
   totalRows,
   graph,
+  base,
   colorColumn,
   palette,
   colors,
@@ -166,20 +170,58 @@ export function StatsPanel({
   }, [numericColumns]);
 
   const bars = useMemo(() => pivot(rows, groupBy, measure), [rows, groupBy, measure]);
-  const maxBar = Math.max(1e-9, ...bars.map((b) => b.value));
-  const components = useMemo(() => componentCount(graph), [graph]);
-  const metrics = useMemo(() => graphMetrics(graph), [graph]);
-
-  const [centralityKind, setCentralityKind] = useState<CentralityKind>("degree");
-  const centrality = useMemo(
-    () => centralityValues(graph, centralityKind),
-    [graph, centralityKind],
+  const maxBar = maxOf(
+    bars.map((b) => b.value),
+    1e-9,
   );
+  const components = useMemo(() => componentCount(base), [base]);
+  const metrics = useMemo(() => graphMetrics(base), [base]);
+
+  /**
+   * Rankings are computed in the worker, because two of the six cost a
+   * breadth-first search per node and this panel renders on every change to the
+   * graph. Degree is the exception: it is already counted on the node, so it
+   * answers instantly and the panel opens with a ranking rather than a wait.
+   */
+  const [centralityKind, setCentralityKind] = useState<CentralityKind>("degree");
+  const [centrality, setCentrality] = useState<Map<string, number>>(() => new Map());
+  const [ranking, setRanking] = useState<"ready" | "working" | "failed">("ready");
+
+  useEffect(() => {
+    if (centralityKind === "degree") {
+      setCentrality(new Map(base.nodes.map((n) => [n.id, n.degree])));
+      setRanking("ready");
+      return;
+    }
+    let live = true;
+    setRanking("working");
+    void computeCentrality(toMetricGraph(base), centralityKind)
+      .then((scores) => {
+        if (!live) return;
+        setCentrality(scores);
+        setRanking("ready");
+      })
+      .catch(() => {
+        if (!live) return;
+        setCentrality(new Map());
+        setRanking("failed");
+      });
+    // A ranking that is still running when the graph changes under it is an
+    // answer to a question nobody is asking any more.
+    return () => {
+      live = false;
+    };
+  }, [base, centralityKind]);
+
   const topNodes = useMemo(() => {
+    if (centrality.size === 0) return [];
     const score = (id: string) => centrality.get(id) ?? 0;
-    return [...graph.nodes].sort((a, b) => score(b.id) - score(a.id)).slice(0, 8);
-  }, [graph, centrality]);
-  const maxCentrality = Math.max(1e-9, ...topNodes.map((n) => centrality.get(n.id) ?? 0));
+    return [...base.nodes].sort((a, b) => score(b.id) - score(a.id)).slice(0, 8);
+  }, [base, centrality]);
+  const maxCentrality = maxOf(
+    topNodes.map((n) => centrality.get(n.id) ?? 0),
+    1e-9,
+  );
 
   // A bar reads as active when the chain holds exactly the step clicking it
   // adds. The pivots run over edge rows, so that is the table it matches on.
@@ -361,7 +403,7 @@ export function StatsPanel({
         <p className="note">Click a bar to filter the graph to that value; click again to clear.</p>
       </section>
 
-      {topNodes.length > 0 && (
+      {base.nodes.length > 0 && (
         <section className="insp-section">
           <h4>Top nodes</h4>
           <label className="field">
@@ -378,6 +420,14 @@ export function StatsPanel({
               ))}
             </select>
           </label>
+          {ranking === "working" && (
+            <p className="note" role="status">
+              Ranking by {RANK_OPTION_LABELS[centralityKind].toLowerCase()}…
+            </p>
+          )}
+          {ranking === "failed" && (
+            <p className="note">That ranking could not be computed for this graph.</p>
+          )}
           <div className="bar-list">
             {topNodes.map((n) => (
               <button

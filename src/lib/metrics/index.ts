@@ -11,11 +11,15 @@ export { DEFAULT_RESOLUTION } from "./community";
 export type { NetworkMetrics } from "./structure";
 export { toMetricGraph, type MetricGraph } from "./model";
 
+/** Scores by node id, for callers holding a projected graph already. */
+export function centralityScores(graph: MetricGraph, kind: CentralityKind): Map<string, number> {
+  const scores = centrality(graph, kind);
+  return new Map(graph.ids.map((id, i) => [id, scores[i]]));
+}
+
 /** Adapter for the live styling path, which still speaks in node ids. */
 export function centralityValues(graph: BaseGraph, kind: CentralityKind): Map<string, number> {
-  const metric = toMetricGraph(graph);
-  const scores = centrality(metric, kind);
-  return new Map(metric.ids.map((id, i) => [id, scores[i]]));
+  return centralityScores(toMetricGraph(graph), kind);
 }
 
 export function graphMetrics(graph: BaseGraph) {
@@ -148,8 +152,21 @@ export const DEFAULT_METRIC_OPTIONS: MetricOptions = {
 export interface ComputedColumn {
   name: string;
   type: ColumnType;
-  /** Values keyed by node id, or by `edgeKey(source, target)`. */
+  /**
+   * Values keyed by node id, or by `edgeKey(source, target)`.
+   *
+   * Built with a null prototype, and read back the same way. A node id is
+   * whatever a cell said, and a cell can say `__proto__`: assigning that on an
+   * ordinary object silently stores nothing and reading it back hands out
+   * `Object.prototype`, which then lands in a table cell as "[object Object]".
+   * Keys named after anything on the prototype behave the same way.
+   */
   values: Record<string, CellValue>;
+}
+
+/** A map keyed by data. See `ComputedColumn.values` for why it is not `{}`. */
+export function emptyValues(): Record<string, CellValue> {
+  return Object.create(null) as Record<string, CellValue>;
 }
 
 export interface MetricRunResult {
@@ -178,7 +195,7 @@ export function runMetrics(
   const shared = () => (cached ??= undirected(graph));
 
   const nodeColumn = (name: string, type: ColumnType, valueAt: (i: number) => CellValue) => {
-    const values: Record<string, CellValue> = {};
+    const values = emptyValues();
     graph.ids.forEach((id, i) => {
       values[id] = valueAt(i);
     });
@@ -186,7 +203,7 @@ export function runMetrics(
   };
 
   const edgeColumn = (name: string, type: ColumnType, valueAt: (e: number) => CellValue) => {
-    const values: Record<string, CellValue> = {};
+    const values = emptyValues();
     for (let e = 0; e < graph.source.length; e++) {
       values[edgeKey(graph.ids[graph.source[e]], graph.ids[graph.target[e]])] = valueAt(e);
     }

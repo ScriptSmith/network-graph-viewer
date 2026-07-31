@@ -36,7 +36,14 @@ Turn a spreadsheet edge list into an interactive network graph, in your browser 
 - Four categorical palettes, including the published colourblind-safe Okabe-Ito and Tol bright sets, and four ramps for numeric rankings
 - Light and dark, switchable in the View menu, and the graph's own colours change with it rather than only the chrome around them
 - Or build your own: edit any slot, add and remove colours, and the palette travels with the workspace, the export and the shared link
-- Node images from a column of `https` links, data URIs, bare base64, or SVG markup: the picture fills the node and its colour becomes the ring, so an image costs nothing the colours were saying. The shipped **Web toolchain** sample is 42 projects wearing their logos, and the one place the app fetches anything from a third party
+- Node images from a column of `https` links, data URIs, bare base64, or SVG markup: the picture fills the node and its colour becomes the ring, so an image costs nothing the colours were saying. The shipped **Web toolchain** sample is 42 projects wearing their logos, and the one place the app fetches anything from a third party. A graph that arrives from a link or a file asks first, since requesting an image tells that server you opened the graph
+
+### Reading it without a mouse
+
+Tab into the graph and you land on the most connected node; left and right walk
+every node in turn, up and down walk the neighbours, Enter selects. Focus is
+announced, and anything that moves for effect stops when your system asks for
+less motion.
 
 ### Filters that chain
 
@@ -123,7 +130,7 @@ for the panels, and follows the notebook's own light or dark theme. See
 pnpm install
 pnpm dev            # start the dev server
 pnpm build          # type-check and build to dist/
-pnpm build:widget   # rebuild the notebook bundle (commit the result)
+pnpm build:widget   # rebuild the notebook bundle (generated, not committed)
 pnpm lint           # oxlint
 pnpm test           # vitest
 pnpm format         # oxfmt

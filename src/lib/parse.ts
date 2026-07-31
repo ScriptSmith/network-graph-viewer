@@ -156,11 +156,6 @@ function inferColumnType(rows: Row[], column: string): Column["type"] {
   return numeric / seen >= 0.8 ? "number" : "text";
 }
 
-/** True when at least 80% of the column's non-empty values parse as numbers. */
-export function isNumericColumn(rows: Row[], column: string): boolean {
-  return inferColumnType(rows, column) === "number";
-}
-
 export function asNumber(v: CellValue): number | null {
   if (typeof v === "number") return isFinite(v) ? v : null;
   if (typeof v === "string" && v.trim() !== "") {

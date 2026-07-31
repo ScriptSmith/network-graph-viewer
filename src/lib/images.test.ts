@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { imageSource } from "./images";
+import { imageSource, isRemoteSource } from "./images";
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
@@ -46,4 +46,27 @@ test("empty and non-text cells hold no image", () => {
   expect(imageSource("   ")).toBeNull();
   expect(imageSource(42)).toBeNull();
   expect(imageSource(true)).toBeNull();
+});
+
+/**
+ * Telling apart the sources that draw out of the graph from the ones that go
+ * and ask a server for something. Only the second kind waits for permission,
+ * so getting this wrong either leaks a request or blanks a picture that was
+ * never going anywhere.
+ */
+test("remote sources are the ones that would leave the machine", () => {
+  expect(isRemoteSource("https://example.com/a.png")).toBe(true);
+  expect(isRemoteSource("HTTP://example.com/a.png")).toBe(true);
+  expect(isRemoteSource("data:image/png;base64,iVBORw0KGgo=")).toBe(false);
+  expect(isRemoteSource("data:image/svg+xml;charset=utf-8,%3Csvg%3E")).toBe(false);
+});
+
+test("a bare base64 blob and inline markup stay local once resolved", () => {
+  const svg = imageSource("<svg viewBox='0 0 1 1'><rect width='1' height='1'/></svg>");
+  expect(svg).not.toBeNull();
+  expect(isRemoteSource(svg as string)).toBe(false);
+
+  const png = imageSource(`iVBORw0KGgo${"A".repeat(40)}`);
+  expect(png).not.toBeNull();
+  expect(isRemoteSource(png as string)).toBe(false);
 });

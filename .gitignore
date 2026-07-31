@@ -31,3 +31,7 @@ python/.venv
 python/.pytest_cache
 __pycache__/
 *.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+python/src/network_graph_viewer/static/widget.js

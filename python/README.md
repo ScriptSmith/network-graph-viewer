@@ -17,12 +17,6 @@ or `pip install network-graph-viewer`. Nothing else is needed: the widget ships
 its own JavaScript, and pandas and networkx are only used if you hand it one of
 theirs.
 
-To run against unreleased changes, install from the repository instead:
-
-```sh
-uv pip install "git+https://github.com/ScriptSmith/network-graph-viewer#subdirectory=python"
-```
-
 ## Use
 
 ```python
@@ -108,17 +102,17 @@ rounding into a collision.
 ## Development
 
 The widget loads one JavaScript file,
-`src/network_graph_viewer/static/widget.js`, built from the TypeScript app at
-the repository root and committed, because installing from git has no way to
-build it. After changing anything under `src/` at the root:
+`src/network_graph_viewer/static/widget.js`. It is built from the TypeScript
+app at the repository root and is **not** in the repository: a fresh clone has
+to build it before the package will run, and so does anything that rebuilds
+the app.
 
 ```sh
-pnpm build:widget       # rewrites static/widget.js
+pnpm install            # once, at the repository root
+pnpm build:widget       # writes static/widget.js
 ```
 
-CI rebuilds it and fails if the committed copy has drifted.
-
-Tests:
+Then, in this directory:
 
 ```sh
 uv sync
@@ -126,3 +120,6 @@ uv run pytest
 uv run pytest --nbmake examples/demo.ipynb
 uv run ruff check && uv run ruff format
 ```
+
+The release workflow builds the bundle from the source at the tag, so what
+gets published is never taken on trust from anybody's working tree.

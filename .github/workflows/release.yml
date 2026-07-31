@@ -33,8 +33,8 @@ jobs:
             exit 1
           fi
 
-      # The wheel carries the built app, so it is built here rather than taken
-      # on trust from the working tree of whoever made the tag.
+      # The wheel carries the built app, and the app is not in the repository:
+      # it is built here, from the source at the tag.
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -42,8 +42,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:widget
-      - name: The committed widget bundle is current
-        run: git diff --exit-code python/src/network_graph_viewer/static/widget.js
 
       # Pinned exactly: this one stopped publishing a floating major tag
       # after v7, so `@v9` does not resolve to anything.

@@ -93,7 +93,7 @@ The same app runs in a notebook cell, as a widget. Click a node and the kernel
 sees the selection; edit the table and the edits come back as a DataFrame.
 
 ```sh
-uv pip install "git+https://github.com/ScriptSmith/network-graph-viewer#subdirectory=python"
+uv add network-graph-viewer
 ```
 
 ```python

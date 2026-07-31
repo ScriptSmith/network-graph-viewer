@@ -29,12 +29,6 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm build
-      # The widget bundle is committed, because a git install of the Python
-      # package has no way to build it. Rebuilding here and finding a diff
-      # means the app changed and `pnpm build:widget` was not run.
-      - run: pnpm build:widget
-      - name: The committed widget bundle is current
-        run: git diff --exit-code python/src/network_graph_viewer/static/widget.js
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
@@ -47,6 +41,18 @@ jobs:
         working-directory: python
     steps:
       - uses: actions/checkout@v7
+      # The package ships the built app, and the app is built by pnpm, so this
+      # job needs the JavaScript toolchain before it can install its own
+      # package at all.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm build:widget
+        working-directory: .
       # Pinned exactly: this one stopped publishing a floating major tag
       # after v7, so `@v9` does not resolve to anything.
       - uses: astral-sh/setup-uv@v9.0.0

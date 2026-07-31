@@ -127,7 +127,10 @@ way to change data is the data table, which edits the underlying rows.
   `python/src/network_graph_viewer/static/widget.js`. Wiring only. Nothing that
   comes back from the browser is ever sent out again, or the two ends talk past
   each other forever.
-- `python/` - the notebook package, installed from git. `workspace.py` builds
+- `python/` - the notebook package, published to PyPI as
+  `network-graph-viewer` by `.github/workflows/release.yml` on a `v*` tag, which
+  checks the tag against `pyproject.toml` first: a version on PyPI cannot be
+  replaced. `workspace.py` builds
   the same `.ngv.json` a dropped file would produce, so a notebook goes in
   through the app's front door; `widget.py` is the traitlets around it.
 - `src/components/ColumnMenu.tsx` - the pencil in a column header: rename,
@@ -181,12 +184,14 @@ way to change data is the data table, which edits the underlying rows.
 - Vite `base` is `/network-graph-viewer/`; renaming the repo breaks Pages.
 - `xlsx` is installed from the SheetJS CDN tarball (npm version is outdated
   and vulnerable); don't switch it to the npm registry version.
-- `python/src/network_graph_viewer/static/widget.js` is **generated and
-  committed**. A git install has no JavaScript toolchain, so the file has to be
-  in the tree; CI rebuilds it and fails on a diff. Run `pnpm build:widget`
-  after changing anything the widget bundles. It is excluded from oxfmt in
-  `.prettierignore`, because reformatting it would make every build differ from
-  the committed copy.
+- `python/src/network_graph_viewer/static/widget.js` is **generated, not
+  committed**. `pnpm build:widget` writes it; a fresh clone has none, which is
+  why `pnpm test` builds it first (`widget.test.ts` reads the built file) and
+  why the Python CI job installs node and pnpm before it can install its own
+  package. Being git-ignored it is also invisible to hatchling, which leaves
+  VCS-ignored files out of a build: `artifacts` in `pyproject.toml` is what
+  puts it back, and without that the wheel would install and then fail to load
+  the widget at the far end.
 - `python/tests/fixtures/workspace.json` is read from both sides: Python
   asserts it still builds that file, `src/lib/io/python.test.ts` asserts the
   app still opens it. Neither end can see the other, so this is what catches a

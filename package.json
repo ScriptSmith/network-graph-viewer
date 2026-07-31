@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:widget": "tsc -b && vite build --config vite.embed.config.ts",
+    "build:widget": "tsc -b && pnpm widget",
     "lint": "oxlint --ignore-pattern 'python/**'",
-    "test": "vitest run",
+    "test": "pnpm widget && vitest run",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "widget": "vite build --config vite.embed.config.ts"
   },
   "dependencies": {
     "@jitl/quickjs-singlefile-browser-release-sync": "^0.32.0",

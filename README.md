@@ -5,7 +5,7 @@
 > [!NOTE]
 > This project is AI-generated: the code, sample data, and this README were written by [Claude Code](https://claude.com/claude-code).
 
-Turn a spreadsheet edge list into an interactive network graph, entirely in your browser.
+Turn a spreadsheet edge list into an interactive network graph, in your browser or a Jupyter notebook.
 
 **Live app:** https://adamsm.com/network-graph-viewer/
 
@@ -91,6 +91,12 @@ access.
 
 The same app runs in a notebook cell, as a widget. Click a node and the kernel
 sees the selection; edit the table and the edits come back as a DataFrame.
+
+```sh
+pip install network-graph-viewer
+```
+
+or:
 
 ```sh
 uv add network-graph-viewer

@@ -10,12 +10,17 @@ the app's own workspace format, and the selection and any edits come back.
 ## Install
 
 ```sh
+pip install network-graph-viewer
+```
+
+or:
+
+```sh
 uv add network-graph-viewer
 ```
 
-or `pip install network-graph-viewer`. Nothing else is needed: the widget ships
-its own JavaScript, and pandas and networkx are only used if you hand it one of
-theirs.
+Nothing else is needed: the widget ships its own JavaScript, and pandas and
+networkx are only used if you hand it one of theirs.
 
 ## Use
 

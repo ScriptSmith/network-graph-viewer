@@ -9,16 +9,18 @@ the app's own workspace format, and the selection and any edits come back.
 
 ## Install
 
-There is no PyPI release. Install from git:
+```sh
+uv add network-graph-viewer
+```
+
+or `pip install network-graph-viewer`. Nothing else is needed: the widget ships
+its own JavaScript, and pandas and networkx are only used if you hand it one of
+theirs.
+
+To run against unreleased changes, install from the repository instead:
 
 ```sh
 uv pip install "git+https://github.com/ScriptSmith/network-graph-viewer#subdirectory=python"
-```
-
-Or add it to a project:
-
-```sh
-uv add "git+https://github.com/ScriptSmith/network-graph-viewer#subdirectory=python"
 ```
 
 ## Use
@@ -83,20 +85,44 @@ w.save("graph.ngv.json")
 `w.edges` and `w.nodes` are `None` until the browser has reported something,
 which it does shortly after the widget first draws.
 
+## How it works
+
+The graph is handed to the browser as the app's own `.ngv.json` workspace, so a
+notebook goes in through the same door as a dropped file or a shared link, and
+meets the same reader on the other side. What comes back is the selection and
+the edited tables. Nothing is uploaded: the kernel and the browser are talking
+over the notebook's own connection.
+
+`build_workspace` is that translation on its own, if you want the dictionary
+without a widget:
+
+```python
+workspace = ngv.build_workspace(edges, source="from", target="to")
+```
+
+Every cell has to survive the trip as JSON, so NumPy scalars, timestamps and
+decimals are each converted to the nearest thing a cell can hold, and an
+integer too large for a JSON number keeps its digits as text rather than
+rounding into a collision.
+
 ## Development
 
-The widget loads one JavaScript file, `src/network_graph_viewer/static/widget.js`.
-It is built from the TypeScript app and **committed**, because a git install
-has no way to build it. After changing anything under `src/` at the repository
-root:
+The widget loads one JavaScript file,
+`src/network_graph_viewer/static/widget.js`, built from the TypeScript app at
+the repository root and committed, because installing from git has no way to
+build it. After changing anything under `src/` at the root:
 
 ```sh
 pnpm build:widget       # rewrites static/widget.js
 ```
 
+CI rebuilds it and fails if the committed copy has drifted.
+
 Tests:
 
 ```sh
+uv sync
 uv run pytest
 uv run pytest --nbmake examples/demo.ipynb
+uv run ruff check && uv run ruff format
 ```

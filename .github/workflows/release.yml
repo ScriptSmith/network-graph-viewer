@@ -1,0 +1,59 @@
+name: Publish to PyPI
+
+# Tag a release and this publishes it. The version in python/pyproject.toml has
+# to match the tag, which the first step checks rather than discovering after
+# the upload, since a version on PyPI cannot be replaced.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/network-graph-viewer
+    permissions:
+      # Trusted publishing: PyPI verifies this workflow's identity, so there is
+      # no API token in the repository to leak or rotate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag and the packaged version agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          packaged=$(grep -m1 '^version = ' python/pyproject.toml | cut -d'"' -f2)
+          if [ "$tag" != "$packaged" ]; then
+            echo "Tag $tag does not match python/pyproject.toml $packaged" >&2
+            exit 1
+          fi
+
+      # The wheel carries the built app, so it is built here rather than taken
+      # on trust from the working tree of whoever made the tag.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:widget
+      - name: The committed widget bundle is current
+        run: git diff --exit-code python/src/network_graph_viewer/static/widget.js
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+      - run: uv build
+        working-directory: python
+      - run: uvx twine check dist/*
+        working-directory: python
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist

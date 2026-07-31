@@ -25,3 +25,9 @@ dist-ssr
 
 # Browser automation artifacts
 .playwright-cli
+
+# Python package
+python/.venv
+python/.pytest_cache
+__pycache__/
+*.py[cod]

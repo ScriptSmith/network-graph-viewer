@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "build:widget": "tsc -b && vite build --config vite.embed.config.ts",
+    "lint": "oxlint --ignore-pattern 'python/**'",
     "test": "vitest run",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@jitl/quickjs-singlefile-browser-release-sync": "^0.32.0",
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.14.8",
@@ -22,6 +24,8 @@
     "d3-selection": "^3.0.0",
     "d3-transition": "^3.0.1",
     "d3-zoom": "^3.0.0",
+    "hyparquet": "^1.26.2",
+    "hyparquet-compressors": "^1.1.1",
     "quickjs-emscripten-core": "^0.32.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -38,6 +42,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "hyparquet-writer": "^0.16.1",
     "jsdom": "^30.0.0",
     "oxfmt": "^0.59.0",
     "oxlint": "^1.71.0",

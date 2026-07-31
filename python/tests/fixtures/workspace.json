@@ -1,0 +1,90 @@
+{
+  "format": "network-graph-viewer",
+  "version": 1,
+  "doc": {
+    "name": "Team",
+    "edges": {
+      "name": "Edges",
+      "columns": [
+        {
+          "name": "from",
+          "type": "text"
+        },
+        {
+          "name": "to",
+          "type": "text"
+        },
+        {
+          "name": "weight",
+          "type": "number"
+        },
+        {
+          "name": "team",
+          "type": "text"
+        }
+      ],
+      "rows": [
+        {
+          "from": "ana",
+          "to": "ben",
+          "weight": 3,
+          "team": "design"
+        },
+        {
+          "from": "ben",
+          "to": "cleo",
+          "weight": 1,
+          "team": "design"
+        },
+        {
+          "from": "cleo",
+          "to": "ana",
+          "weight": 4,
+          "team": "research"
+        }
+      ]
+    },
+    "nodes": {
+      "name": "Nodes",
+      "columns": [
+        {
+          "name": "Id",
+          "type": "text"
+        }
+      ],
+      "rows": [
+        {
+          "Id": "ana"
+        },
+        {
+          "Id": "ben"
+        },
+        {
+          "Id": "cleo"
+        }
+      ]
+    },
+    "nodeIdColumn": "Id",
+    "mapping": {
+      "source": "from",
+      "target": "to",
+      "attrs": ["weight", "team"]
+    },
+    "nodesDeclared": false
+  },
+  "style": {
+    "nodeColor": "column:team",
+    "nodeSize": "metric:degree",
+    "nodeImage": "none",
+    "edgeColor": "uniform",
+    "edgeWidth": "uniform",
+    "arrows": true,
+    "spacing": 1.0
+  },
+  "chain": [],
+  "layout": "force",
+  "layoutParams": {},
+  "showIsolated": false,
+  "preventOverlap": false,
+  "positions": {}
+}

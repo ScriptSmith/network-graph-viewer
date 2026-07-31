@@ -43,17 +43,7 @@ import {
 import { endpointId as endpoint, markColor, weightScale } from "../lib/graph";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { formatMetric } from "../lib/format";
-import {
-  DEFAULT_COLORS,
-  EDGE,
-  EDGE_LIT,
-  LABEL,
-  LABEL_HALO,
-  NEUTRAL,
-  SELECT_RING,
-  SURFACE,
-  type Palette,
-} from "../theme";
+import { DEFAULT_COLORS, type GraphTheme, type Palette } from "../theme";
 
 export interface GraphCanvasHandle {
   fit: () => void;
@@ -76,6 +66,9 @@ interface GraphCanvasProps {
   palette?: Palette;
   colors: Map<string, string>;
   edgeColors: Map<string, string>;
+  /** The colours the marks are drawn with. Values, not a stylesheet: an
+   *  exported SVG carries its own attributes and no CSS at all. */
+  theme: GraphTheme;
   attrColumns: string[];
   selection: GraphSelection | null;
   onSelect: (next: GraphSelection | null) => void;
@@ -94,8 +87,6 @@ interface GraphCanvasProps {
   ref?: Ref<GraphCanvasHandle>;
 }
 
-const ARROW = "#5d5c55";
-
 type NodeSel = Selection<SVGCircleElement, GraphNode, SVGGElement, unknown>;
 type LinkSel = Selection<SVGPathElement, GraphLink, SVGGElement, unknown>;
 type LabelSel = Selection<SVGTextElement, GraphNode, SVGGElement, unknown>;
@@ -109,9 +100,9 @@ function escapeHtml(v: unknown): string {
 }
 
 /** Marker id matching an edge stroke color; markers are pre-defined per color. */
-function markerFor(stroke: string, arrowColors: string[]): string {
-  if (stroke === EDGE_LIT) return "url(#arrow-lit)";
-  if (stroke === NEUTRAL) return "url(#arrow-cn)";
+function markerFor(stroke: string, arrowColors: string[], theme: GraphTheme): string {
+  if (stroke === theme.edgeLit) return "url(#arrow-lit)";
+  if (stroke === theme.neutral) return "url(#arrow-cn)";
   const slot = arrowColors.indexOf(stroke);
   return slot === -1 ? "url(#arrow-dim)" : `url(#arrow-c${slot})`;
 }
@@ -127,6 +118,7 @@ export function GraphCanvas({
   palette = DEFAULT_COLORS,
   colors,
   edgeColors,
+  theme,
   attrColumns,
   selection,
   onSelect,
@@ -222,6 +214,7 @@ export function GraphCanvas({
     ambient,
     style,
     brokenImages,
+    theme,
   });
   liveRef.current = {
     layout,
@@ -240,6 +233,7 @@ export function GraphCanvas({
     ambient,
     style,
     brokenImages,
+    theme,
   };
 
   /** What color the node stands for, image or no image. */
@@ -255,8 +249,8 @@ export function GraphCanvas({
   // reader whatever the colours were encoding.
   const nodeFill = (d: GraphNode): string => imageFill(d) ?? nodeTint(d);
   const nodeStroke = (d: GraphNode): string => {
-    if (d.id === liveRef.current.selectedId) return SELECT_RING;
-    return imageFill(d) === null ? SURFACE : nodeTint(d);
+    if (d.id === liveRef.current.selectedId) return liveRef.current.theme.selectRing;
+    return imageFill(d) === null ? liveRef.current.theme.surface : nodeTint(d);
   };
   const nodeStrokeWidth = (d: GraphNode): number => {
     if (d.id === liveRef.current.selectedId) return 2.5;
@@ -265,8 +259,8 @@ export function GraphCanvas({
 
   const edgeBase = (d: GraphLink): string => {
     if (d.color !== null) return d.color;
-    if (d.colorValue === null) return EDGE;
-    return liveRef.current.edgeColors.get(d.colorValue) ?? NEUTRAL;
+    if (d.colorValue === null) return liveRef.current.theme.edge;
+    return liveRef.current.edgeColors.get(d.colorValue) ?? liveRef.current.theme.neutral;
   };
 
   const linkPath = (l: GraphLink): string => {
@@ -313,7 +307,7 @@ export function GraphCanvas({
         const lit =
           picked(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return lit ? EDGE_LIT : edgeBase(d);
+        return lit ? liveRef.current.theme.edgeLit : edgeBase(d);
       })
       .attr("stroke-width", (d) => edgeWidth(d) * (picked(d) ? 2.2 : 1))
       .attr("opacity", (d) => {
@@ -327,8 +321,18 @@ export function GraphCanvas({
         const lit =
           picked(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return markerFor(lit ? EDGE_LIT : edgeBase(d), liveRef.current.arrowColors);
+        return markerFor(
+          lit ? liveRef.current.theme.edgeLit : edgeBase(d),
+          liveRef.current.arrowColors,
+          liveRef.current.theme,
+        );
       });
+
+    // Colours as well as visibility: a theme change repaints through here,
+    // and the labels were given their fill once, when the scene was built.
+    sels.label
+      .attr("fill", liveRef.current.theme.label)
+      .attr("stroke", liveRef.current.theme.labelHalo);
 
     sels.label.attr("display", (d) => {
       if (neighbors) return neighbors.has(d.id) ? null : "none";
@@ -575,7 +579,9 @@ export function GraphCanvas({
       .attr("stroke", (d) => edgeBase(d))
       .attr("stroke-width", (d) => edgeWidth(d))
       .attr("stroke-linecap", "round")
-      .attr("marker-end", (d) => (amb || !st.arrows ? null : markerFor(edgeBase(d), arrowColors)));
+      .attr("marker-end", (d) =>
+        amb || !st.arrows ? null : markerFor(edgeBase(d), arrowColors, theme),
+      );
 
     const hit = hitLayer
       .selectAll<SVGPathElement, GraphLink>("path")
@@ -597,7 +603,7 @@ export function GraphCanvas({
         showTooltip(event, linkTooltip(d));
         link
           .filter((l) => l === d)
-          .attr("stroke", EDGE_LIT)
+          .attr("stroke", liveRef.current.theme.edgeLit)
           .attr("opacity", 1)
           .attr("marker-end", liveRef.current.style.arrows ? "url(#arrow-lit)" : null);
       })
@@ -626,8 +632,8 @@ export function GraphCanvas({
       .attr("text-anchor", "middle")
       .attr("font-size", 11)
       .attr("font-weight", 500)
-      .attr("fill", LABEL)
-      .attr("stroke", LABEL_HALO)
+      .attr("fill", liveRef.current.theme.label)
+      .attr("stroke", liveRef.current.theme.labelHalo)
       .attr("stroke-width", 3.5)
       .attr("paint-order", "stroke")
       .attr("pointer-events", "none");
@@ -749,7 +755,7 @@ export function GraphCanvas({
     computeBaseLabels();
     refreshStyles();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelMode, selection, graph, style.arrows]);
+  }, [labelMode, selection, graph, style.arrows, theme]);
 
   // A pattern that has just been dropped from the defs must stop being named
   // before anything paints, or the node it filled would come out blank. Fills
@@ -820,7 +826,7 @@ export function GraphCanvas({
       const svg = svgRef.current;
       if (!svg || nodesRef.current.length === 0) return null;
       const box = contentBounds(nodesRef.current, 70);
-      return { svgText: buildSvgDocument(svg, box), box };
+      return { svgText: buildSvgDocument(svg, box, liveRef.current.theme.surface), box };
     },
   }));
 
@@ -828,14 +834,14 @@ export function GraphCanvas({
     <div className={ambient ? "graph-canvas ambient" : "graph-canvas"} ref={containerRef}>
       <svg ref={svgRef} className="graph-svg" role="img" aria-label="Network graph">
         <defs>
-          <Arrow id="arrow-dim" fill={ARROW} />
-          <Arrow id="arrow-lit" fill={EDGE_LIT} />
-          <Arrow id="arrow-cn" fill={NEUTRAL} />
+          <Arrow id="arrow-dim" fill={theme.arrowDim} />
+          <Arrow id="arrow-lit" fill={theme.edgeLit} />
+          <Arrow id="arrow-cn" fill={theme.neutral} />
           {arrowColors.map((c, i) => (
             <Arrow key={c} id={`arrow-c${i}`} fill={c} />
           ))}
           {[...imagePatterns].map(([source, id]) => (
-            <NodeImage key={id} id={id} source={source} />
+            <NodeImage key={id} id={id} source={source} surface={theme.surface} />
           ))}
         </defs>
         <g ref={viewportRef} data-viewport="">
@@ -856,12 +862,12 @@ export function GraphCanvas({
  * centred and cropped square at whatever radius the node has, and the mark
  * stays a plain circle: still one element to hit, drag, dim and export.
  */
-function NodeImage({ id, source }: { id: string; source: string }) {
+function NodeImage({ id, source, surface }: { id: string; source: string; surface: string }) {
   return (
     <pattern id={id} width="1" height="1" patternContentUnits="objectBoundingBox">
       {/* Backdrop, so a transparent picture and one that has not arrived yet
           both read as the surface rather than as a hole in the graph. */}
-      <rect width="1" height="1" fill={SURFACE} />
+      <rect width="1" height="1" fill={surface} />
       <image href={source} width="1" height="1" preserveAspectRatio="xMidYMid slice" />
     </pattern>
   );

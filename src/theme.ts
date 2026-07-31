@@ -222,14 +222,81 @@ export function sequentialColor(t: number, ramp: string[] = SEQUENTIAL): string 
   return stops[Math.min(stops.length - 1, Math.floor(clamped * stops.length))];
 }
 
-/** Nodes with no group value, and groups folded into "Other". */
+/**
+ * Nodes with no group value, and groups folded into "Other".
+ *
+ * A mid grey on purpose: this one is not part of `GraphTheme` because it
+ * reaches the document rather than the view. `applyStyle` writes it onto a
+ * node whose `cell:` colour would not parse, and GEXF writes it into an
+ * exported file, and neither should change because someone flipped the UI to
+ * light. It reads on either surface, which is what lets it stay one value.
+ */
 export const NEUTRAL = "#898781";
 
-export const EDGE = "#45443f";
-export const EDGE_LIT = "#d8d6cc";
-export const LABEL = "#c9c7bc";
-export const LABEL_HALO = SURFACE;
-export const SELECT_RING = "#f4f3ee";
+export type ThemeMode = "light" | "dark";
+
+/**
+ * The colours the canvas draws with, which are the view's and not the
+ * document's. Marks are styled with SVG attributes rather than classes so
+ * `lib/export.ts` can serialize them faithfully, which means a theme cannot
+ * be a stylesheet: it has to be values, handed to the canvas and written onto
+ * the marks.
+ */
+export interface GraphTheme {
+  mode: ThemeMode;
+  /** Behind everything, and behind a picture that has not loaded yet. */
+  surface: string;
+  /** An edge carrying no colour of its own. */
+  edge: string;
+  /** An edge lit by a hover or a selection. */
+  edgeLit: string;
+  label: string;
+  /** Drawn under the label as a thick stroke, so text clears the graph. */
+  labelHalo: string;
+  selectRing: string;
+  /** An edge whose colour value fell outside the palette. */
+  neutral: string;
+  /** An arrowhead on an uncoloured edge, a touch brighter so the head reads. */
+  arrowDim: string;
+}
+
+const DARK: GraphTheme = {
+  mode: "dark",
+  surface: SURFACE,
+  edge: "#45443f",
+  edgeLit: "#d8d6cc",
+  label: "#c9c7bc",
+  labelHalo: SURFACE,
+  selectRing: "#f4f3ee",
+  neutral: NEUTRAL,
+  arrowDim: "#5d5c55",
+};
+
+/**
+ * The same relationships inverted. Warm rather than pure white, to match the
+ * dark theme's own warmth, and because a graph on #ffffff glares. The
+ * categorical palettes are not re-tuned: they were picked for saturation and
+ * CVD separation, and both survive the swap.
+ */
+const LIGHT: GraphTheme = {
+  mode: "light",
+  surface: "#faf9f5",
+  edge: "#c4c2b8",
+  edgeLit: "#3d3c37",
+  label: "#3d3c37",
+  labelHalo: "#faf9f5",
+  selectRing: "#1a1a19",
+  neutral: "#7d7b74",
+  arrowDim: "#a3a199",
+};
+
+export const GRAPH_THEMES: Record<ThemeMode, GraphTheme> = { dark: DARK, light: LIGHT };
+
+export const EDGE = DARK.edge;
+export const EDGE_LIT = DARK.edgeLit;
+export const LABEL = DARK.label;
+export const LABEL_HALO = DARK.labelHalo;
+export const SELECT_RING = DARK.selectRing;
 
 /** Groups past the palette's last slot get folded into "Other". */
 export const OTHER_GROUP = "Other";

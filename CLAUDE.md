@@ -1,18 +1,29 @@
 # Network Graph Viewer
 
 A client-only Vite + React 19 + TypeScript SPA that turns edge lists
-(CSV/Excel/GEXF/GraphML) into interactive network graphs. No backend; files
-are parsed in memory. Deployed to GitHub Pages by `.github/workflows/deploy.yml`
-on push to `main`.
+(CSV/Excel/Parquet/GEXF/GraphML) into interactive network graphs. No backend;
+files are parsed in memory. Deployed to GitHub Pages by
+`.github/workflows/deploy.yml` on push to `main`. The same app is also a
+Jupyter widget, packaged from `python/`.
 
 ## Commands
 
 ```sh
 pnpm dev            # dev server at /network-graph-viewer/
 pnpm build          # tsc -b && vite build (run this to type-check)
+pnpm build:widget   # the notebook bundle; commit the result (see python/)
 pnpm lint           # oxlint
 pnpm test           # vitest run
 pnpm format         # oxfmt (CI runs format:check; always format before commit)
+```
+
+In `python/`, with `uv`:
+
+```sh
+uv sync
+uv run pytest
+uv run pytest --nbmake examples/demo.ipynb
+uv run ruff check && uv run ruff format
 ```
 
 ## Architecture
@@ -75,8 +86,50 @@ way to change data is the data table, which edits the underlying rows.
   filter steps name columns by string and live outside it, so `retargetStyle`
   (doc.ts) and `retargetChain` (filter.ts) do the rest, called together from
   `App.tsx` so one act moves all three.
+- `src/lib/parse.ts` - the tabular readers. `FILE_PARSERS` is the extension
+  point: each entry claims extensions and may claim leading bytes, so an
+  unlabelled file is still recognised. SheetJS is the fallback because it reads
+  more than it is listed for. Text-shaped sources are `io/index.ts`'s half of
+  the split, sniffed from their opening characters instead.
+- `src/lib/parquet.ts` - parquet via hyparquet, read through an `AsyncBuffer`
+  so only the byte ranges a row group needs are fetched from the `File`.
+  Column types come off the schema rather than a sample, which is the whole
+  point: a zero-padded id column survives here and would not survive a guess.
+  Values are coerced because parquet holds shapes a row cannot (bigint, Date,
+  structs). Capped at `PARQUET_ROW_LIMIT`, and the shortfall is reported
+  through `Dataset.truncated` rather than passing for the whole file.
 - `src/lib/script/` - the QuickJS sandbox and the payload it receives.
-- `src/workers/compute.worker.ts` - metrics and user scripts, off the main thread.
+- `src/workers/compute.worker.ts` - metrics and user scripts, off the main
+  thread. `spawn.ts` is how it is created, imported everywhere as `#worker`:
+  the page build fetches it as a chunk, the embed build aliases the specifier
+  to `spawn.inline.ts` and carries it inside the bundle.
+- Light and dark. `index.css` holds two token sets, switched by `data-theme`
+  on the root that owns the app: `documentElement` served as a page, the shadow
+  **host** embedded. It has to be one of those two and not the app's own div,
+  because the tokens must also reach the popovers portalled out to the root.
+  Marks cannot be themed by CSS at all, since an export carries attributes and
+  no stylesheet, so `GRAPH_THEMES` in `theme.ts` holds their side and the
+  canvas takes it as a prop. `NEUTRAL` is deliberately **not** in there: it
+  reaches the document through `applyStyle` and GEXF, and the same graph
+  exported twice must not differ because someone flipped the UI.
+  `lib/hostTheme.ts` works out what the surrounding page is doing, reading
+  JupyterLab's and VS Code's attributes and otherwise measuring the background,
+  which is the only signal Colab gives.
+- `src/embed.tsx` + `src/RootContext.ts` - the app mounted inside a host. It
+  goes in a **shadow root**, which is what keeps the app's stylesheet off the
+  host's page and the app's global listeners off the host's keyboard. Anything
+  that would otherwise reach for `document` takes it from `RootContext`
+  instead, so portals land inside our styles and key presses outside our tree
+  are not ours. `App` takes an optional `embed` prop; its presence is also what
+  keeps the app off the address bar. Embedded it also opens with every panel
+  collapsed and no brand or file step, since a cell is not a window.
+- `src/widget.ts` - the anywidget entry, built by `pnpm build:widget` into
+  `python/src/network_graph_viewer/static/widget.js`. Wiring only. Nothing that
+  comes back from the browser is ever sent out again, or the two ends talk past
+  each other forever.
+- `python/` - the notebook package, installed from git. `workspace.py` builds
+  the same `.ngv.json` a dropped file would produce, so a notebook goes in
+  through the app's front door; `widget.py` is the traitlets around it.
 - `src/components/ColumnMenu.tsx` - the pencil in a column header: rename,
   duplicate, retype, delete, find and replace, fill, and the value list whose
   "rename selected" is both a facet rename and, on the id column, a merge. It
@@ -128,6 +181,25 @@ way to change data is the data table, which edits the underlying rows.
 - Vite `base` is `/network-graph-viewer/`; renaming the repo breaks Pages.
 - `xlsx` is installed from the SheetJS CDN tarball (npm version is outdated
   and vulnerable); don't switch it to the npm registry version.
+- `python/src/network_graph_viewer/static/widget.js` is **generated and
+  committed**. A git install has no JavaScript toolchain, so the file has to be
+  in the tree; CI rebuilds it and fails on a diff. Run `pnpm build:widget`
+  after changing anything the widget bundles. It is excluded from oxfmt in
+  `.prettierignore`, because reformatting it would make every build differ from
+  the committed copy.
+- `python/tests/fixtures/workspace.json` is read from both sides: Python
+  asserts it still builds that file, `src/lib/io/python.test.ts` asserts the
+  app still opens it. Neither end can see the other, so this is what catches a
+  change to the workspace schema that only one of them heard about.
+- A shadow root has no `<body>`, and `color`, `font` and `line-height` are
+  inherited: `index.css` states them on `body, :host` together or the host
+  page's own text colour crosses the boundary and lands on our panels.
+- The canvas re-joins only when `graph` changes, so anything else that changes
+  a mark's attributes has to repaint through `refreshStyles` and be named in
+  its effect's deps. The theme is one of those.
+- Anything the app hands a host has to be JSON already. A bigint or a Date
+  loose in a row breaks the widget's traitlet sync the same way it breaks the
+  workspace writer, which is why both `parquet.ts` and `workspace.py` coerce.
 - Do not type raw escape sequences like the unit separator directly into
   tool-call strings when editing; they become literal control bytes in the file.
 - XML writers must create every element with `createElementNS`, and must not

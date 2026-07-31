@@ -41,6 +41,7 @@ import {
   type ImportedGraph,
   type Position,
   type UrlSource,
+  type Workspace,
 } from "./lib/io";
 import {
   applyComputedColumns,
@@ -58,6 +59,9 @@ import { toMetricGraph, type MetricOptions } from "./lib/metrics";
 import { computeMetrics, runScriptInWorker } from "./lib/metrics/runner";
 import { interpretResult, normalizeEdgeKeys, toScriptGraph } from "./lib/script/payload";
 import type { ScriptRunRequest } from "./components/ScriptPanel";
+import { activeWithin, listen, useRootNode } from "./RootContext";
+import { GRAPH_THEMES, type ThemeMode } from "./theme";
+import { detectHostTheme, watchHostTheme, type ThemePreference } from "./lib/hostTheme";
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
@@ -110,7 +114,36 @@ function sourceKey(source: UrlSource): string {
   return source.kind === "gist" ? `gist:${source.reference}` : `data:${source.payload}`;
 }
 
-export default function App() {
+/**
+ * What a host hands the app when it is mounted inside something else rather
+ * than served as a page. Its presence is also what keeps the app off the
+ * address bar: an embedded graph has nothing to do with the URL of the page
+ * around it, so links are neither read from it nor written back to it.
+ */
+export interface EmbedProps {
+  /** The workspace to open with, in place of the empty state. */
+  initial?: Workspace;
+  /**
+   * Where this app is served from. Share links are built against it, so a
+   * link copied out of a notebook points at the app rather than at the
+   * notebook it happened to be running in.
+   */
+  appUrl?: string;
+  /**
+   * Which panels start open. Embedded the default is none of them: a notebook
+   * cell is not a window, and the graph is what the cell is for. The stage's
+   * own edge tabs put any of them back.
+   */
+  panels?: Panel[];
+  /** "auto" follows the host's own colour scheme and keeps following it. */
+  theme?: ThemePreference;
+  /** Called when the selected node changes, including when it clears. */
+  onSelect?: (node: string | null) => void;
+  /** Called after the tables are edited, so a host can read the changes back. */
+  onDocChange?: (doc: GraphDoc) => void;
+}
+
+export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   // The gist the graph on screen came from, so a save offers to update it.
   const [gistId, setGistId] = useState<string | null>(null);
@@ -134,6 +167,9 @@ export default function App() {
   const selectedId = selectedNode(selection);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   const [error, setError] = useState<string | null>(null);
+  // Something worth saying that is not a failure: so far, that a file held
+  // more rows than were read.
+  const [notice, setNotice] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Overlays the user has dismissed, so the graph can be presented or
   // screenshotted clean. Nothing underneath changes: showing them again brings
@@ -146,7 +182,11 @@ export default function App() {
   // Panels are only ever hidden with CSS, never unmounted, so a collapse does
   // not throw away a half-written script, an unsaved gist token, or the search
   // and grouping set up over the table.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<Panel>>(() => new Set<Panel>());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<Panel>>(() => {
+    if (!embed) return new Set<Panel>();
+    const open = new Set(embed.panels ?? []);
+    return new Set(PANELS.filter((p) => !open.has(p)));
+  });
   const sidebar = usePanelSize(SIDEBAR_SIZE);
   const drawer = usePanelSize(DRAWER_SIZE);
   const stats = usePanelSize(STATS_SIZE);
@@ -186,11 +226,48 @@ export default function App() {
   const urlSourceRef = useRef<string | null>(null);
 
   /** Point the address bar somewhere without reloading, and remember where. */
-  const rewriteUrl = useCallback((href: string) => {
-    const source = readUrlSource(href);
-    urlSourceRef.current = source === null ? null : sourceKey(source);
-    window.history.replaceState(null, "", href);
-  }, []);
+  // Served as a page this is the document; embedded it is the shadow root the
+  // host handed over, so keys pressed in a notebook cell are not ours.
+  const root = useRootNode();
+  const embedded = embed !== undefined;
+
+  /**
+   * Colour scheme. A page defaults to the dark it has always been; embedded it
+   * defaults to following whatever the notebook is doing, since a dark widget
+   * sitting in a light notebook looks like a bug rather than a choice.
+   */
+  const [themePref, setThemePref] = useState<ThemePreference>(
+    () => embed?.theme ?? (embed ? "auto" : "dark"),
+  );
+  const [hostTheme, setHostTheme] = useState<ThemeMode>(() => detectHostTheme());
+  const themeRoot = root instanceof Document ? root.documentElement : (root.host as HTMLElement);
+
+  // Only worth watching while we are actually following it.
+  useEffect(() => {
+    if (themePref !== "auto") return;
+    const reread = () => setHostTheme(detectHostTheme(themeRoot));
+    reread();
+    return watchHostTheme(reread);
+  }, [themePref, themeRoot]);
+
+  const themeMode: ThemeMode = themePref === "auto" ? hostTheme : themePref;
+  const graphTheme = GRAPH_THEMES[themeMode];
+
+  // The tokens hang off the root rather than off the app's own div, because
+  // they have to reach the popovers portalled out of it.
+  useEffect(() => {
+    themeRoot.setAttribute("data-theme", themeMode);
+    return () => themeRoot.removeAttribute("data-theme");
+  }, [themeRoot, themeMode]);
+  const rewriteUrl = useCallback(
+    (href: string) => {
+      const source = readUrlSource(href);
+      urlSourceRef.current = source === null ? null : sourceKey(source);
+      // Embedded, the address bar belongs to the page around us.
+      if (!embedded) window.history.replaceState(null, "", href);
+    },
+    [embedded],
+  );
 
   /**
    * Data has arrived from somewhere other than the link in the address bar, so
@@ -210,6 +287,7 @@ export default function App() {
       setShowIsolated(next.nodesDeclared);
       setSelection(null);
       setError(null);
+      setNotice(null);
     },
     [resetDoc],
   );
@@ -235,6 +313,7 @@ export default function App() {
       }
       setSelection(null);
       setError(null);
+      setNotice(null);
     },
     [resetDoc],
   );
@@ -249,6 +328,11 @@ export default function App() {
       setEdgeTableIndex(0);
       setNodeTableIndex(nodeIndex);
       adoptDoc(nextDoc, { ...guessStyle(edges, nextDoc.mapping), ...options.style });
+      setNotice(
+        next.truncated
+          ? `Read the first ${next.truncated.read.toLocaleString()} of ${next.truncated.total.toLocaleString()} rows.`
+          : null,
+      );
     },
     [adoptDoc],
   );
@@ -310,9 +394,8 @@ export default function App() {
         void handleFile(file);
       }
     };
-    document.addEventListener("paste", onPaste);
-    return () => document.removeEventListener("paste", onPaste);
-  }, [adoptDataset, adoptImported, handleFile, forgetUrlSource]);
+    return listen(root, "paste", onPaste);
+  }, [adoptDataset, adoptImported, handleFile, forgetUrlSource, root]);
 
   const setOverlayVisible = useCallback((key: Overlay, visible: boolean) => {
     setHiddenOverlays((current) => {
@@ -426,9 +509,9 @@ export default function App() {
         showEverything();
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    return listen(root, "keydown", onKeyDown);
   }, [
+    root,
     anythingHidden,
     panelsHidden,
     hideEverything,
@@ -506,19 +589,34 @@ export default function App() {
     [adoptDataset, adoptImported, handleGist],
   );
 
-  // A link with a graph in it opens straight into that graph.
+  // A link with a graph in it opens straight into that graph. Embedded, the
+  // graph comes from the host instead, and the surrounding page's own URL is
+  // none of our business.
   const urlConsumed = useRef(false);
   useEffect(() => {
     if (urlConsumed.current) return;
     urlConsumed.current = true;
+    if (embed) {
+      const initial = embed.initial;
+      if (initial) {
+        const positions = new Map(Object.entries(initial.positions ?? {}));
+        adoptImported({
+          doc: initial.doc,
+          positions: positions.size > 0 ? positions : undefined,
+          workspace: initial,
+        });
+      }
+      return;
+    }
     const source = readUrlSource();
     if (source) void handleUrlSource(source);
-  }, [handleUrlSource]);
+  }, [handleUrlSource, embed, adoptImported]);
 
   // Pasting a link into the address bar of a tab that is already open changes
   // only the fragment, which never reloads the page; without this it would do
   // nothing at all.
   useEffect(() => {
+    if (embedded) return;
     const onHashChange = () => {
       const source = readUrlSource();
       if (source === null || sourceKey(source) === urlSourceRef.current) return;
@@ -526,7 +624,25 @@ export default function App() {
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, [handleUrlSource]);
+  }, [handleUrlSource, embedded]);
+
+  /**
+   * Report back to an embedding host. The selection goes out the moment it
+   * changes, which costs nothing; the document waits for a pause first,
+   * because it carries every row and a host on the far end of a message
+   * channel should not be sent one of those per keystroke.
+   */
+  const onSelect = embed?.onSelect;
+  useEffect(() => {
+    onSelect?.(selectedId);
+  }, [selectedId, onSelect]);
+
+  const onDocChange = embed?.onDocChange;
+  useEffect(() => {
+    if (!onDocChange || !doc) return;
+    const timer = setTimeout(() => onDocChange(doc), 250);
+    return () => clearTimeout(timer);
+  }, [doc, onDocChange]);
 
   const handleClear = useCallback(() => {
     forgetUrlSource();
@@ -783,8 +899,8 @@ export default function App() {
   const buildLink = useCallback(async () => {
     const input = exportInput();
     if (!input) return null;
-    return writeDataLink(input);
-  }, [exportInput]);
+    return writeDataLink(input, embed?.appUrl);
+  }, [exportInput, embed?.appUrl]);
 
   /** A gist just written is now where this graph lives; say so in the address bar. */
   const handleGistSaved = useCallback(
@@ -842,8 +958,11 @@ export default function App() {
   const colorColumn = styleColumn(style.nodeColor);
   const showLegend = graph !== null && hasLegend(graph);
 
+  // The sidebar owns the one file input; the empty state's dropzone borrows it.
+  // Scoped to our own tree, or embedded it would find the host page's inputs.
+  const appRef = useRef<HTMLDivElement>(null);
   const pickAnyFile = () => {
-    document.querySelector<HTMLInputElement>("input[type=file]")?.click();
+    appRef.current?.querySelector<HTMLInputElement>("input[type=file]")?.click();
   };
 
   const sidebarCollapsed = collapsed.has("sidebar");
@@ -854,6 +973,14 @@ export default function App() {
 
   return (
     <div
+      ref={appRef}
+      // Focusable so the keyboard shortcuts have somewhere to arrive.
+      // Embedded, a click on the graph is the only thing that tells the host
+      // the keys are ours now.
+      tabIndex={-1}
+      onPointerDown={() => {
+        if (appRef.current && !appRef.current.contains(activeWithin(root))) appRef.current.focus();
+      }}
       className={`app${sidebarCollapsed ? " app-sidebar-collapsed" : ""}${
         tableCollapsed ? " app-table-collapsed" : ""
       }${statsCollapsed ? " app-stats-collapsed" : ""}`}
@@ -911,6 +1038,8 @@ export default function App() {
         onGistSaved={handleGistSaved}
         gistId={gistId}
         buildLink={buildLink}
+        appUrl={embed?.appUrl}
+        embedded={embedded}
         exportInput={exportInput}
       />
 
@@ -926,7 +1055,10 @@ export default function App() {
         title={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
         aria-label={sidebarCollapsed ? "Show the sidebar" : "Hide the sidebar"}
       >
-        <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
+        <span className="panel-toggle-arrow" aria-hidden="true">
+          {sidebarCollapsed ? "›" : "‹"}
+        </span>
+        {sidebarCollapsed && <span className="panel-toggle-label">Data</span>}
       </button>
 
       {/* The same control on the data pane's edge, turned a quarter turn. */}
@@ -939,7 +1071,10 @@ export default function App() {
           title={tableCollapsed ? "Show the data table" : "Hide the data table"}
           aria-label={tableCollapsed ? "Show the data table" : "Hide the data table"}
         >
-          <span aria-hidden="true">{tableCollapsed ? "‹" : "›"}</span>
+          <span className="panel-toggle-arrow" aria-hidden="true">
+            {tableCollapsed ? "‹" : "›"}
+          </span>
+          {tableCollapsed && <span className="panel-toggle-label">Table</span>}
         </button>
       )}
 
@@ -953,7 +1088,10 @@ export default function App() {
           title={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
           aria-label={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
         >
-          <span aria-hidden="true">{statsCollapsed ? "‹" : "›"}</span>
+          <span className="panel-toggle-arrow" aria-hidden="true">
+            {statsCollapsed ? "‹" : "›"}
+          </span>
+          {statsCollapsed && <span className="panel-toggle-label">Stats</span>}
         </button>
       )}
 
@@ -972,6 +1110,7 @@ export default function App() {
                 style={style}
                 palette={palette}
                 colors={colors}
+                theme={graphTheme}
                 edgeColors={edgeColors}
                 attrColumns={doc.mapping.attrs}
                 selection={selection}
@@ -1018,6 +1157,8 @@ export default function App() {
                     hidden={hiddenOverlays}
                     collapsed={collapsed}
                     legendAvailable={showLegend}
+                    theme={themePref}
+                    onThemeChange={setThemePref}
                     corner={toolbarCorner}
                     onSetOverlayVisible={setOverlayVisible}
                     onSetPanelOpen={setPanelOpen}
@@ -1069,6 +1210,7 @@ export default function App() {
                 labelMode="none"
                 style={AMBIENT_STYLE}
                 colors={AMBIENT_COLORS}
+                theme={graphTheme}
                 edgeColors={new Map()}
                 attrColumns={[]}
                 selection={null}
@@ -1128,7 +1270,7 @@ export default function App() {
                   </p>
                   <button type="button" className="dropzone" onClick={pickAnyFile}>
                     <strong>Drop a file here or click to browse</strong>
-                    <span className="hint">.csv · .xlsx · .xls · .ods</span>
+                    <span className="hint">.csv · .xlsx · .parquet · .gexf · .graphml</span>
                   </button>
                   <p className="example-caption">
                     Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
@@ -1146,12 +1288,24 @@ export default function App() {
               </div>
             </>
           )}
-          {error && (
-            <div className="error-toast" role="alert">
-              <span>{error}</span>
-              <button type="button" onClick={() => setError(null)} aria-label="Dismiss error">
-                ×
-              </button>
+          {(error || notice) && (
+            <div className="toast-stack">
+              {error && (
+                <div className="toast error" role="alert">
+                  <span>{error}</span>
+                  <button type="button" onClick={() => setError(null)} aria-label="Dismiss error">
+                    ×
+                  </button>
+                </div>
+              )}
+              {notice && (
+                <div className="toast" role="status">
+                  <span>{notice}</span>
+                  <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notice">
+                    ×
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {dragOver && <div className="drop-veil">Drop to load</div>}

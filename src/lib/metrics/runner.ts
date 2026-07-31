@@ -1,4 +1,5 @@
 import type { WorkerRequest, WorkerResponse } from "../../workers/compute.worker";
+import { spawnComputeWorker } from "#worker";
 import { runMetrics, type MetricGraph, type MetricOptions, type MetricRunResult } from "./index";
 
 export interface MetricRun {
@@ -26,9 +27,7 @@ const pending = new Map<number, Pending>();
 function ensureWorker(): Worker | null {
   if (worker || workerUnavailable) return worker;
   try {
-    worker = new Worker(new URL("../../workers/compute.worker.ts", import.meta.url), {
-      type: "module",
-    });
+    worker = spawnComputeWorker();
     worker.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
       const message = event.data;
       const entry = pending.get(message.id);

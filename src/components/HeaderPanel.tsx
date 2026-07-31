@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { HeaderAnchor, HeaderPopover } from "../useHeaderPopover";
+import { listen, usePortalTarget, useRootNode } from "../RootContext";
 
 interface HeaderPanelProps {
   popover: HeaderPopover;
@@ -31,6 +32,8 @@ function Panel({
   children,
 }: HeaderPanelProps & { anchor: HeaderAnchor }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const root = useRootNode();
+  const portalTarget = usePortalTarget();
 
   useEffect(() => {
     const dismiss = (e: Event) => {
@@ -42,21 +45,21 @@ function Panel({
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", onKeyDown);
+    const offPointer = listen(root, "pointerdown", dismiss);
+    const offKey = listen(root, "keydown", onKeyDown);
     // Capturing, so scrolling the table itself counts and the panel keeps up
     // with the header it belongs to rather than being left behind by it.
     window.addEventListener("scroll", reanchor, true);
     window.addEventListener("resize", reanchor);
     return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", onKeyDown);
+      offPointer();
+      offKey();
       window.removeEventListener("scroll", reanchor, true);
       window.removeEventListener("resize", reanchor);
     };
-  }, [buttonRef, close, reanchor]);
+  }, [buttonRef, close, reanchor, root]);
 
-  // Hung off the body rather than the header cell: the sticky header carries a
+  // Hung off the root rather than the header cell: the sticky header carries a
   // stacking context of its own, and inside it no z-index can lift the panel
   // over the buttons that ride the edges of the pane.
   return createPortal(
@@ -67,6 +70,6 @@ function Panel({
     >
       {children}
     </div>,
-    document.body,
+    portalTarget,
   );
 }

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@jitl/quickjs-singlefile-browser-release-sync':
+        specifier: ^0.32.0
+        version: 0.32.0
       '@jitl/quickjs-wasmfile-release-sync':
         specifier: ^0.32.0
         version: 0.32.0
@@ -35,6 +38,12 @@ importers:
       d3-zoom:
         specifier: ^3.0.0
         version: 3.0.0
+      hyparquet:
+        specifier: ^1.26.2
+        version: 1.26.2
+      hyparquet-compressors:
+        specifier: ^1.1.1
+        version: 1.1.1
       quickjs-emscripten-core:
         specifier: ^0.32.0
         version: 0.32.0
@@ -78,6 +87,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.0.3
         version: 6.0.3(vite@8.1.5(@types/node@24.13.3))
+      hyparquet-writer:
+        specifier: ^0.16.1
+        version: 0.16.1
       jsdom:
         specifier: ^30.0.0
         version: 30.0.0
@@ -167,6 +179,9 @@ packages:
 
   '@jitl/quickjs-ffi-types@0.32.0':
     resolution: {integrity: sha512-v9T+GQpmk43VDJ7d72sf0Nexhk+ArvtUihW27dy7lqAl0zBObFKtSBBIm5RBjwIhE8VwsPPm9PNuvPvNqLWUEg==}
+
+  '@jitl/quickjs-singlefile-browser-release-sync@0.32.0':
+    resolution: {integrity: sha512-Hfdl7rh8dzxNWFRiYAYNbhn0RMF1/tO6SMH2mUW0aTibqwaAtqPRbi4WkwaIDlhNz8Z4dksJi1Zjl1R54Jsc/Q==}
 
   '@jitl/quickjs-wasmfile-release-sync@0.32.0':
     resolution: {integrity: sha512-BKNDI/TPBfGlLNGYpLrhcDGXmIk4xHm4MRAisOBnOzpXVn9HZWsfmMAc9WMBrAHjvvds6HOikKeaOBKdPdpVrg==}
@@ -743,9 +758,27 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  fzstd@0.1.1:
+    resolution: {integrity: sha512-dkuVSOKKwh3eas5VkJy1AW1vFpet8TA/fGmVA5krThl8YcOVE/8ZIoEA1+U1vEn5ckxxhLirSdY837azmbaNHA==}
+
   html-encoding-sniffer@6.0.0:
     resolution: {integrity: sha512-CV9TW3Y3f8/wT0BRFc1/KAVQ3TUHiXmaAb6VW9vtiMFf7SLoMd1PdAc4W3KFOFETBJUb90KatHqlsZMWV+R9Gg==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
+
+  hyparquet-compressors@1.1.1:
+    resolution: {integrity: sha512-yx7aA3Rhj0YycbdV71+XznQSLAefa4cT0urpgNXy4aM6eSeCknaVDNne8y45Uz74Fb15yyXUzOStlceOJBan7A==}
+
+  hyparquet-writer@0.16.1:
+    resolution: {integrity: sha512-vb87T2ub06kbEKZOQoHTbVwN0kXQPM5mnMuyTNqQPsOzf85qYBzyFG6R83CnXNhrlncdpRtXeKrbF3ZoLj26pg==}
+
+  hyparquet@1.26.1:
+    resolution: {integrity: sha512-Me2psKksCqJGR8+TbalUYUyK4Ao+ReA6XmMSiOVPhOBswULbl3ojT06PQajyTafbNPW1vD0tCA7H6dXJAC1TPw==}
+
+  hyparquet@1.26.2:
+    resolution: {integrity: sha512-6qjyK7R2tZ4vnYP1J8NpcCeDPK1UIYk3xh5XgtQUnUM1iwkYbvI6Mz3xtmpMd6AfCCeoUoJVbEq29k5GReZRWA==}
+
+  hysnappy@1.0.0:
+    resolution: {integrity: sha512-MNrC4NfwDGPb889O6gIfEtbvEZCSWUsSEhsz4Oq2FRcpGtXHfeVz3KciSPp5Pnnz1NjFMgDQNfxdJozymJEDDA==}
 
   is-potential-custom-element-name@1.0.1:
     resolution: {integrity: sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==}
@@ -1179,6 +1212,10 @@ snapshots:
 
   '@jitl/quickjs-ffi-types@0.32.0': {}
 
+  '@jitl/quickjs-singlefile-browser-release-sync@0.32.0':
+    dependencies:
+      '@jitl/quickjs-ffi-types': 0.32.0
+
   '@jitl/quickjs-wasmfile-release-sync@0.32.0':
     dependencies:
       '@jitl/quickjs-ffi-types': 0.32.0
@@ -1563,11 +1600,28 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
+  fzstd@0.1.1: {}
+
   html-encoding-sniffer@6.0.0:
     dependencies:
       '@exodus/bytes': 1.15.1
     transitivePeerDependencies:
       - '@noble/hashes'
+
+  hyparquet-compressors@1.1.1:
+    dependencies:
+      fzstd: 0.1.1
+      hysnappy: 1.0.0
+
+  hyparquet-writer@0.16.1:
+    dependencies:
+      hyparquet: 1.26.1
+
+  hyparquet@1.26.1: {}
+
+  hyparquet@1.26.2: {}
+
+  hysnappy@1.0.0: {}
 
   is-potential-custom-element-name@1.0.1: {}
 

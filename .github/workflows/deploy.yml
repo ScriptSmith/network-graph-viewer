@@ -29,13 +29,38 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test
       - run: pnpm build
+      # The widget bundle is committed, because a git install of the Python
+      # package has no way to build it. Rebuilding here and finding a diff
+      # means the app changed and `pnpm build:widget` was not run.
+      - run: pnpm build:widget
+      - name: The committed widget bundle is current
+        run: git diff --exit-code python/src/network_graph_viewer/static/widget.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run pytest
+      # The notebook is documentation that has to keep working, so CI runs it
+      # rather than only reading it.
+      - run: uv run pytest --nbmake examples/demo.ipynb
+
   deploy:
-    needs: build
+    needs: [build, python]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

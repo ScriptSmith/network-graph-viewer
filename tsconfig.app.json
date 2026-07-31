@@ -10,6 +10,9 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    /* The page build's worker. The embed build aliases this to the inlining
+       variant; see src/workers/spawn.ts. */
+    "paths": { "#worker": ["./src/workers/spawn.ts"] },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

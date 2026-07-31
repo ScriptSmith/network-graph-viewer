@@ -20,6 +20,11 @@ interface SharePanelProps {
   /** The gist this graph came from, if any, so saving offers to update it. */
   loadedGistId: string | null;
   onSaved: (id: string) => void;
+  /**
+   * Where the app is served from. Only set when embedded, where the page's own
+   * address is somebody else's and a link built from it would go nowhere.
+   */
+  appUrl?: string;
 }
 
 /**
@@ -33,6 +38,7 @@ export function SharePanel({
   description,
   loadedGistId,
   onSaved,
+  appUrl,
 }: SharePanelProps) {
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -196,12 +202,12 @@ export function SharePanel({
         </button>
         {savedId && savedUrl && !error && (
           <p className="note">
-            Saved, and the address bar now points at it.{" "}
+            {appUrl ? "Saved." : "Saved, and the address bar now points at it."}{" "}
             <a href={savedUrl} target="_blank" rel="noreferrer">
               Open on GitHub
             </a>{" "}
             or share{" "}
-            <a href={gistLink(savedId)} target="_blank" rel="noreferrer">
+            <a href={gistLink(savedId, appUrl)} target="_blank" rel="noreferrer">
               this link
             </a>
             .

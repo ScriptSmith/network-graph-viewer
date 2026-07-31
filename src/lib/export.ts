@@ -1,4 +1,4 @@
-import { GRAPH_FONT, SURFACE } from "../theme";
+import { GRAPH_FONT } from "../theme";
 import type { GraphNode } from "../types";
 
 export interface ExportBox {
@@ -33,9 +33,10 @@ export function contentBounds(nodes: GraphNode[], pad = 70): ExportBox {
 /**
  * Serialize the live graph SVG as a standalone document. Marks are styled
  * with attributes rather than CSS classes, so a clone plus a background
- * rect is a faithful copy.
+ * rect is a faithful copy. The surface is passed rather than read from the
+ * theme module, since which one is in force is the canvas's to know.
  */
-export function buildSvgDocument(svg: SVGSVGElement, box: ExportBox): string {
+export function buildSvgDocument(svg: SVGSVGElement, box: ExportBox, surface: string): string {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   clone.setAttribute("width", String(Math.round(box.width)));
@@ -55,7 +56,7 @@ export function buildSvgDocument(svg: SVGSVGElement, box: ExportBox): string {
   background.setAttribute("y", String(box.y));
   background.setAttribute("width", String(box.width));
   background.setAttribute("height", String(box.height));
-  background.setAttribute("fill", SURFACE);
+  background.setAttribute("fill", surface);
   clone.insertBefore(background, clone.firstChild);
 
   return new XMLSerializer().serializeToString(clone);

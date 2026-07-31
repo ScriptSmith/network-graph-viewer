@@ -1,0 +1,5 @@
+# Read by oxfmt. The Python package is formatted by ruff, and the widget
+# bundle inside it is generated: reformatting it would make every build differ
+# from the committed copy that CI checks.
+python/
+dist/

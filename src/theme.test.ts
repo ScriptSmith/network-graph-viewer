@@ -1,6 +1,9 @@
 import { expect, test } from "vitest";
 import {
   CATEGORICAL,
+  GRAPH_THEMES,
+  NEUTRAL,
+  type GraphTheme,
   CUSTOM,
   DEFAULT_PALETTE,
   DEFAULT_RAMP,
@@ -111,4 +114,24 @@ test("a ranking steps along whichever ramp is in force", () => {
   expect(sequentialColor(2, ramp)).toBe("#ffffff");
   expect(sequentialColor(1, ramp)).toBe("#ffffff");
   expect(sequentialColor(0.5)).toBe(SEQUENTIAL[3]);
+});
+
+test("both graph themes answer for every mark, and none of it is shared", () => {
+  const { light, dark } = GRAPH_THEMES;
+  const keys = Object.keys(dark).filter((k) => k !== "mode") as (keyof GraphTheme)[];
+
+  for (const key of keys) {
+    expect(typeof dark[key]).toBe("string");
+    // A colour the same in both is a colour that was never themed. `neutral`
+    // is allowed to differ but must not be the model-level NEUTRAL in light,
+    // which is checked below.
+    expect(light[key]).not.toBe(dark[key]);
+  }
+});
+
+test("the model's neutral is not part of the theme, so an export cannot drift", () => {
+  // `applyStyle` writes NEUTRAL onto nodes and GEXF writes it into files. If it
+  // followed the UI theme, the same graph exported twice would differ.
+  expect(NEUTRAL).toBe("#898781");
+  expect(GRAPH_THEMES.dark.neutral).toBe(NEUTRAL);
 });

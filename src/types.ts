@@ -24,6 +24,12 @@ export interface Table {
 export interface Dataset {
   fileName: string;
   tables: Table[];
+  /**
+   * Set when the file held more rows than were read. Formats that routinely
+   * carry millions of rows are capped, and the gap is reported rather than
+   * left to look like the whole file.
+   */
+  truncated?: { read: number; total: number };
 }
 
 export interface Mapping {

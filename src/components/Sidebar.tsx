@@ -15,7 +15,7 @@ import { colorCellColumns, edgeStyleColumns, nodeStyleColumns } from "../lib/doc
 import { CELL_RADIUS, CELL_WIDTH } from "../lib/graph";
 import type { MetricOptions } from "../lib/metrics";
 import type { MetricRun } from "../lib/metrics/runner";
-import { exportAs, type ExportFormat, type ExportInput } from "../lib/io";
+import { exportAs, TEXT_EXTENSIONS, type ExportFormat, type ExportInput } from "../lib/io";
 import { ComputePanel } from "./ComputePanel";
 import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
 import { GistLoad } from "./GistLoad";
@@ -63,10 +63,19 @@ interface SidebarProps {
   onGistSaved: (id: string) => void;
   gistId: string | null;
   buildLink: () => Promise<string | null>;
+  /** Set only when embedded, where links must name the app and not the host page. */
+  appUrl?: string;
+  /** Inside a host, which drops the product title and the file-loading step. */
+  embedded?: boolean;
   exportInput: () => ExportInput | null;
 }
 
-const ACCEPT = ACCEPTED_EXTENSIONS.join(",");
+// The browse dialog offers everything `handleFile` can open, tabular and
+// graph formats alike, so the picker is not narrower than a drop would be.
+const ACCEPT = Array.from(new Set([...ACCEPTED_EXTENSIONS, ...TEXT_EXTENSIONS])).join(",");
+
+/** In the order they appear. Embedded, "data" is dropped and the rest shuffle up. */
+const STEPS = ["data", "columns", "filter", "style", "layout", "compute", "export"] as const;
 
 const COLOR_CELL_NOTE =
   "Cells are painted as they read: #b7410e, #b41, rgb(183, 65, 14) or a color name. " +
@@ -110,6 +119,8 @@ export function Sidebar({
   onGistSaved,
   gistId,
   buildLink,
+  appUrl,
+  embedded = false,
   exportInput,
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,17 +163,24 @@ export function Sidebar({
 
   const activeFilterCount = chain.filter((s) => s.enabled).length;
   const multiTable = (dataset?.tables.length ?? 0) > 1;
+  // Embedded, the data came from the kernel: there is no file to choose,
+  // and a product title inside somebody's notebook is just noise.
+  const steps = embedded ? STEPS.filter((k) => k !== "data") : STEPS;
+  const stepNo = (key: (typeof STEPS)[number]) =>
+    (steps as readonly (typeof STEPS)[number][]).indexOf(key) + 1;
 
   return (
-    <aside className="sidebar">
-      <header className="brand">
-        <h1>
-          Network
-          <br />
-          Graph Viewer
-        </h1>
-        <p className="tagline">Data in, network out.</p>
-      </header>
+    <aside className={embedded ? "sidebar sidebar-embedded" : "sidebar"}>
+      {!embedded && (
+        <header className="brand">
+          <h1>
+            Network
+            <br />
+            Graph Viewer
+          </h1>
+          <p className="tagline">Data in, network out.</p>
+        </header>
+      )}
 
       <input
         ref={fileInputRef}
@@ -173,90 +191,92 @@ export function Sidebar({
         aria-label="Upload a spreadsheet"
       />
 
-      <section className="step">
-        <h2 className="step-head">
-          <span className="step-no">1</span> Data
-        </h2>
-        <div className="step-body">
-          {dataset && doc ? (
-            <>
-              <div className="file-chip" title={dataset.fileName}>
-                <span className="file-name">{dataset.fileName}</span>
-                <span className="file-meta">
-                  {doc.edges.rows.length} rows · {doc.edges.columns.length} columns
-                </span>
-              </div>
-              {multiTable && (
-                <>
-                  <label className="field">
-                    <span className="field-label">Edge sheet</span>
-                    <select
-                      className="control"
-                      value={edgeTableIndex}
-                      onChange={(e) => onTableChange(Number(e.target.value), nodeTableIndex)}
-                    >
-                      {dataset.tables.map((t, i) => (
-                        <option key={t.name} value={i}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span className="field-label">Node attributes sheet</span>
-                    <select
-                      className="control"
-                      value={nodeTableIndex ?? ""}
-                      onChange={(e) =>
-                        onTableChange(
-                          edgeTableIndex,
-                          e.target.value === "" ? null : Number(e.target.value),
-                        )
-                      }
-                    >
-                      <option value="">None (derive from edges)</option>
-                      {dataset.tables.map((t, i) =>
-                        i === edgeTableIndex ? null : (
+      {!embedded && (
+        <section className="step">
+          <h2 className="step-head">
+            <span className="step-no">{stepNo("data")}</span> Data
+          </h2>
+          <div className="step-body">
+            {dataset && doc ? (
+              <>
+                <div className="file-chip" title={dataset.fileName}>
+                  <span className="file-name">{dataset.fileName}</span>
+                  <span className="file-meta">
+                    {doc.edges.rows.length} rows · {doc.edges.columns.length} columns
+                  </span>
+                </div>
+                {multiTable && (
+                  <>
+                    <label className="field">
+                      <span className="field-label">Edge sheet</span>
+                      <select
+                        className="control"
+                        value={edgeTableIndex}
+                        onChange={(e) => onTableChange(Number(e.target.value), nodeTableIndex)}
+                      >
+                        {dataset.tables.map((t, i) => (
                           <option key={t.name} value={i}>
                             {t.name}
                           </option>
-                        ),
-                      )}
-                    </select>
-                  </label>
-                </>
-              )}
-              <div className="btn-row">
-                <button type="button" className="btn" onClick={pickFile}>
-                  Replace file
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span className="field-label">Node attributes sheet</span>
+                      <select
+                        className="control"
+                        value={nodeTableIndex ?? ""}
+                        onChange={(e) =>
+                          onTableChange(
+                            edgeTableIndex,
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                      >
+                        <option value="">None (derive from edges)</option>
+                        {dataset.tables.map((t, i) =>
+                          i === edgeTableIndex ? null : (
+                            <option key={t.name} value={i}>
+                              {t.name}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                  </>
+                )}
+                <div className="btn-row">
+                  <button type="button" className="btn" onClick={pickFile}>
+                    Replace file
+                  </button>
+                  <button type="button" className="btn btn-quiet" onClick={onClear}>
+                    Clear
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button type="button" className="mini-drop" onClick={pickFile}>
+                  <strong>Choose a file</strong>
+                  <span>or drop a file or paste cells anywhere on the page</span>
                 </button>
-                <button type="button" className="btn btn-quiet" onClick={onClear}>
-                  Clear
+                <button type="button" className="btn" onClick={() => onSample(SAMPLES[0])}>
+                  Load sample dataset
                 </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <button type="button" className="mini-drop" onClick={pickFile}>
-                <strong>Choose a file</strong>
-                <span>or drop a file or paste cells anywhere on the page</span>
-              </button>
-              <button type="button" className="btn" onClick={() => onSample(SAMPLES[0])}>
-                Load sample dataset
-              </button>
-              <div className="field">
-                <span className="field-label">Other samples</span>
-                <SampleList onPick={onSample} />
-              </div>
-            </>
-          )}
-          <GistLoad onLoad={onGist} />
-        </div>
-      </section>
+                <div className="field">
+                  <span className="field-label">Other samples</span>
+                  <SampleList onPick={onSample} />
+                </div>
+              </>
+            )}
+            <GistLoad onLoad={onGist} />
+          </div>
+        </section>
+      )}
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">2</span> Columns
+          <span className="step-no">{stepNo("columns")}</span> Columns
         </h2>
         <div className="step-body">
           {doc ? (
@@ -343,7 +363,7 @@ export function Sidebar({
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">3</span> Filter
+          <span className="step-no">{stepNo("filter")}</span> Filter
           {activeFilterCount > 0 && <span className="step-badge">{activeFilterCount}</span>}
         </h2>
         <div className="step-body">
@@ -363,7 +383,7 @@ export function Sidebar({
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">4</span> Style
+          <span className="step-no">{stepNo("style")}</span> Style
         </h2>
         <div className="step-body">
           {doc ? (
@@ -550,7 +570,7 @@ export function Sidebar({
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">5</span> Layout
+          <span className="step-no">{stepNo("layout")}</span> Layout
         </h2>
         <div className="step-body">
           <div className="radio-list" role="radiogroup" aria-label="Layout algorithm">
@@ -658,7 +678,7 @@ export function Sidebar({
 
       <section className={doc ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">6</span> Compute
+          <span className="step-no">{stepNo("compute")}</span> Compute
         </h2>
         <div className="step-body">
           {doc && graph ? (
@@ -684,7 +704,7 @@ export function Sidebar({
 
       <section className={graph ? "step" : "step step-disabled"}>
         <h2 className="step-head">
-          <span className="step-no">7</span> Export
+          <span className="step-no">{stepNo("export")}</span> Export
         </h2>
         <div className="step-body">
           <div className="btn-row">
@@ -747,12 +767,13 @@ export function Sidebar({
             description={doc ? `${doc.name} — Network Graph Viewer` : "Network Graph Viewer"}
             loadedGistId={gistId}
             onSaved={onGistSaved}
+            appUrl={appUrl}
           />
         </div>
       </section>
 
       <footer className="sidebar-footer">
-        <p>Files are parsed in your browser and never uploaded.</p>
+        {!embedded && <p>Files are parsed in your browser and never uploaded.</p>}
         <a
           href="https://github.com/ScriptSmith/network-graph-viewer"
           target="_blank"

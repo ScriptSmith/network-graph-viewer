@@ -1,7 +1,10 @@
 /* Warm-dark instrument panel. Graph marks are styled with SVG attributes
    in theme.ts so exports match the screen; this file styles the chrome. */
 
-:root {
+/* `:host` as well as `:root`, because embedded the app lives in a shadow root
+   and a custom property declared on the page's document would never reach it. */
+:root,
+:host {
   --page: #111110;
   --surface: #1a1a19;
   --panel: #161615;
@@ -13,12 +16,62 @@
   --hairline: rgba(255, 255, 255, 0.09);
   --hairline-strong: rgba(255, 255, 255, 0.16);
   --accent: #3987e5;
+  --accent-hover: #4f96ea;
+  /* Text on an accent-filled button, which is the one place the ink inverts. */
+  --on-accent: #0b0b0b;
   --danger: #e66767;
+  --danger-bg: #2b1b1b;
+  --danger-ink: #f4d9d9;
+  --warn: #ec9a5a;
+  /* Floating things: a menu over the panels, a card over the graph. Slightly
+     translucent, so what they cover is still legible underneath. */
+  --overlay: #232321f2;
+  --overlay-strong: #161615ee;
+  --scrim: #1a1a19d9;
+  --shadow: rgba(0, 0, 0, 0.45);
+  /* The dot grid behind the graph. */
+  --dot: rgba(255, 255, 255, 0.045);
   --radius: 10px;
   --font-display: "Bricolage Grotesque", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
   --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: dark;
+}
+
+/* The same relationships inverted, applied by `data-theme` on whichever
+   element roots the app: the document served as a page, the shadow host
+   embedded. It has to be one of those two rather than the app's own div,
+   because custom properties have to reach the popovers portalled out of it.
+   Warm rather than pure white, to match the dark theme's warmth. Graph marks
+   are not styled here, since they have to survive being exported on their
+   own; `theme.ts` holds their side of this. */
+:root[data-theme="light"],
+:host([data-theme="light"]) {
+  --page: #f2f1ec;
+  --surface: #faf9f5;
+  --panel: #f7f6f1;
+  --raised: #e9e8e1;
+  --raised-2: rgba(0, 0, 0, 0.05);
+  --ink: #1a1a19;
+  --ink-2: #45443e;
+  --ink-3: #74726b;
+  --hairline: rgba(0, 0, 0, 0.11);
+  --hairline-strong: rgba(0, 0, 0, 0.2);
+  --accent: #2b6ec2;
+  --accent-hover: #1f5da9;
+  --on-accent: #ffffff;
+  --danger: #c0403c;
+  --danger-bg: #fbe9e8;
+  --danger-ink: #7a2320;
+  --warn: #9a5a15;
+  --overlay: #fffffff2;
+  --overlay-strong: #fbfaf7ee;
+  --scrim: #faf9f5d9;
+  /* Lighter than the dark theme's: a hard black shadow on a pale surface
+     reads as dirt rather than as depth. */
+  --shadow: rgba(28, 26, 20, 0.16);
+  --dot: rgba(0, 0, 0, 0.055);
+  color-scheme: light;
 }
 
 * {
@@ -33,6 +86,16 @@ body,
 
 body {
   margin: 0;
+}
+
+/* `color`, `font` and `line-height` are inherited properties, and served as a
+   page they are inherited from <body>. Embedded there is no <body> in the
+   tree: the shadow root's own host inherits them from the notebook, so
+   without this the page's text colour crosses the boundary and lands black on
+   our panels. Stated on both, so the two roots start from the same place. */
+body,
+:host {
+  display: block;
   background: var(--page);
   color: var(--ink-2);
   font-family: var(--font-body);
@@ -76,7 +139,8 @@ button {
   grid-template-columns:
     var(--sidebar-col) var(--sidebar-gutter) 1fr
     var(--stats-gutter) var(--stats-col);
-  height: 100dvh;
+  /* The viewport, served as a page; whatever the host gave us, embedded. */
+  height: var(--app-height, 100dvh);
 }
 
 /* Collapsed a panel leaves the layout but stays in the DOM, so a half-written
@@ -120,7 +184,56 @@ button {
 .panel-toggle:hover {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
+}
+
+/* Collapsed, an arrow says a panel can open but not which one. Embedded all
+   three start closed, so all three have to name themselves. */
+.panel-toggle-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.panel-toggle:hover .panel-toggle-label {
+  color: inherit;
+}
+
+/* Beside a label the arrow is a hint, not the whole control, so it stops
+   setting the size of the tab. `place-content` rather than the inherited
+   `place-items`: the tracks would otherwise stretch to the tab's fixed size
+   and push the two apart, when what is wanted is the pair sitting together in
+   the middle. */
+.panel-toggle:has(.panel-toggle-label) {
+  place-content: center;
+  gap: 3px;
+  font-size: 12px;
+}
+
+/* The upright tabs read top to bottom, so a labelled tab is still the same
+   narrow strip it is when expanded. The bottom one stays horizontal: it has
+   the width to spare, and turning text on its side to save height nobody
+   needed is just harder to read. */
+.sidebar-toggle .panel-toggle-label,
+.stats-toggle .panel-toggle-label {
+  writing-mode: vertical-rl;
+}
+
+.stats-toggle .panel-toggle-label {
+  rotate: 180deg;
+}
+
+.app.app-sidebar-collapsed .sidebar-toggle,
+.app.app-stats-collapsed .stats-toggle {
+  height: 72px;
+}
+
+.app.app-table-collapsed .drawer-toggle {
+  width: 76px;
+  grid-auto-flow: column;
 }
 
 .sidebar-toggle {
@@ -131,7 +244,7 @@ button {
   height: 76px;
   border-left: none;
   border-radius: 0 9px 9px 0;
-  box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 4px 0 14px var(--shadow);
 }
 
 /* The same tab mirrored, on the far edge of the graph. */
@@ -143,7 +256,7 @@ button {
   height: 76px;
   border-right: none;
   border-radius: 9px 0 0 9px;
-  box-shadow: -4px 0 14px rgba(0, 0, 0, 0.35);
+  box-shadow: -4px 0 14px var(--shadow);
 }
 
 /* And once more a quarter turn on, centred over the graph it uncovers. */
@@ -156,10 +269,10 @@ button {
   height: 26px;
   border-bottom: none;
   border-radius: 9px 9px 0 0;
-  box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 -4px 14px var(--shadow);
 }
 
-.drawer-toggle span {
+.drawer-toggle .panel-toggle-arrow {
   transform: rotate(90deg);
 }
 
@@ -247,7 +360,7 @@ body.resizing-y {
   min-height: 0;
   overflow: hidden;
   background-color: var(--surface);
-  background-image: radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-image: radial-gradient(var(--dot) 1px, transparent 1px);
   background-size: 26px 26px;
 }
 
@@ -275,6 +388,14 @@ body.resizing-y {
 .step {
   border-top: 1px solid var(--hairline);
   padding-top: 14px;
+}
+
+/* A divider goes between two sections. Embedded there is no title above the
+   first one, so its rule would be a line across the top of the panel with
+   nothing on the other side of it. */
+.sidebar-embedded > .step:first-of-type {
+  border-top: none;
+  padding-top: 0;
 }
 
 .step-disabled {
@@ -358,7 +479,7 @@ body.resizing-y {
 
 .btn:hover:not(:disabled) {
   border-color: var(--hairline-strong);
-  background: #262624;
+  background: var(--raised);
 }
 
 .btn:disabled {
@@ -380,13 +501,13 @@ body.resizing-y {
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0b0b0b;
+  color: var(--on-accent);
   font-weight: 650;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #4f96ea;
-  border-color: #4f96ea;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-row {
@@ -546,7 +667,7 @@ body.resizing-y {
 .warn {
   margin: 0;
   font-size: 12px;
-  color: #ec9a5a;
+  color: var(--warn);
 }
 
 .sidebar-footer {
@@ -592,13 +713,13 @@ body.resizing-y {
   top: 0;
   left: 0;
   max-width: 280px;
-  background: #232321f2;
+  background: var(--overlay);
   border: 1px solid var(--hairline-strong);
   border-radius: 8px;
   padding: 8px 10px;
   pointer-events: none;
   font-size: 12px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 6px 24px var(--shadow);
 }
 
 .tip-title {
@@ -674,14 +795,14 @@ body.resizing-y {
   align-items: stretch;
   gap: 2px;
   padding: 3px;
-  background: #1a1a19d9;
+  background: var(--scrim);
   border: 1px solid var(--hairline);
   border-radius: 11px;
   backdrop-filter: blur(6px);
 }
 
 .tool-btn {
-  background: #232321e6;
+  background: var(--overlay);
   border: 1px solid var(--hairline);
   border-radius: 8px;
   padding: 6px 11px;
@@ -745,7 +866,7 @@ body.resizing-y {
   background: var(--raised);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 30px var(--shadow);
 }
 
 .view-menu.from-top-left,
@@ -788,6 +909,37 @@ body.resizing-y {
   height: 1px;
   margin: 6px 2px;
   background: var(--hairline);
+}
+
+/* Three states, one of which is "whatever the page around us is doing", so a
+   segmented control rather than a checkbox. */
+.view-menu-choice {
+  display: flex;
+  gap: 3px;
+  margin: 0 2px 2px;
+  padding: 2px;
+  background: var(--raised-2);
+  border-radius: 7px;
+}
+
+.choice-btn {
+  flex: 1;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.choice-btn:hover {
+  color: var(--ink);
+}
+
+.choice-btn.active {
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .view-menu-all {
@@ -914,7 +1066,7 @@ body.resizing-y {
 .legend:hover,
 .legend:focus-within,
 .legend.dragging {
-  background: #1a1a19f2;
+  background: var(--scrim);
   border-color: var(--hairline);
   color: var(--ink-2);
   opacity: 1;
@@ -978,14 +1130,14 @@ body.resizing-y {
   width: min(480px, 100%);
   max-height: 100%;
   overflow-y: auto;
-  background: #161615ee;
+  background: var(--overlay-strong);
   border: 1px solid var(--hairline-strong);
   border-radius: 16px;
   padding: 30px 28px 26px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 70px var(--shadow);
   backdrop-filter: blur(4px);
 }
 
@@ -1233,25 +1385,39 @@ body.resizing-y {
 
 /* ---- Toasts & veils ---- */
 
-.error-toast {
+.toast-stack {
   position: absolute;
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 90%;
+}
+
+.toast {
+  display: flex;
   align-items: center;
   gap: 10px;
-  background: #2b1b1b;
-  border: 1px solid var(--danger);
-  color: #f4d9d9;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink);
   border-radius: 10px;
   padding: 9px 8px 9px 14px;
   font-size: 13px;
-  max-width: min(90%, 520px);
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  max-width: 520px;
+  box-shadow: 0 10px 32px var(--shadow);
 }
 
-.error-toast button {
+.toast.error {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+.toast button {
   background: none;
   border: none;
   color: inherit;
@@ -1486,7 +1652,7 @@ body.resizing-y {
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 600;
-  color: #0b0b0b;
+  color: var(--on-accent);
   background: var(--accent);
   border-radius: 999px;
   padding: 1px 7px;
@@ -1965,7 +2131,7 @@ input.swatch::-moz-color-swatch {
   background: var(--raised);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 30px var(--shadow);
 }
 
 /* ---- Data table ---- */
@@ -2066,7 +2232,7 @@ input.swatch::-moz-color-swatch {
   background: var(--raised);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 30px var(--shadow);
   font-size: 12px;
 }
 
@@ -2290,7 +2456,7 @@ input.swatch::-moz-color-swatch {
   background: var(--raised);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 30px var(--shadow);
   font-size: 12px;
 }
 
@@ -2419,7 +2585,7 @@ input.swatch::-moz-color-swatch {
   background: var(--accent);
   border: 1px solid transparent;
   border-radius: 7px;
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
   font: inherit;
   font-weight: 600;
@@ -3053,7 +3219,7 @@ input.swatch::-moz-color-swatch {
 }
 
 .no-match p {
-  background: #161615ee;
+  background: var(--overlay-strong);
   border: 1px solid var(--hairline);
   border-radius: 10px;
   padding: 12px 18px;

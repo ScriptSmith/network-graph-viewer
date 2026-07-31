@@ -15,7 +15,8 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 
 ### Getting data in
 
-- Upload Excel (`.xlsx`, `.xls`, `.ods`) or CSV files; everything is parsed in memory and never leaves the browser
+- Upload Excel (`.xlsx`, `.xls`, `.ods`), CSV or Parquet files; everything is parsed in memory and never leaves the browser
+- Parquet is read column-typed straight from its own schema, so a zero-padded id column stays text instead of being guessed into a number, and only the byte ranges the file actually needs are read
 - Paste cells straight from Excel or Google Sheets
 - Import GEXF and GraphML, including node and edge attributes and Gephi's saved positions
 - Open a `#data=…` link and the graph it carries is already there; nothing is fetched
@@ -33,6 +34,7 @@ Turn a spreadsheet edge list into an interactive network graph, entirely in your
 - Colour nodes by a column or a network metric, size them by degree or any number column, and colour and weight the edges the same way
 - Or let the data do the styling: a column of colours (`#b7410e`, `#b41`, `rgb(183, 65, 14)` or a colour name) paints the nodes and edges exactly as written, and a column of numbers sets radii and stroke widths in pixels, no palette or scale in the way. The shipped **Metro lines** sample is the case for it, a network whose colours are its identity rather than a category to map
 - Four categorical palettes, including the published colourblind-safe Okabe-Ito and Tol bright sets, and four ramps for numeric rankings
+- Light and dark, switchable in the View menu, and the graph's own colours change with it rather than only the chrome around them
 - Or build your own: edit any slot, add and remove colours, and the palette travels with the workspace, the export and the shared link
 - Node images from a column of `https` links, data URIs, bare base64, or SVG markup: the picture fills the node and its colour becomes the ring, so an image costs nothing the colours were saying. The shipped **Web toolchain** sample is 42 projects wearing their logos, and the one place the app fetches anything from a third party
 
@@ -85,15 +87,49 @@ access.
 - A link with the whole workspace deflated into its fragment, so sharing the graph is sharing a URL and the data still never reaches a server
 - Save any of it to a GitHub gist with a personal access token, which puts the gist's id in the address bar for a link that stays short whatever the graph weighs
 
+## In a Jupyter notebook
+
+The same app runs in a notebook cell, as a widget. Click a node and the kernel
+sees the selection; edit the table and the edits come back as a DataFrame.
+
+```sh
+uv pip install "git+https://github.com/ScriptSmith/network-graph-viewer#subdirectory=python"
+```
+
+```python
+import network_graph_viewer as ngv
+
+w = ngv.show(edges_df, source="from", target="to", color="team")
+w                   # the graph, interactive, in the output
+
+w.selected_node     # 'ana'
+w.edges             # the edge table, edits and computed columns included
+```
+
+A DataFrame, a list of dicts, a list of `(source, target)` pairs or a networkx
+graph all work. The cell shows the graph alone, with a labelled tab on each edge
+for the panels, and follows the notebook's own light or dark theme. See
+[`python/`](python/) and [the example notebook](python/examples/demo.ipynb).
+
 ## Development
 
 ```sh
 pnpm install
-pnpm dev          # start the dev server
-pnpm build        # type-check and build to dist/
-pnpm lint         # oxlint
-pnpm test         # vitest
-pnpm format       # oxfmt
+pnpm dev            # start the dev server
+pnpm build          # type-check and build to dist/
+pnpm build:widget   # rebuild the notebook bundle (commit the result)
+pnpm lint           # oxlint
+pnpm test           # vitest
+pnpm format         # oxfmt
+```
+
+The notebook package lives in `python/` and is managed with `uv`:
+
+```sh
+cd python
+uv sync
+uv run pytest
+uv run pytest --nbmake examples/demo.ipynb
 ```
 
 ## Stack
@@ -101,6 +137,8 @@ pnpm format       # oxfmt
 - [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript
 - [d3-force](https://d3js.org/d3-force), d3-zoom, d3-drag and d3-quadtree for simulation and interaction
 - [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
+- [hyparquet](https://github.com/hyparam/hyparquet) for Parquet, with [hyparquet-compressors](https://github.com/hyparam/hyparquet-compressors) for snappy, gzip, zstd and the rest
+- [anywidget](https://anywidget.dev/) for the Jupyter widget
 - [TanStack Table](https://tanstack.com/table) and [TanStack Virtual](https://tanstack.com/virtual) for the data grid
 - [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) for the script sandbox
 - GEXF and GraphML are read and written with the platform's own `DOMParser`

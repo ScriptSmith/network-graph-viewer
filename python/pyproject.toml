@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "network-graph-viewer"
+version = "0.1.0"
+description = "Interactive network graphs in a Jupyter notebook"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["anywidget>=0.9"]
+
+[project.urls]
+Homepage = "https://github.com/ScriptSmith/network-graph-viewer"
+
+[project.optional-dependencies]
+# Neither is imported at module level. Both are common enough in a notebook
+# that the extra is mostly a convenience for a fresh environment.
+pandas = ["pandas>=2.0"]
+networkx = ["networkx>=3.0"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pandas>=2.0", "networkx>=3.0", "nbmake>=1.5", "ipykernel>=6", "ruff>=0.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/network_graph_viewer"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+# Stated rather than left to the default, so a config sitting in some parent
+# directory cannot make this lint differently here than it does in CI.
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

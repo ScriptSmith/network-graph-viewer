@@ -1,14 +1,61 @@
 import type { CellValue, Column, Dataset, GraphStyle, Mapping, Row, Table } from "../types";
 import { DEFAULT_STYLE } from "../types";
+import { PARQUET_EXTENSIONS, parseParquet } from "./parquet";
 
-export const ACCEPTED_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".ods"];
+export const SHEET_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".ods"];
+
+export const ACCEPTED_EXTENSIONS = [...SHEET_EXTENSIONS, ...PARQUET_EXTENSIONS];
+
+/**
+ * A reader for files that arrive as bytes rather than text. Text-shaped
+ * sources are `parseText`'s half of the split, sniffed from their opening
+ * characters; these are told apart by name, or by the few leading bytes a
+ * binary format stamps itself with when the name says nothing.
+ */
+interface FileParser {
+  extensions: string[];
+  /** True when the file's first bytes identify the format on their own. */
+  magic?: (head: Uint8Array) => boolean;
+  parse: (file: File) => Promise<Dataset>;
+}
+
+/** Enough for any signature below, and one slice however many readers there are. */
+const HEAD_BYTES = 8;
+
+const FILE_PARSERS: FileParser[] = [
+  {
+    extensions: PARQUET_EXTENSIONS,
+    // Parquet opens and closes with "PAR1", so an unlabelled one is still
+    // recognisable, which is common for files pulled out of a data lake.
+    magic: (head) => head[0] === 0x50 && head[1] === 0x41 && head[2] === 0x52 && head[3] === 0x31,
+    parse: parseParquet,
+  },
+  { extensions: SHEET_EXTENSIONS, parse: parseSheet },
+];
+
+/**
+ * Read a file into rows. The format comes from the extension where there is
+ * one, and from the leading bytes where there is not. SheetJS is the fallback
+ * rather than an error, because it reads more formats than it is listed for
+ * and a mislabelled spreadsheet is a likelier arrival than a file nothing here
+ * can open at all.
+ */
+export async function parseFile(file: File): Promise<Dataset> {
+  const lowered = file.name.toLowerCase();
+  const named = FILE_PARSERS.find((p) => p.extensions.some((ext) => lowered.endsWith(ext)));
+  if (named) return named.parse(file);
+
+  const head = new Uint8Array(await file.slice(0, HEAD_BYTES).arrayBuffer());
+  const sniffed = FILE_PARSERS.find((p) => p.magic?.(head));
+  return (sniffed ?? { parse: parseSheet }).parse(file);
+}
 
 /**
  * Parse an Excel or CSV file into plain row objects, entirely in memory.
  * SheetJS handles both formats through the same reader; it is imported
  * lazily so the initial bundle stays small.
  */
-export async function parseFile(file: File): Promise<Dataset> {
+async function parseSheet(file: File): Promise<Dataset> {
   const { read, utils } = await import("xlsx");
   const buffer = await file.arrayBuffer();
   const workbook = read(buffer, { type: "array" });

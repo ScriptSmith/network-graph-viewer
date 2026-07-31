@@ -1,6 +1,5 @@
 import { useMemo, useRef } from "react";
 import type { Dataset, Graph, GraphDoc, GraphStyle, LabelMode, Mapping } from "../types";
-import { isCellStyle } from "../types";
 import {
   layoutDefinition,
   LAYOUTS,
@@ -11,8 +10,7 @@ import {
 import type { ChainStepResult, FilterStep } from "../lib/filter";
 import type { EditTarget } from "../lib/edit";
 import { ACCEPTED_EXTENSIONS } from "../lib/parse";
-import { colorCellColumns, edgeStyleColumns, nodeStyleColumns } from "../lib/doc";
-import { CELL_RADIUS, CELL_WIDTH } from "../lib/graph";
+import { edgeStyleColumns } from "../lib/doc";
 import type { MetricOptions } from "../lib/metrics";
 import type { MetricRun } from "../lib/metrics/runner";
 import { exportAs, TEXT_EXTENSIONS, type ExportFormat, type ExportInput } from "../lib/io";
@@ -23,6 +21,7 @@ import { SharePanel } from "./SharePanel";
 import { FilterChain } from "./FilterChain";
 import { PalettePicker } from "./PalettePicker";
 import { SampleList } from "./SampleList";
+import { EdgeStyleSection, NodeStyleSection } from "./StyleSection";
 import { SAMPLES, type SampleNetwork } from "../samples";
 
 interface SidebarProps {
@@ -34,6 +33,9 @@ interface SidebarProps {
   chain: FilterStep[];
   chainResults: ChainStepResult[];
   graph: Graph | null;
+  /** Color maps in force, overrides included, for the type editors. */
+  colors: Map<string, string>;
+  edgeColors: Map<string, string>;
   selectedId: string | null;
   showIsolated: boolean;
   layout: LayoutId;
@@ -59,6 +61,7 @@ interface SidebarProps {
   onLabelModeChange: (mode: LabelMode) => void;
   onExport: (format: "svg" | "png") => void;
   onExportData: (format: ExportFormat) => void;
+  onExportHtml: () => void;
   onGist: (reference: string) => void;
   onGistSaved: (id: string) => void;
   gistId: string | null;
@@ -77,10 +80,6 @@ const ACCEPT = Array.from(new Set([...ACCEPTED_EXTENSIONS, ...TEXT_EXTENSIONS]))
 /** In the order they appear. Embedded, "data" is dropped and the rest shuffle up. */
 const STEPS = ["data", "columns", "filter", "style", "layout", "compute", "export"] as const;
 
-const COLOR_CELL_NOTE =
-  "Cells are painted as they read: #b7410e, #b41, rgb(183, 65, 14) or a color name. " +
-  "Anything else stays grey, and the legend steps aside, the colors being their own key.";
-
 export function Sidebar({
   dataset,
   edgeTableIndex,
@@ -90,6 +89,8 @@ export function Sidebar({
   chain,
   chainResults,
   graph,
+  colors,
+  edgeColors,
   selectedId,
   showIsolated,
   layout,
@@ -115,6 +116,7 @@ export function Sidebar({
   onLabelModeChange,
   onExport,
   onExportData,
+  onExportHtml,
   onGist,
   onGistSaved,
   gistId,
@@ -125,24 +127,12 @@ export function Sidebar({
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const nodeColumns = useMemo(() => (doc ? nodeStyleColumns(doc) : []), [doc]);
+  // These two lists survive here for the Layout step's column parameters; the
+  // Style step's own lists live with the style sections now.
   const edgeColumns = useMemo(() => (doc ? edgeStyleColumns(doc) : []), [doc]);
   const nodeTableColumns = useMemo(
     () => (doc ? doc.nodes.columns.filter((c) => c.name !== doc.nodeIdColumn) : []),
     [doc],
-  );
-  // Image references are text, whether they are links, data URIs or markup.
-  const imageColumns = useMemo(() => nodeColumns.filter((c) => c.type === "text"), [nodeColumns]);
-  // Columns that hold colours, which can dress the marks without a palette.
-  const nodeColorColumns = useMemo(() => (doc ? colorCellColumns(doc, "nodes") : []), [doc]);
-  const edgeColorColumns = useMemo(() => (doc ? colorCellColumns(doc, "edges") : []), [doc]);
-  const nodeNumberColumns = useMemo(
-    () => nodeColumns.filter((c) => c.type === "number"),
-    [nodeColumns],
-  );
-  const edgeNumberColumns = useMemo(
-    () => edgeColumns.filter((c) => c.type === "number"),
-    [edgeColumns],
   );
 
   const pickFile = () => fileInputRef.current?.click();
@@ -151,14 +141,6 @@ export function Sidebar({
     const file = files?.[0];
     if (file) onFile(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const toggleAttr = (column: string) => {
-    if (!doc) return;
-    const attrs = doc.mapping.attrs.includes(column)
-      ? doc.mapping.attrs.filter((a) => a !== column)
-      : [...doc.mapping.attrs, column];
-    onMappingChange({ attrs });
   };
 
   const activeFilterCount = chain.filter((s) => s.enabled).length;
@@ -202,7 +184,7 @@ export function Sidebar({
                 <div className="file-chip" title={dataset.fileName}>
                   <span className="file-name">{dataset.fileName}</span>
                   <span className="file-meta">
-                    {doc.edges.rows.length} rows · {doc.edges.columns.length} columns
+                    {doc.edges.rows.length} edge rows · {doc.nodes.rows.length} nodes
                   </span>
                 </div>
                 {multiTable && (
@@ -253,6 +235,22 @@ export function Sidebar({
                     Clear
                   </button>
                 </div>
+                {/* The ways in that are not a file, folded away once something
+                    is open: they replace what is on screen, so they should be
+                    a deliberate reach rather than furniture. */}
+                <details className="load-other">
+                  <summary>Load something else</summary>
+                  <div className="load-other-body">
+                    <div className="field">
+                      <span className="field-label">Sample networks</span>
+                      <SampleList onPick={onSample} all />
+                    </div>
+                    <div className="field">
+                      <span className="field-label">From a GitHub gist</span>
+                      <GistLoad onLoad={onGist} />
+                    </div>
+                  </div>
+                </details>
               </>
             ) : (
               <>
@@ -260,16 +258,19 @@ export function Sidebar({
                   <strong>Choose a file</strong>
                   <span>or drop a file or paste cells anywhere on the page</span>
                 </button>
-                <button type="button" className="btn" onClick={() => onSample(SAMPLES[0])}>
-                  Load sample dataset
-                </button>
                 <div className="field">
-                  <span className="field-label">Other samples</span>
+                  <span className="field-label">Or start from a sample</span>
+                  <button type="button" className="btn" onClick={() => onSample(SAMPLES[0])}>
+                    Load sample dataset
+                  </button>
                   <SampleList onPick={onSample} />
+                </div>
+                <div className="field">
+                  <span className="field-label">Or load a GitHub gist</span>
+                  <GistLoad onLoad={onGist} />
                 </div>
               </>
             )}
-            <GistLoad onLoad={onGist} />
           </div>
         </section>
       )}
@@ -320,21 +321,6 @@ export function Sidebar({
                   Source and target are the same column, so every edge is a self-loop and gets
                   skipped.
                 </p>
-              )}
-              {edgeColumns.length > 0 && (
-                <fieldset className="check-list">
-                  <legend className="field-label">Edge details on hover</legend>
-                  {edgeColumns.map((c) => (
-                    <label key={c.name} className="check-item">
-                      <input
-                        type="checkbox"
-                        checked={doc.mapping.attrs.includes(c.name)}
-                        onChange={() => toggleAttr(c.name)}
-                      />
-                      <span className="check-name">{c.name}</span>
-                    </label>
-                  ))}
-                </fieldset>
               )}
               <p className="note">
                 {doc.nodes.rows.length} nodes{" "}
@@ -388,179 +374,26 @@ export function Sidebar({
         <div className="step-body">
           {doc ? (
             <>
-              <label className="field">
-                <span className="field-label">Color nodes by</span>
-                <select
-                  className="control"
-                  value={style.nodeColor}
-                  onChange={(e) => onStyleChange({ nodeColor: e.target.value })}
-                >
-                  <option value="none">None (single color)</option>
-                  <optgroup label="Rank by network metric">
-                    <option value="metric:degree">Connections (degree)</option>
-                    <option value="metric:betweenness">Betweenness centrality</option>
-                    <option value="metric:closeness">Closeness centrality</option>
-                    <option value="metric:eigenvector">Eigenvector centrality</option>
-                  </optgroup>
-                  <optgroup label="By column">
-                    {nodeColumns.map((c) => (
-                      <option key={c.name} value={`column:${c.name}`}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                  {nodeColorColumns.length > 0 && (
-                    <optgroup label="Colors in the column">
-                      {nodeColorColumns.map((c) => (
-                        <option key={c.name} value={`cell:${c.name}`}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-              {isCellStyle(style.nodeColor) && <p className="note">{COLOR_CELL_NOTE}</p>}
-              <label className="field">
-                <span className="field-label">Size nodes by</span>
-                <select
-                  className="control"
-                  value={style.nodeSize}
-                  onChange={(e) => onStyleChange({ nodeSize: e.target.value })}
-                >
-                  <option value="metric:degree">Connections</option>
-                  <option value="metric:in">Incoming connections</option>
-                  <option value="metric:out">Outgoing connections</option>
-                  <option value="metric:uniform">Uniform</option>
-                  <optgroup label="Network metric">
-                    <option value="metric:betweenness">Betweenness centrality</option>
-                    <option value="metric:closeness">Closeness centrality</option>
-                    <option value="metric:eigenvector">Eigenvector centrality</option>
-                  </optgroup>
-                  <optgroup label="By number column">
-                    {nodeNumberColumns.map((c) => (
-                      <option key={c.name} value={`column:${c.name}`}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                  {nodeNumberColumns.length > 0 && (
-                    <optgroup label="Pixel radius in the column">
-                      {nodeNumberColumns.map((c) => (
-                        <option key={c.name} value={`cell:${c.name}`}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-              {isCellStyle(style.nodeSize) && (
-                <p className="note">
-                  Numbers are radii in pixels, held between {CELL_RADIUS.min} and {CELL_RADIUS.max}.
-                  A cell with no number in it keeps the plain size.
-                </p>
-              )}
-              <label className="field">
-                <span className="field-label">Node images from</span>
-                <select
-                  className="control"
-                  value={style.nodeImage}
-                  onChange={(e) => onStyleChange({ nodeImage: e.target.value })}
-                >
-                  <option value="none">None</option>
-                  {imageColumns.map((c) => (
-                    <option key={c.name} value={`column:${c.name}`}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {style.nodeImage !== "none" && (
-                <p className="note">
-                  Cells can hold an https link, a data URI, bare base64, or SVG markup. Linked
-                  images are fetched as the graph draws, so a PNG export leaves them out; embedded
-                  ones export with it.
-                </p>
-              )}
-              <label className="field">
-                <span className="field-label">Color edges by</span>
-                <select
-                  className="control"
-                  value={style.edgeColor}
-                  onChange={(e) => onStyleChange({ edgeColor: e.target.value })}
-                >
-                  <option value="uniform">Uniform</option>
-                  {edgeColumns
-                    .filter((c) => c.type !== "number")
-                    .map((c) => (
-                      <option key={c.name} value={`column:${c.name}`}>
-                        {c.name}
-                      </option>
-                    ))}
-                  {edgeColorColumns.length > 0 && (
-                    <optgroup label="Colors in the column">
-                      {edgeColorColumns.map((c) => (
-                        <option key={c.name} value={`cell:${c.name}`}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-              {isCellStyle(style.edgeColor) && <p className="note">{COLOR_CELL_NOTE}</p>}
-              <label className="field">
-                <span className="field-label">Edge width from</span>
-                <select
-                  className="control"
-                  value={style.edgeWidth}
-                  onChange={(e) => onStyleChange({ edgeWidth: e.target.value })}
-                >
-                  <option value="uniform">Uniform width</option>
-                  {edgeNumberColumns.map((c) => (
-                    <option key={c.name} value={`column:${c.name}`}>
-                      {c.name}
-                    </option>
-                  ))}
-                  {edgeNumberColumns.length > 0 && (
-                    <optgroup label="Pixel width in the column">
-                      {edgeNumberColumns.map((c) => (
-                        <option key={c.name} value={`cell:${c.name}`}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-              {isCellStyle(style.edgeWidth) && (
-                <p className="note">
-                  Numbers are stroke widths in pixels, held between {CELL_WIDTH.min} and{" "}
-                  {CELL_WIDTH.max}.
-                </p>
-              )}
-              <label className="check-item">
-                <input
-                  type="checkbox"
-                  checked={style.arrows}
-                  onChange={(e) => onStyleChange({ arrows: e.target.checked })}
-                />
-                <span className="check-name">Direction arrows</span>
-              </label>
-              <label className="field">
-                <span className="field-label">Labels</span>
-                <select
-                  className="control"
-                  value={labelMode}
-                  onChange={(e) => onLabelModeChange(e.target.value as LabelMode)}
-                >
-                  <option value="auto">Auto (declutter large graphs)</option>
-                  <option value="all">All nodes</option>
-                  <option value="none">None</option>
-                </select>
-              </label>
-              <PalettePicker style={style} onStyleChange={onStyleChange} />
+              <NodeStyleSection
+                doc={doc}
+                style={style}
+                colors={colors}
+                labelMode={labelMode}
+                onStyleChange={onStyleChange}
+                onMappingChange={onMappingChange}
+                onLabelModeChange={onLabelModeChange}
+              />
+              <EdgeStyleSection
+                doc={doc}
+                style={style}
+                edgeColors={edgeColors}
+                onStyleChange={onStyleChange}
+                onMappingChange={onMappingChange}
+              />
+              <div className="style-group">
+                <h3 className="style-group-head">Colors</h3>
+                <PalettePicker style={style} onStyleChange={onStyleChange} />
+              </div>
             </>
           ) : (
             <p className="note">Load data first.</p>
@@ -751,6 +584,17 @@ export function Sidebar({
               onClick={() => onExportData("csv")}
             >
               CSV
+            </button>
+          </div>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn"
+              disabled={!doc}
+              onClick={onExportHtml}
+              title="One self-contained file: the whole interactive viewer with the data inside"
+            >
+              HTML page
             </button>
           </div>
           <span className="field-label export-share-label">Share</span>

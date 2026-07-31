@@ -131,4 +131,6 @@ export const TRANSIT = sample({
     edgeWidth: "cell:Width",
     arrows: false,
   },
+  // The colour and dot columns are drawing instructions, not reading matter.
+  nodeAttrs: ["Kind", "Lines"],
 });

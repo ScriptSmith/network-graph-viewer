@@ -20,7 +20,18 @@ export type FilterSpec =
   | { kind: "degree"; mode: "all" | "in" | "out"; min: number | null; max: number | null }
   | { kind: "kcore"; k: number }
   | { kind: "component"; count: number }
-  | { kind: "ego"; centers: string[]; depth: number; direction: "any" | "out" | "in" }
+  | {
+      kind: "ego";
+      centers: string[];
+      depth: number;
+      direction: "any" | "out" | "in";
+      /**
+       * Only edges whose column matches are walked. The reach is still
+       * measured on the narrowed graph, so this is "so many stops along
+       * these lines" rather than a filter applied afterwards.
+       */
+      where?: { column: string; values: string[] };
+    }
   | { kind: "mutual" }
   | { kind: "backbone"; alpha: number; weightColumn: string | null };
 
@@ -57,10 +68,13 @@ export function describeStep(step: FilterStep): string {
       return `${step.k}-core`;
     case "component":
       return step.count === 1 ? "Giant component" : `${step.count} largest components`;
-    case "ego":
-      return step.centers.length === 1
-        ? `${step.depth} step${step.depth === 1 ? "" : "s"} from ${step.centers[0]}`
-        : `${step.depth} steps from ${step.centers.length} nodes`;
+    case "ego": {
+      const reach =
+        step.centers.length === 1
+          ? `${step.depth} step${step.depth === 1 ? "" : "s"} from ${step.centers[0]}`
+          : `${step.depth} steps from ${step.centers.length} nodes`;
+      return step.where === undefined ? reach : `${reach} via ${step.where.column}`;
+    }
     case "mutual":
       return "Reciprocated edges";
     case "backbone":
@@ -129,7 +143,12 @@ export function isFilterStep(value: unknown): value is FilterStep {
         Array.isArray(value.centers) &&
         value.centers.every((c) => typeof c === "string") &&
         typeof value.depth === "number" &&
-        (value.direction === "any" || value.direction === "out" || value.direction === "in")
+        (value.direction === "any" || value.direction === "out" || value.direction === "in") &&
+        (value.where === undefined ||
+          (isRecord(value.where) &&
+            typeof value.where.column === "string" &&
+            Array.isArray(value.where.values) &&
+            value.where.values.every((v) => typeof v === "string")))
       );
     case "mutual":
       return true;
@@ -201,6 +220,17 @@ export function retargetChain(
     }
     if (step.kind === "backbone" && table === "edges" && step.weightColumn === from) {
       out.push({ ...step, weightColumn: to });
+      continue;
+    }
+    if (step.kind === "ego" && table === "edges" && step.where?.column === from) {
+      // A rename follows; a delete drops only the constraint, since the reach
+      // itself never named the column.
+      if (to !== null) {
+        out.push({ ...step, where: { ...step.where, column: to } });
+      } else {
+        const { where: _dropped, ...rest } = step;
+        out.push(rest);
+      }
       continue;
     }
     out.push(step);
@@ -389,7 +419,18 @@ function reachable(
     if (list) list.push(to);
     else adjacency.set(from, [to]);
   };
+  // The constraint compiles to one set before the walk: a link merges every
+  // row with the same endpoints, and any one of them matching opens the edge.
+  const where = step.where;
+  const selected = where === undefined ? null : new Set(where.values);
   for (const link of graph.links) {
+    if (
+      selected !== null &&
+      where !== undefined &&
+      !link.rows.some((row) => selected.has(cellKey(row[where.column])))
+    ) {
+      continue;
+    }
     const s = endpointId(link.source);
     const t = endpointId(link.target);
     if (step.direction !== "in") push(s, t);

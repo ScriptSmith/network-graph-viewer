@@ -35,6 +35,31 @@ test.each(SAMPLES.map((s) => [s.id, s] as const))("%s loads into a graph", (_id,
     if (column !== null) expect(styleColumns).toContain(column);
   }
 
+  // Hover details are chosen by name too, and a typo would silently vanish.
+  const nodeColumns = doc.nodes.columns.map((c) => c.name);
+  for (const attr of network.nodeAttrs ?? []) {
+    expect(nodeColumns).toContain(attr);
+  }
+
+  // Per-type overrides name a column and its values; both must exist, or the
+  // override would load as a no-op instead of failing.
+  const typeStyles = network.style?.typeStyles;
+  if (typeStyles) {
+    expect(styleColumns).toContain(typeStyles.column);
+    const values = new Set(doc.nodes.rows.map((r) => cellKey(r[typeStyles.column])));
+    for (const key of Object.keys(typeStyles.styles)) {
+      expect(values).toContain(key);
+    }
+  }
+  const edgeTypeStyles = network.style?.edgeTypeStyles;
+  if (edgeTypeStyles) {
+    expect(doc.edges.columns.map((c) => c.name)).toContain(edgeTypeStyles.column);
+    const values = new Set(doc.edges.rows.map((r) => cellKey(r[edgeTypeStyles.column])));
+    for (const key of Object.keys(edgeTypeStyles.styles)) {
+      expect(values).toContain(key);
+    }
+  }
+
   // A cell column paints the marks itself, so there is nothing to group; what
   // matters instead is that every cell read as a colour, since one that didn't
   // would quietly come out neutral.

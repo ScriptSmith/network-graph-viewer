@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { CellValue, Column, ColumnType, GraphDoc, Row, Table } from "../types";
+import type { CellValue, Column, ColumnRole, ColumnType, GraphDoc, Row, Table } from "../types";
 import type { EditTarget } from "../lib/edit";
 import { cellKey, parseCell } from "../lib/cells";
 import { distinctValues } from "../lib/graph";
@@ -13,6 +13,7 @@ import {
   replaceMatches,
   retypeColumn,
   retypeLosses,
+  setColumnRole,
   type ReplaceSpec,
   type RowScope,
 } from "../lib/bulk";
@@ -29,12 +30,20 @@ import {
  * change before it changes them.
  */
 
-type View = "menu" | "rename" | "type" | "replace" | "fill" | "values";
+type View = "menu" | "rename" | "type" | "role" | "replace" | "fill" | "values";
 
 const TYPES: { id: ColumnType; name: string }[] = [
   { id: "text", name: "Text" },
   { id: "number", name: "Number" },
   { id: "bool", name: "True/false" },
+];
+
+const ROLES: { id: ColumnRole | ""; name: string; blurb: string }[] = [
+  { id: "", name: "Ordinary values", blurb: "Nothing special hangs on them" },
+  { id: "color", name: "Colors", blurb: "Cells hold colors the marks can wear as written" },
+  { id: "size", name: "Sizes", blurb: "Cells hold pixel sizes for the marks" },
+  { id: "image", name: "Images", blurb: "Cells hold pictures, or links to them" },
+  { id: "url", name: "Links", blurb: "Cells hold web addresses, shown as links" },
 ];
 
 /** Above this many distinct values the list gets a box to narrow it down. */
@@ -127,6 +136,21 @@ export function ColumnMenu({
     );
   }
 
+  if (view === "role") {
+    return (
+      <RoleForm
+        column={column}
+        onBack={back}
+        onApply={(role) =>
+          apply(
+            `treating "${column.name}" as ${role === undefined ? "ordinary values" : ROLES.find((r) => r.id === role)?.name.toLowerCase()}`,
+            (doc) => setColumnRole(doc, target, column.name, role),
+          )
+        }
+      />
+    );
+  }
+
   if (view === "replace") {
     return (
       <ReplaceForm
@@ -212,7 +236,12 @@ export function ColumnMenu({
     <>
       <div className="cm-head">
         <span className="cm-title">{column.name}</span>
-        <span className="cm-type">{TYPES.find((t) => t.id === column.type)?.name}</span>
+        <span className="cm-type">
+          {TYPES.find((t) => t.id === column.type)?.name}
+          {column.role !== undefined
+            ? ` · ${ROLES.find((r) => r.id === column.role)?.name.toLowerCase()}`
+            : ""}
+        </span>
       </div>
 
       <div className="cm-list">
@@ -231,6 +260,9 @@ export function ColumnMenu({
         </button>
         <button type="button" onClick={() => setView("type")}>
           Change type…
+        </button>
+        <button type="button" onClick={() => setView("role")}>
+          Treat as…
         </button>
         <button
           type="button"
@@ -500,6 +532,51 @@ function TypeForm({
         onClick={() => onApply(type)}
       >
         Change type
+      </button>
+    </>
+  );
+}
+
+function RoleForm({
+  column,
+  onBack,
+  onApply,
+}: {
+  column: Column;
+  onBack: () => void;
+  onApply: (role: ColumnRole | undefined) => void;
+}) {
+  const current = column.role ?? "";
+  const [role, setRole] = useState<ColumnRole | "">(current);
+
+  return (
+    <>
+      <FormHead title="Treat as" onBack={onBack} />
+      <p className="note">
+        Says what the values are for, without changing them: colors can paint the marks, links and
+        images get their own rendering in the details panel. Nothing is ever fetched because of a
+        role alone.
+      </p>
+      <div className="cm-radios">
+        {ROLES.map((r) => (
+          <label key={r.id} className="check-item" title={r.blurb}>
+            <input
+              type="radio"
+              name="column-role"
+              checked={role === r.id}
+              onChange={() => setRole(r.id)}
+            />
+            <span className="check-name">{r.name}</span>
+          </label>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="cm-apply"
+        disabled={role === current}
+        onClick={() => onApply(role === "" ? undefined : role)}
+      >
+        Apply
       </button>
     </>
   );

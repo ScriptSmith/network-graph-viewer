@@ -11,6 +11,16 @@ import { useEffect, useRef, useState } from "react";
  */
 const QUERY = "(prefers-reduced-motion: reduce)";
 
+/**
+ * What the View menu offers on top of the system setting: follow it, or
+ * override it in either direction. The override exists because the system
+ * preference is machine-wide and the graph is one page: someone who keeps
+ * animations off in general can still choose to watch a layout settle here,
+ * and someone the setting has never occurred to can ask for stillness.
+ */
+export const MOTION_PREFERENCES = ["auto", "full", "reduced"] as const;
+export type MotionPreference = (typeof MOTION_PREFERENCES)[number];
+
 function match(): MediaQueryList | null {
   return typeof window === "undefined" || !window.matchMedia ? null : window.matchMedia(QUERY);
 }

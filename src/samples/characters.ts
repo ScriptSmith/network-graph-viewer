@@ -116,7 +116,20 @@ export const CHARACTERS = sample({
   nodeTable: 1,
   style: {
     nodeColor: "column:House",
+    edgeColor: "column:Bond",
     edgeWidth: "column:Scenes together",
     arrows: false,
+    // The bonds are edge types: each kind of tie has a color of its own, so
+    // the households read in the nodes and the relationships in the lines.
+    edgeTypeStyles: {
+      column: "Bond",
+      styles: {
+        Family: { color: "#c2564b" },
+        Service: { color: "#8a8f98" },
+        Ally: { color: "#3f9f6e" },
+        Rival: { color: "#c99a2e" },
+        Romance: { color: "#b56bc9" },
+      },
+    },
   },
 });

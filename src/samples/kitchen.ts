@@ -78,5 +78,15 @@ export const KITCHEN = sample({
   style: {
     nodeColor: "column:Kind",
     arrows: false,
+    // The two kinds are types, not just colors: dishes wear one look at one
+    // size and answer with their cuisine, ingredients keep the size rule so
+    // the shared ones still grow, and answer with their category.
+    typeStyles: {
+      column: "Kind",
+      styles: {
+        Dish: { color: "#e2762f", size: 13, attrs: ["Cuisine"] },
+        Ingredient: { attrs: ["Category"] },
+      },
+    },
   },
 });

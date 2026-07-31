@@ -44,6 +44,61 @@ interface Paper {
   cited: number;
 }
 
+/**
+ * Invented titles, one per paper, so the id column can stay a citation key
+ * while the labels read like a reading list. Drawn from a generator of their
+ * own: sharing the network's would shift its sequence and change every edge.
+ */
+const ADJECTIVES = [
+  "Adaptive",
+  "Efficient",
+  "Scalable",
+  "Incremental",
+  "Approximate",
+  "Distributed",
+  "Hierarchical",
+  "Sparse",
+  "Probabilistic",
+  "Fast",
+  "Unified",
+  "Compositional",
+];
+
+const TOPICS: Record<string, [topics: string[], contexts: string[]]> = {
+  Systems: [
+    ["Scheduling", "Consensus", "Caching", "Replication", "Checkpointing", "Load Balancing"],
+    ["Datacenters", "Edge Clusters", "Key-Value Stores", "Microservices", "Storage Systems"],
+  ],
+  Theory: [
+    ["Bounds", "Sampling", "Hashing", "Search", "Matchings", "Embeddings"],
+    ["Sparse Graphs", "Streaming Models", "Metric Spaces", "Random Structures"],
+  ],
+  Vision: [
+    ["Segmentation", "Detection", "Tracking", "Reconstruction", "Depth Estimation"],
+    ["Aerial Imagery", "Video", "Low Light", "Cluttered Scenes", "Medical Scans"],
+  ],
+  Language: [
+    ["Parsing", "Translation", "Summarization", "Retrieval", "Grounding"],
+    ["Low-Resource Settings", "Dialogue", "Long Documents", "Code", "Speech"],
+  ],
+  Biology: [
+    ["Folding", "Expression", "Regulation", "Sequencing", "Annotation"],
+    ["Protein Networks", "Cell Lineages", "Microbial Communities", "Genomes"],
+  ],
+  Climate: [
+    ["Forecasting", "Downscaling", "Attribution", "Assimilation", "Reanalysis"],
+    ["Regional Models", "Ocean Currents", "Ice Sheets", "Extreme Events"],
+  ],
+};
+
+const LINKERS = ["in", "for", "under", "across"];
+
+function titleFor(paper: Paper, rand: () => number): string {
+  const pick = (list: string[]) => list[Math.floor(rand() * list.length)];
+  const [topics, contexts] = TOPICS[paper.field];
+  return `${pick(ADJECTIVES)} ${pick(topics)} ${pick(LINKERS)} ${pick(contexts)}`;
+}
+
 function build(): { edges: CellValue[][]; nodes: CellValue[][] } {
   const rand = seeded(20240517);
   const totalWeight = FIELDS.reduce((sum, f) => sum + f[2], 0);
@@ -103,7 +158,8 @@ function build(): { edges: CellValue[][]; nodes: CellValue[][] } {
     }
   }
 
-  return { edges, nodes: papers.map((p) => [p.id, p.field, p.year]) };
+  const titles = seeded(19680707);
+  return { edges, nodes: papers.map((p) => [p.id, titleFor(p, titles), p.field, p.year]) };
 }
 
 const { edges, nodes } = build();
@@ -112,17 +168,20 @@ export const CITATIONS = sample({
   id: "citations",
   name: "Citation network",
   blurb:
-    "Generated: 600 papers over twenty years, each citing earlier work. Large enough to need filtering, with the heavy tail of citation counts that comes with it.",
+    "Generated: 600 papers over twenty years, each citing earlier work. Papers go by citation key and wear their titles as labels, and the graph is large enough to need filtering.",
   dataset: {
     fileName: "sample-citation-network",
     tables: [
       table("Citations", ["Citing paper", "Cited paper", "Same field", "Year gap"], edges),
-      table("Papers", ["Paper", "Field", "Year"], nodes),
+      table("Papers", ["Paper", "Title", "Field", "Year"], nodes),
     ],
   },
   nodeTable: 1,
   style: {
     nodeColor: "column:Field",
     nodeSize: "metric:in",
+    nodeLabel: "column:Title",
   },
+  // The title is already the label, so hovering repeats only what else there is.
+  nodeAttrs: ["Field", "Year"],
 });

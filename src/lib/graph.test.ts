@@ -197,6 +197,104 @@ test("edge colors and widths in a column reach the links as written", () => {
   expect(weightScale(graph.links)(graph.links[0])).toBeLessThan(CELL_WIDTH.max);
 });
 
+test("a label column names the nodes without re-keying them", () => {
+  const withNames = {
+    ...doc,
+    nodes: {
+      ...doc.nodes,
+      columns: [...doc.nodes.columns, { name: "Name", type: "text" as const }],
+      rows: doc.nodes.rows.map((r, i) => ({ ...r, Name: i === 0 ? "" : `Person ${i}` })),
+    },
+  };
+  const graph = applyStyle(buildBaseGraph(withNames), withNames, {
+    ...DEFAULT_STYLE,
+    nodeLabel: "column:Name",
+  });
+
+  const [first, ...rest] = graph.nodes;
+  // A blank cell keeps the id, and the ids themselves never move.
+  expect(first.label).toBe(first.id);
+  expect(rest.every((n) => n.label.startsWith("Person "))).toBe(true);
+  expect(graph.nodes.map((n) => n.id)).toEqual(buildBaseGraph(doc).nodes.map((n) => n.id));
+
+  // Off, or pointed at a column that is not there, labels stay ids.
+  const off = applyStyle(buildBaseGraph(withNames), withNames, DEFAULT_STYLE);
+  expect(off.nodes.every((n) => n.label === n.id)).toBe(true);
+  const gone = applyStyle(buildBaseGraph(withNames), withNames, {
+    ...DEFAULT_STYLE,
+    nodeLabel: "column:Nope",
+  });
+  expect(gone.nodes.every((n) => n.label === n.id)).toBe(true);
+});
+
+test("type overrides replace exactly the channels they name", () => {
+  const withKind = {
+    ...doc,
+    nodes: {
+      ...doc.nodes,
+      columns: [
+        ...doc.nodes.columns,
+        { name: "Kind", type: "text" as const },
+        { name: "Alias", type: "text" as const },
+      ],
+      rows: doc.nodes.rows.map((r, i) => ({
+        ...r,
+        Kind: i % 2 === 0 ? "A" : "B",
+        Alias: `alias-${i}`,
+      })),
+    },
+  };
+  const plain = applyStyle(buildBaseGraph(withKind), withKind, DEFAULT_STYLE);
+  const styled = applyStyle(buildBaseGraph(withKind), withKind, {
+    ...DEFAULT_STYLE,
+    typeStyles: {
+      column: "Kind",
+      styles: { A: { color: "#112233", size: 40, labelColumn: "Alias" } },
+    },
+  });
+
+  const plainById = new Map(plain.nodes.map((n) => [n.id, n]));
+  for (const node of styled.nodes) {
+    const before = plainById.get(node.id) as (typeof styled.nodes)[number];
+    if (node.row.Kind === "A") {
+      expect(node.color).toBe("#112233");
+      expect(node.radius).toBe(40);
+      expect(node.label).toBe(node.row.Alias);
+    } else {
+      // The other kind is untouched, channel for channel.
+      expect(node.color).toBe(before.color);
+      expect(node.radius).toBe(before.radius);
+      expect(node.label).toBe(node.id);
+    }
+  }
+});
+
+test("edge type overrides paint and widen only their own kind", () => {
+  const withKind = {
+    ...doc,
+    edges: {
+      ...doc.edges,
+      columns: [...doc.edges.columns, { name: "Tie", type: "text" as const }],
+      rows: doc.edges.rows.map((r, i) => ({ ...r, Tie: i % 2 === 0 ? "strong" : "weak" })),
+    },
+  };
+  const graph = applyStyle(buildBaseGraph(withKind), withKind, {
+    ...DEFAULT_STYLE,
+    edgeTypeStyles: { column: "Tie", styles: { strong: { color: "#445566", width: 9 } } },
+  });
+
+  for (const link of graph.links) {
+    const kind = link.rows[0].Tie;
+    if (kind === "strong") {
+      expect(link.color).toBe("#445566");
+      expect(link.width).toBe(9);
+    } else {
+      expect(link.color).toBeNull();
+      expect(link.width).toBeNull();
+    }
+  }
+});
+
 test("node table attributes take precedence over projected edge columns", () => {
   const withDept = {
     ...doc,

@@ -47,6 +47,7 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
   const nodes = new Map<string, GraphNode>();
   const newNode = (id: string, row: Row): GraphNode => ({
     id,
+    label: id,
     row,
     group: null,
     value: null,
@@ -104,6 +105,7 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
       weight: null,
       colorValue: null,
       color: null,
+      width: null,
       curve: false,
     });
     getNode(sourceId).outDegree++;
@@ -187,6 +189,12 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       : numericAttr(base, doc, colorCol as string);
     for (const node of nodes) node.value = values.get(node.id) ?? 0;
   }
+  // Labels resolve against the node table alone: a display name is the node's
+  // own, not something to project off whichever edge row got there first.
+  const labelCol = styleColumn(style.nodeLabel);
+  if (labelCol !== null && hasColumn(doc.nodes, labelCol)) {
+    for (const node of nodes) node.label = cellToId(node.row[labelCol]) ?? node.id;
+  }
   // Images resolve here rather than at draw time, so the canvas, the tooltips
   // and an export all see the same source for a node.
   const imageCol = styleColumn(style.nodeImage);
@@ -235,6 +243,26 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
     });
   }
 
+  // Type overrides land last, so each channel replaces exactly what the
+  // global rules computed. One map lookup per node keeps this O(nodes).
+  const typeStyles = style.typeStyles;
+  if (typeStyles !== undefined) {
+    const kinds = categoricalAttr(base, doc, typeStyles.column);
+    for (const node of nodes) {
+      const kind = kinds.get(node.id);
+      if (kind === undefined || !Object.hasOwn(typeStyles.styles, kind)) continue;
+      const override = typeStyles.styles[kind];
+      if (override.color !== undefined) node.color = override.color;
+      if (override.size !== undefined) node.radius = clamp(override.size, CELL_RADIUS);
+      if (override.image !== undefined) node.image = imageSource(override.image);
+      if (override.labelColumn !== undefined && hasColumn(doc.nodes, override.labelColumn)) {
+        node.label = cellToId(node.row[override.labelColumn]) ?? node.id;
+      }
+    }
+  }
+
+  const edgeTypeStyles = style.edgeTypeStyles;
+
   const links: GraphLink[] = base.links.map((l) => {
     const link: GraphLink = {
       ...l,
@@ -243,6 +271,7 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       weight: null,
       colorValue: null,
       color: null,
+      width: null,
     };
     if (widthCol) {
       const values = l.rows
@@ -254,6 +283,16 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
       const value = l.rows.map((r) => cellKey(r[edgeColorCol])).find((k) => k !== "") ?? null;
       if (edgeColorFromCells) link.color = parseColor(value);
       else link.colorValue = value;
+    }
+    // Edge type overrides land last for the same reason the node ones do.
+    if (edgeTypeStyles !== undefined) {
+      const kind =
+        l.rows.map((r) => cellKey(r[edgeTypeStyles.column])).find((k) => k !== "") ?? null;
+      if (kind !== null && Object.hasOwn(edgeTypeStyles.styles, kind)) {
+        const override = edgeTypeStyles.styles[kind];
+        if (override.color !== undefined) link.color = override.color;
+        if (override.width !== undefined) link.width = clamp(override.width, CELL_WIDTH);
+      }
     }
     return link;
   });

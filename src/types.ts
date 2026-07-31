@@ -6,11 +6,26 @@ export type Row = Record<string, CellValue>;
 
 export type ColumnType = "text" | "number" | "bool";
 
+/**
+ * What a column's values are *for*, on top of what they are. A role never
+ * changes the data and never causes a fetch; it tells the UI which affordances
+ * fit: a color column can paint the marks, a url column renders as a link, an
+ * image column as a thumbnail, a size column as pixels. Inferred cautiously at
+ * import, settable from the column menu, and carried by the workspace.
+ */
+export const COLUMN_ROLES = ["color", "size", "image", "url"] as const;
+export type ColumnRole = (typeof COLUMN_ROLES)[number];
+
+export function isColumnRole(value: unknown): value is ColumnRole {
+  return typeof value === "string" && (COLUMN_ROLES as readonly string[]).includes(value);
+}
+
 export interface Column {
   name: string;
   type: ColumnType;
   /** Set on columns written by the metrics compute step. */
   computed?: boolean;
+  role?: ColumnRole;
 }
 
 /** A named grid of rows. Column types are inferred once, at import. */
@@ -37,6 +52,12 @@ export interface Mapping {
   target: string;
   /** Columns shown as edge details in tooltips and the inspector. */
   attrs: string[];
+  /**
+   * Node table columns shown as node details in tooltips and the inspector.
+   * Absent means every column but the id, which is what `attrs` starts as on
+   * its side; an empty array means none, chosen deliberately.
+   */
+  nodeAttrs?: string[];
 }
 
 /**
@@ -64,6 +85,45 @@ export interface GraphDoc {
  * map. The palette fields come from `PaletteChoice`: a shipped set by id, or
  * "custom" with the colors carried here, so styling travels with the workspace.
  */
+/**
+ * What a node of one type wears. A type is a value of the chosen type column,
+ * and every channel here replaces what the global rules computed for the
+ * nodes carrying that value; the ones left unset keep the rule's answer.
+ */
+export interface NodeTypeStyle {
+  /** #rrggbb, worn instead of the palette slot. */
+  color?: string;
+  /** Pixel radius, worn instead of the size rule's answer. */
+  size?: number;
+  /** One image source for the whole type, vetted like a cell would be. */
+  image?: string;
+  /** Node column of display names for this type's nodes alone. */
+  labelColumn?: string;
+  /** Node columns shown on hover and in the details for this type alone. */
+  attrs?: string[];
+}
+
+/** The edge side of the same idea: color, stroke width, hover details. */
+export interface EdgeTypeStyle {
+  /** #rrggbb, painted instead of the palette slot. */
+  color?: string;
+  /** Stroke width in pixels, instead of the width rule's answer. */
+  width?: number;
+  /** Edge columns shown on hover and in the details for this type alone. */
+  attrs?: string[];
+}
+
+/**
+ * Per-type styling: one column whose values name the kinds of mark, and an
+ * override per value. When the same column also drives the color channel, the
+ * legend keys line up and its swatches show the overridden colors.
+ */
+export interface TypeStyles<T> {
+  column: string;
+  /** Keyed by cell value: null-prototype, read with `Object.hasOwn`. */
+  styles: Record<string, T>;
+}
+
 export interface GraphStyle extends PaletteChoice {
   /** 'none' | 'metric:degree' | 'column:<name>' | 'cell:<name>' */
   nodeColor: string;
@@ -74,6 +134,11 @@ export interface GraphStyle extends PaletteChoice {
   nodeSize: string;
   /** 'none' | 'column:<name>' naming a column of image data or URLs. */
   nodeImage: string;
+  /**
+   * 'none' | 'column:<name>' naming a node table column of display names.
+   * 'none' labels nodes with their ids; a cell with nothing in it does too.
+   */
+  nodeLabel: string;
   /** 'uniform' | 'column:<name>' | 'cell:<name>' */
   edgeWidth: string;
   /** 'uniform' | 'column:<name>' | 'cell:<name>' */
@@ -81,12 +146,15 @@ export interface GraphStyle extends PaletteChoice {
   arrows: boolean;
   /** Multiplier applied to layout distances, 0.6 to 1.8. */
   spacing: number;
+  typeStyles?: TypeStyles<NodeTypeStyle>;
+  edgeTypeStyles?: TypeStyles<EdgeTypeStyle>;
 }
 
 export const DEFAULT_STYLE: GraphStyle = {
   nodeColor: "none",
   nodeSize: "metric:degree",
   nodeImage: "none",
+  nodeLabel: "none",
   edgeWidth: "uniform",
   edgeColor: "uniform",
   arrows: true,
@@ -118,6 +186,8 @@ export type Filters = Record<string, ColumnFilter>;
 
 export interface GraphNode extends SimulationNodeDatum {
   id: string;
+  /** What the node is called on screen: a label column's cell, or the id. */
+  label: string;
   /** The node table row this node came from. */
   row: Row;
   /** Partition value when nodes are colored by a categorical column. */
@@ -148,6 +218,8 @@ export interface GraphLink extends SimulationLinkDatum<GraphNode> {
   colorValue: string | null;
   /** The color the edge's own cells asked for, when a color column drives it. */
   color: string | null;
+  /** A stroke width in pixels that skips the scale, or null for the rule's. */
+  width: number | null;
   /** True when the reverse edge also exists; rendered as an arc. */
   curve: boolean;
 }

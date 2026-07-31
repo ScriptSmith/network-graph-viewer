@@ -68,7 +68,10 @@
     "mapping": {
       "source": "from",
       "target": "to",
-      "attrs": ["weight", "team"]
+      "attrs": [
+        "weight",
+        "team"
+      ]
     },
     "nodesDeclared": false
   },
@@ -76,6 +79,7 @@
     "nodeColor": "column:team",
     "nodeSize": "metric:degree",
     "nodeImage": "none",
+    "nodeLabel": "none",
     "edgeColor": "uniform",
     "edgeWidth": "uniform",
     "arrows": true,

@@ -12,6 +12,7 @@ Jupyter widget, packaged from `python/`.
 pnpm dev            # dev server at /network-graph-viewer/
 pnpm build          # tsc -b && vite build (run this to type-check)
 pnpm build:widget   # the notebook bundle; generated, not committed (see python/)
+pnpm standalone     # the HTML export's bundle into public/; generated, not committed
 pnpm lint           # oxlint, warnings included (--deny-warnings)
 pnpm test           # vitest run
 pnpm format         # oxfmt (CI runs format:check; always format before commit)
@@ -41,11 +42,24 @@ All state lives in `App.tsx`. The graph is read-only on the canvas; the only
 way to change data is the data table, which edits the underlying rows.
 
 - `src/types.ts` - shared types. `Column` carries an inferred `type`, set once
-  at import. Style options are tagged strings: `metric:degree` |
-  `column:<name>` | `cell:<name>`; `styleColumn()` extracts the column and
-  `isCellStyle()` says which of the two column forms it is. `column:` maps the
-  values onto a palette or a scale, `cell:` means the column already holds the
-  answer, a color or a pixel size, so it lands on the mark untouched.
+  at import, and may carry a `role` (`color` | `size` | `image` | `url`): what
+  the values are _for_, inferred cautiously at import (`inferColumns`), set
+  from the column menu's "Treat as", never a reason to fetch anything. Style
+  options are tagged strings: `metric:degree` | `column:<name>` |
+  `cell:<name>`; `styleColumn()` extracts the column and `isCellStyle()` says
+  which of the two column forms it is. `column:` maps the values onto a palette
+  or a scale, `cell:` means the column already holds the answer, a color or a
+  pixel size, so it lands on the mark untouched. `nodeLabel` names a node-table
+  column of display names (ids stay the keys). `typeStyles` and
+  `edgeTypeStyles` are the type system: one column whose values are the kinds
+  of node (or edge), and per kind a color, a size (or stroke width), an image,
+  a label column and its own hover details. Overrides apply after the global
+  channels in `applyStyle`; their colors fold into the group color maps in
+  `App.tsx` so the legend and the bars agree with the marks; per-kind details
+  resolve through `nodeDetailColumnsFor`/`edgeDetailColumnsFor` (doc.ts),
+  which the canvas reaches as the `nodeAttrsFor`/`edgeAttrsFor` props.
+  `mapping.nodeAttrs` picks the node columns shown in tooltips and the
+  inspector; absent means all of them, the way `mapping.attrs` starts.
 - `src/lib/cells.ts` - cell coercion and the compound-key helpers. Keys join
   with a unit separator so ids with spaces or punctuation can't collide.
 - `src/lib/doc.ts` - document assembly, node-table derivation and
@@ -73,7 +87,13 @@ way to change data is the data table, which edits the underlying rows.
   `url.ts`, which packs a workspace into a link's fragment and reads one back.
   Data goes in the fragment and is read back from the fragment only: fragments
   are not sent with the request, so a shared graph stays as private as a dropped
-  file, and honouring `?data=` too would undo that.
+  file, and honouring `?data=` too would undo that. `html.ts` is the standalone
+  export: one HTML file carrying the workspace in a JSON tag and the whole
+  viewer inlined beside it. The bundle it inlines is `public/standalone.js`,
+  built by `pnpm standalone` from `src/standalone.ts` (the embed entry reading
+  the shell's ids), shipped as a plain page asset and fetched at export time;
+  the workspace JSON spells `<` as the JSON escape `\u003c` so a cell holding
+  `</script>` cannot close the tag, and `html.test.ts` holds that promise.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
   table's cell edits, row adds and row deletes. `coalesceById` is what makes a
   rename onto an existing id a merge rather than a ghost row the graph ignores.
@@ -136,17 +156,27 @@ way to change data is the data table, which edits the underlying rows.
   the same `.ngv.json` a dropped file would produce, so a notebook goes in
   through the app's front door; `widget.py` is the traitlets around it.
 - `src/components/ColumnMenu.tsx` - the pencil in a column header: rename,
-  duplicate, retype, delete, find and replace, fill, and the value list whose
+  duplicate, retype, "treat as" (the column role), delete, find and replace,
+  fill, and the value list whose
   "rename selected" is both a facet rename and, on the id column, a merge. It
   builds the transforms itself and hands up whole `GraphDoc` updates.
   `useHeaderPopover` + `HeaderPanel` position it and the filter funnel against
   the viewport, since the pane they hang in is often two rows tall.
+- `src/components/StyleSection.tsx` - the Style step: a Nodes group and an
+  Edges group, each with a type column and an "apply to" scope, so the global
+  rules and one type's overrides are edited through the same fields. Hover
+  details live here too, global (the mapping's `attrs`/`nodeAttrs`) and per
+  type alike.
 - `src/components/GraphCanvas.tsx` - the only place d3 touches the DOM. React
   renders the SVG shell; d3 owns joins, ticks, zoom, drag. One simulation
   powers everything: physics layouts use forces, computed layouts use strong
   forceX/forceY toward targets, so layout switches animate as morphs. Props are
   mirrored into `liveRef` so handlers installed once stay current; the scene
-  re-joins only when `graph` changes.
+  re-joins only when `graph` changes. A load that carries positions builds cold
+  (`seededBaseRef`), and a rebuild stands the reheating effects down for its
+  commit (`justBuiltRef`), or loading a workspace would re-run the layout it
+  arrived with. The view refits when the simulation ends, one-shot, disarmed
+  the moment the user takes the camera.
 - `src/theme.ts` - color tokens, the shipped palettes and ramps, and
   `resolvePalette`, which turns a style's `palette`/`ramp` ids (or `custom`
   plus its own colors) into two arrays. The default categorical palette is
@@ -203,8 +233,11 @@ way to change data is the data table, which edits the underlying rows.
   new keys must not collide with the app's single-key shortcuts, which give way
   to a focused node via the `[data-nodes]` check in `App.tsx`.
 - Movement that is decoration gives way to `prefers-reduced-motion`:
-  `useReducedMotion.ts` is the one place that asks. The layout still runs, it is
-  just run out rather than watched, up to `SETTLE_LIMIT` nodes.
+  `useReducedMotion.ts` is the one place that asks. `App.tsx` resolves it and
+  the View menu's override into one answer, stamped as `data-motion` on the
+  theme root for the stylesheet and handed to the canvas as a prop, so the two
+  halves cannot disagree. The layout still runs, it is just run out rather
+  than watched, up to `SETTLE_LIMIT` nodes.
 - `applyChain` and `applyStyle` run in a `useMemo`, which is during render, on
   every keystroke of a cell edit. Nothing worse than O(rows) belongs there:
   compile a condition once (`compileCondition`) rather than testing a list per
@@ -233,6 +266,11 @@ way to change data is the data table, which edits the underlying rows.
   VCS-ignored files out of a build: `artifacts` in `pyproject.toml` is what
   puts it back, and without that the wheel would install and then fail to load
   the widget at the far end.
+- `public/standalone.js` is generated the same way: `pnpm standalone` writes
+  it, `pnpm build` and `pnpm test` run that first (`standalone.test.ts` reads
+  the built file, the page build ships it as an asset, and the HTML export
+  fetches it). The two library builds set `publicDir: false`, or each would
+  copy `public/` into its own output beside itself.
 - `python/tests/fixtures/workspace.json` is read from both sides: Python
   asserts it still builds that file, `src/lib/io/python.test.ts` asserts the
   app still opens it. Neither end can see the other, so this is what catches a

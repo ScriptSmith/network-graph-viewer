@@ -10,6 +10,7 @@ import {
   type FilterStep,
 } from "../lib/filter";
 import { edgeStyleColumns } from "../lib/doc";
+import { distinctValues } from "../lib/graph";
 import { ColumnCondition } from "./ColumnCondition";
 
 interface FilterChainProps {
@@ -265,6 +266,7 @@ function StepBody({
               <option value="in">Follow arrows in</option>
             </select>
           </div>
+          <EgoWhere doc={doc} step={step} onChange={onChange} />
         </div>
       );
 
@@ -278,6 +280,81 @@ function StepBody({
     case "backbone":
       return <BackboneStep doc={doc} step={step} onChange={onChange} />;
   }
+}
+
+/**
+ * The ego step's edge constraint: only edges matching one of the ticked
+ * values are walked. Choosing a column starts with every value ticked, so
+ * turning the constraint on never blanks the canvas by itself.
+ */
+function EgoWhere({
+  doc,
+  step,
+  onChange,
+}: {
+  doc: GraphDoc;
+  step: Extract<FilterStep, { kind: "ego" }>;
+  onChange: (patch: Partial<FilterStep>) => void;
+}) {
+  const columns = useMemo(() => edgeStyleColumns(doc).filter((c) => c.type === "text"), [doc]);
+  const where = step.where;
+  const values = useMemo(
+    () => (where === undefined ? [] : distinctValues(doc.edges.rows, where.column)),
+    [doc.edges.rows, where],
+  );
+  if (columns.length === 0) return null;
+
+  const setColumn = (column: string) => {
+    if (column === "") {
+      onChange({ where: undefined });
+      return;
+    }
+    onChange({
+      where: { column, values: distinctValues(doc.edges.rows, column).map((v) => v.key) },
+    });
+  };
+
+  const toggle = (key: string) => {
+    if (where === undefined) return;
+    const selected = where.values.includes(key)
+      ? where.values.filter((v) => v !== key)
+      : [...where.values, key];
+    onChange({ where: { ...where, values: selected } });
+  };
+
+  return (
+    <>
+      <label className="field">
+        <span className="field-label">Walk edges where</span>
+        <select
+          className="control"
+          value={where?.column ?? ""}
+          onChange={(e) => setColumn(e.target.value)}
+        >
+          <option value="">Any edge</option>
+          {columns.map((c) => (
+            <option key={c.name}>{c.name}</option>
+          ))}
+        </select>
+      </label>
+      {where !== undefined && (
+        <div className="cm-values chain-where-values">
+          {values.slice(0, 50).map(({ key, count }) => (
+            <label key={key} className="check-item">
+              <input
+                type="checkbox"
+                checked={where.values.includes(key)}
+                onChange={() => toggle(key)}
+              />
+              <span className="check-name">{key === "" ? "(blank)" : key}</span>
+              <span className="check-count">{count}</span>
+            </label>
+          ))}
+          {values.length > 50 && <p className="note">+{values.length - 50} more values</p>}
+        </div>
+      )}
+    </>
+  );
 }
 
 function ColumnStep({

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { BaseGraph, Graph, GraphDoc, GraphSelection, Row } from "../types";
+import type { BaseGraph, Graph, GraphDoc, GraphSelection, GraphStyle, Row } from "../types";
 import { findValueStep, type FilterStep } from "../lib/filter";
 import { cellKey } from "../lib/cells";
 import { componentCount, distinctValues } from "../lib/graph";
@@ -56,6 +56,8 @@ interface StatsPanelProps {
   rows: Row[];
   totalRows: number;
   graph: Graph;
+  /** The style in force, which the typed details resolve against. */
+  style: GraphStyle;
   /**
    * The same graph before any appearance settings were applied. Everything
    * counted rather than drawn reads this one, so restyling the graph does not
@@ -70,6 +72,13 @@ interface StatsPanelProps {
   chain: FilterStep[];
   /** The node or edge whose details head the panel, if anything is selected. */
   selection: GraphSelection | null;
+  pinned: ReadonlySet<string>;
+  onTogglePin: (id: string) => void;
+  allowRemoteImages: boolean;
+  /** Depth of the exploration's ego step, or null when none is running. */
+  egoDepth: number | null;
+  onExpandFrom: (id: string) => void;
+  onEgoDepthChange: (depth: number) => void;
   onToggleValueFilter: (table: "nodes" | "edges", column: string, value: string) => void;
   onSelectNode: (id: string | null) => void;
   onClose: () => void;
@@ -121,6 +130,7 @@ export function StatsPanel({
   rows,
   totalRows,
   graph,
+  style,
   base,
   colorColumn,
   palette,
@@ -128,6 +138,12 @@ export function StatsPanel({
   edgeColors,
   chain,
   selection,
+  pinned,
+  onTogglePin,
+  allowRemoteImages,
+  egoDepth,
+  onExpandFrom,
+  onEgoDepthChange,
   onToggleValueFilter,
   onSelectNode,
   onClose,
@@ -218,6 +234,9 @@ export function StatsPanel({
     const score = (id: string) => centrality.get(id) ?? 0;
     return [...base.nodes].sort((a, b) => score(b.id) - score(a.id)).slice(0, 8);
   }, [base, centrality]);
+  // Rankings run over the structural graph, whose nodes predate the label
+  // column; the styled one knows what each node is called on screen.
+  const labelOf = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n.label])), [graph]);
   const maxCentrality = maxOf(
     topNodes.map((n) => centrality.get(n.id) ?? 0),
     1e-9,
@@ -255,9 +274,16 @@ export function StatsPanel({
         <NodeDetails
           doc={doc}
           graph={graph}
+          style={style}
           selectedId={selection.id}
           palette={palette}
           colors={colors}
+          pinned={pinned.has(selection.id)}
+          onTogglePin={() => onTogglePin(selection.id)}
+          allowRemoteImages={allowRemoteImages}
+          egoDepth={egoDepth}
+          onExpandFrom={() => onExpandFrom(selection.id)}
+          onEgoDepthChange={onEgoDepthChange}
           onSelect={onSelectNode}
         />
       )}
@@ -266,6 +292,7 @@ export function StatsPanel({
         <EdgeDetails
           doc={doc}
           graph={graph}
+          style={style}
           edge={selection}
           palette={palette}
           colors={colors}
@@ -435,10 +462,10 @@ export function StatsPanel({
                 type="button"
                 className="bar-row"
                 onClick={() => onSelectNode(n.id)}
-                title={`Highlight ${n.id} in the graph`}
+                title={`Highlight ${labelOf.get(n.id) ?? n.id} in the graph`}
               >
                 <span className="bar-head">
-                  <span className="bar-name">{n.id}</span>
+                  <span className="bar-name">{labelOf.get(n.id) ?? n.id}</span>
                   <span className="bar-value">{formatMetric(centrality.get(n.id) ?? 0)}</span>
                 </span>
                 <span className="bar-track">

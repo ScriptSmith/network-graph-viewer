@@ -100,6 +100,7 @@ test("a workspace round trip restores the whole session", () => {
     layoutParams: { scaling: 450, linLog: true },
     showIsolated: true,
     preventOverlap: true,
+    pinned: ["a"],
   });
   const { workspace, positions } = parseWorkspace(text, "fallback name");
 
@@ -108,8 +109,73 @@ test("a workspace round trip restores the whole session", () => {
   expect(workspace.layout).toBe("forceatlas2");
   expect(workspace.layoutParams.scaling).toBe(450);
   expect(workspace.preventOverlap).toBe(true);
+  expect(workspace.pinned).toEqual(["a"]);
   expect(summarize(workspace.doc)).toEqual(summarize(doc));
   expect(positions?.size).toBe(graph.nodes.length);
+});
+
+test("type blocks keep their shape-checked parts and drop the junk", () => {
+  const written = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: {
+        ...DEFAULT_STYLE,
+        typeStyles: {
+          column: "Kind",
+          styles: { A: { color: "#112233", size: 5, labelColumn: "Alias", attrs: ["x"] } },
+        },
+        edgeTypeStyles: {
+          column: "Tie",
+          styles: { strong: { color: "#445566", width: 3, attrs: ["w"] } },
+        },
+      },
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+    }),
+  );
+  written.style.typeStyles.styles.A.color = "orange"; // not #rrggbb
+  written.style.edgeTypeStyles.styles.strong.width = "fat"; // not a number
+
+  const { workspace } = parseWorkspace(JSON.stringify(written), "x");
+  expect(workspace.style.typeStyles).toEqual({
+    column: "Kind",
+    styles: { A: { size: 5, labelColumn: "Alias", attrs: ["x"] } },
+  });
+  expect(workspace.style.edgeTypeStyles).toEqual({
+    column: "Tie",
+    styles: { strong: { color: "#445566", attrs: ["w"] } },
+  });
+
+  // A block with a column and no overrides yet is a choice worth keeping.
+  written.style.typeStyles = { column: "Kind", styles: {} };
+  delete written.style.edgeTypeStyles;
+  const kept = parseWorkspace(JSON.stringify(written), "x").workspace.style;
+  expect(kept.typeStyles).toEqual({ column: "Kind", styles: {} });
+  expect(kept.edgeTypeStyles).toBeUndefined();
+});
+
+test("a role the app does not know is dropped rather than trusted", () => {
+  const damaged = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: DEFAULT_STYLE,
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+    }),
+  );
+  damaged.doc.edges.columns[0].role = "sneaky";
+  damaged.doc.nodes.columns[0].role = "color";
+  const parsed = parseWorkspace(JSON.stringify(damaged), "x");
+  expect(parsed.doc.edges.columns[0].role).toBeUndefined();
+  expect(parsed.doc.nodes.columns[0].role).toBe("color");
 });
 
 test("a workspace from a newer version is refused rather than half-read", () => {

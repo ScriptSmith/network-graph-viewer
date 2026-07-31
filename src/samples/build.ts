@@ -26,6 +26,8 @@ export interface SampleNetwork {
   nodeTable?: number;
   /** Appearance worth starting from, merged over the guessed defaults. */
   style?: Partial<GraphStyle>;
+  /** Node columns worth showing on hover, when the full set would be noise. */
+  nodeAttrs?: string[];
   nodeCount: number;
   edgeCount: number;
 }

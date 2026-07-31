@@ -1,4 +1,4 @@
-import type { CellValue, Column, ColumnType, GraphDoc, Row, Table } from "../types";
+import type { CellValue, Column, ColumnRole, ColumnType, GraphDoc, Row, Table } from "../types";
 import { cellKey, cellToId, parseCell } from "./cells";
 import { hasColumn, reconcileNodes, uniqueColumnName } from "./doc";
 import { coalesceById, tableOf, withTable, type EditTarget } from "./edit";
@@ -253,13 +253,18 @@ export function renameColumn(
   };
 
   const next = withTable(doc, target, renamed);
-  if (target === "nodes") {
-    return doc.nodeIdColumn === from ? { ...next, nodeIdColumn: name } : next;
-  }
   const swap = (c: string) => (c === from ? name : c);
+  if (target === "nodes") {
+    const withAttrs =
+      doc.mapping.nodeAttrs === undefined
+        ? next
+        : { ...next, mapping: { ...next.mapping, nodeAttrs: doc.mapping.nodeAttrs.map(swap) } };
+    return doc.nodeIdColumn === from ? { ...withAttrs, nodeIdColumn: name } : withAttrs;
+  }
   return {
     ...next,
     mapping: {
+      ...next.mapping,
       source: swap(doc.mapping.source),
       target: swap(doc.mapping.target),
       attrs: doc.mapping.attrs.map(swap),
@@ -281,9 +286,21 @@ export function deleteColumn(doc: GraphDoc, target: EditTarget, name: string): G
       return copy;
     }),
   });
-  return target === "edges"
-    ? { ...next, mapping: { ...next.mapping, attrs: next.mapping.attrs.filter((c) => c !== name) } }
-    : next;
+  if (target === "edges") {
+    return {
+      ...next,
+      mapping: { ...next.mapping, attrs: next.mapping.attrs.filter((c) => c !== name) },
+    };
+  }
+  return next.mapping.nodeAttrs === undefined
+    ? next
+    : {
+        ...next,
+        mapping: {
+          ...next.mapping,
+          nodeAttrs: next.mapping.nodeAttrs.filter((c) => c !== name),
+        },
+      };
 }
 
 /**
@@ -354,6 +371,29 @@ export function duplicateColumn(doc: GraphDoc, target: EditTarget, name: string)
     ...table,
     columns: [...table.columns.slice(0, at), copy, ...table.columns.slice(at)],
     rows: table.rows.map((row) => ({ ...row, [copy.name]: row[name] ?? null })),
+  });
+}
+
+/**
+ * Declare what a column's values are for, or take the declaration back. The
+ * values themselves are untouched; only the affordances hung on them change.
+ */
+export function setColumnRole(
+  doc: GraphDoc,
+  target: EditTarget,
+  name: string,
+  role: ColumnRole | undefined,
+): GraphDoc {
+  const table = tableOf(doc, target);
+  const column = table.columns.find((c) => c.name === name);
+  if (!column || column.role === role) return doc;
+  return withTable(doc, target, {
+    ...table,
+    columns: table.columns.map((c) => {
+      if (c.name !== name) return c;
+      const { role: _dropped, ...rest } = c;
+      return role === undefined ? rest : { ...rest, role };
+    }),
   });
 }
 

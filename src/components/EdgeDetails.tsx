@@ -1,10 +1,13 @@
-import type { Graph, GraphDoc, Row } from "../types";
+import type { Graph, GraphDoc, GraphStyle, Row } from "../types";
+import { edgeDetailColumnsFor } from "../lib/doc";
 import { endpointId, markColor } from "../lib/graph";
 import { NEUTRAL, nodeColor, type Palette } from "../theme";
 
 interface EdgeDetailsProps {
   doc: GraphDoc;
   graph: Graph;
+  /** The style in force: a typed edge can choose its own details. */
+  style: GraphStyle;
   edge: { source: string; target: string };
   palette: Palette;
   colors: Map<string, string>;
@@ -22,6 +25,7 @@ interface EdgeDetailsProps {
 export function EdgeDetails({
   doc,
   graph,
+  style,
   edge,
   palette,
   colors,
@@ -34,8 +38,8 @@ export function EdgeDetails({
   );
   if (!link) return null;
 
-  const attrColumns = doc.mapping.attrs;
   const rows = link.rows as Row[];
+  const attrColumns = edgeDetailColumnsFor(doc, style, rows);
   // Each end wears the same dot it wears in the graph and at the head of its
   // own card, and the arrow between them takes the edge's own color.
   const dot = (id: string) => {

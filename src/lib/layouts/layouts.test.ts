@@ -9,6 +9,7 @@ import { computeTargets, defaultParams, forceAtlas2Params, LAYOUTS } from "./ind
 function node(id: string, radius = 8, group?: string): GraphNode {
   return {
     id,
+    label: id,
     row: { Id: id, Team: group ?? "" },
     group: group ?? null,
     value: null,
@@ -113,6 +114,7 @@ function hubGraph(): { nodes: GraphNode[]; links: GraphLink[] } {
       weight: null,
       colorValue: null,
       color: null,
+      width: null,
       curve: false,
     });
 

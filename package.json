@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && pnpm standalone && vite build",
     "build:widget": "tsc -b && pnpm widget",
     "lint": "oxlint --deny-warnings --ignore-pattern 'python/**'",
-    "test": "pnpm widget && vitest run",
+    "test": "pnpm widget && pnpm standalone && vitest run",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "preview": "vite preview",
-    "widget": "vite build --config vite.embed.config.ts"
+    "widget": "vite build --config vite.embed.config.ts",
+    "standalone": "vite build --config vite.standalone.config.ts"
   },
   "dependencies": {
     "@jitl/quickjs-singlefile-browser-release-sync": "^0.32.0",

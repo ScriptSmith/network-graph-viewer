@@ -18,6 +18,9 @@ const src = (path: string) => fileURLToPath(new URL(path, import.meta.url));
  */
 export default defineConfig({
   plugins: [react()],
+  // `public/` holds the page build's extra assets (the standalone bundle);
+  // without this the lib build would copy them in beside widget.js.
+  publicDir: false,
   // A library build leaves this alone, where an app build would have replaced
   // it. React reads it at module scope to pick its development or production
   // half, so without this the bundle throws on `process is not defined` before

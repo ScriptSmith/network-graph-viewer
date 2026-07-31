@@ -101,7 +101,6 @@ function render(allowRemoteImages: boolean): { el: HTMLElement; probed: string[]
         colors={new Map()}
         edgeColors={new Map()}
         theme={GRAPH_THEMES.dark}
-        attrColumns={[]}
         selection={null}
         onSelect={() => {}}
         allowRemoteImages={allowRemoteImages}
@@ -188,7 +187,6 @@ function renderStyled(el: HTMLElement, root: Root, style: GraphStyle, base: Base
         colors={groupColorMap(["red", "blue"])}
         edgeColors={new Map()}
         theme={GRAPH_THEMES.dark}
-        attrColumns={[]}
         selection={null}
         onSelect={() => {}}
       />,
@@ -285,7 +283,6 @@ function renderKeyboard(): { el: HTMLElement; selected: (string | null)[] } {
         colors={new Map()}
         edgeColors={new Map()}
         theme={GRAPH_THEMES.dark}
-        attrColumns={[]}
         selection={null}
         onSelect={(next) => selected.push(next === null ? null : (next as { id: string }).id)}
       />,
@@ -411,7 +408,6 @@ test("the decorative canvas is not in the tab order at all", () => {
         colors={new Map()}
         edgeColors={new Map()}
         theme={GRAPH_THEMES.dark}
-        attrColumns={[]}
         selection={null}
         onSelect={() => {}}
         ambient
@@ -428,51 +424,34 @@ test("the decorative canvas is not in the tab order at all", () => {
  * goes is watching it arrive, which is the decoration.
  */
 test("with reduced motion the layout is already arranged on the first paint", () => {
-  const reduce = (matches: boolean) =>
-    ((query: string) =>
-      ({
-        matches: matches && query.includes("reduced-motion"),
-        media: query,
-        addEventListener() {},
-        removeEventListener() {},
-      }) as unknown as MediaQueryList) as typeof window.matchMedia;
-
-  const render = () => {
-    const el = document.createElement("div");
-    document.body.append(el);
-    const base = buildBaseGraph(styleDoc);
-    act(() => {
-      createRoot(el).render(
-        <GraphCanvas
-          graph={applyStyle(base, styleDoc, DEFAULT_STYLE)}
-          base={base}
-          layout="force"
-          layoutParams={{}}
-          preventOverlap={false}
-          labelMode="none"
-          style={DEFAULT_STYLE}
-          colors={new Map()}
-          edgeColors={new Map()}
-          theme={GRAPH_THEMES.dark}
-          attrColumns={[]}
-          selection={null}
-          onSelect={() => {}}
-        />,
-      );
-    });
-    return circles(el).map((c) => Number(c.getAttribute("cx")));
-  };
-
-  const original = window.matchMedia;
-  try {
-    window.matchMedia = reduce(true);
-    const settled = render();
-    // Positions are on the marks before a single frame has been asked for.
-    expect(settled.every((x) => Number.isFinite(x))).toBe(true);
-    // A settled force layout has spread the nodes out; the seeding spiral
-    // would have left them within a few tens of units of each other.
-    expect(Math.max(...settled) - Math.min(...settled)).toBeGreaterThan(20);
-  } finally {
-    window.matchMedia = original;
-  }
+  // The canvas takes the answer as a prop: the app resolves the system
+  // preference and the View menu's override into one flag.
+  const el = document.createElement("div");
+  document.body.append(el);
+  const base = buildBaseGraph(styleDoc);
+  act(() => {
+    createRoot(el).render(
+      <GraphCanvas
+        graph={applyStyle(base, styleDoc, DEFAULT_STYLE)}
+        base={base}
+        layout="force"
+        layoutParams={{}}
+        preventOverlap={false}
+        labelMode="none"
+        style={DEFAULT_STYLE}
+        colors={new Map()}
+        edgeColors={new Map()}
+        theme={GRAPH_THEMES.dark}
+        selection={null}
+        onSelect={() => {}}
+        reducedMotion
+      />,
+    );
+  });
+  const settled = circles(el).map((c) => Number(c.getAttribute("cx")));
+  // Positions are on the marks before a single frame has been asked for.
+  expect(settled.every((x) => Number.isFinite(x))).toBe(true);
+  // A settled force layout has spread the nodes out; the seeding spiral
+  // would have left them within a few tens of units of each other.
+  expect(Math.max(...settled) - Math.min(...settled)).toBeGreaterThan(20);
 });

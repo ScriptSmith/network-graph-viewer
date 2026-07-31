@@ -1,5 +1,13 @@
-import type { Graph, GraphDoc, GraphStyle, Table } from "../../types";
-import { DEFAULT_STYLE } from "../../types";
+import type {
+  EdgeTypeStyle,
+  Graph,
+  GraphDoc,
+  GraphStyle,
+  NodeTypeStyle,
+  Table,
+  TypeStyles,
+} from "../../types";
+import { DEFAULT_STYLE, isColumnRole } from "../../types";
 import { isFilterStep, type FilterStep } from "../filter";
 import { isLayoutId, type LayoutId, type LayoutParams } from "../layouts";
 import type { ImportedGraph, Position } from "./types";
@@ -25,6 +33,8 @@ export interface Workspace {
   preventOverlap: boolean;
   /** Node positions, so a saved workspace reopens exactly as it looked. */
   positions: Record<string, Position>;
+  /** Nodes held where they were put, layout after layout. */
+  pinned?: string[];
   scripts?: Record<string, string>;
 }
 
@@ -37,6 +47,7 @@ export interface WorkspaceInput {
   layoutParams: LayoutParams;
   showIsolated: boolean;
   preventOverlap: boolean;
+  pinned?: string[];
   scripts?: Record<string, string>;
 }
 
@@ -63,6 +74,7 @@ export function writeWorkspace(input: WorkspaceInput, options: WriteWorkspaceOpt
     showIsolated: input.showIsolated,
     preventOverlap: input.preventOverlap,
     positions,
+    ...(input.pinned && input.pinned.length > 0 ? { pinned: input.pinned } : {}),
     scripts: input.scripts,
   };
   return JSON.stringify(workspace, null, options.pretty === false ? undefined : 2);
@@ -95,6 +107,19 @@ function isTable(value: unknown): value is Table {
   return value.rows.every(isRecord);
 }
 
+/** Roles come off an enum; anything else written in their place is dropped. */
+function cleanRoles(table: Table): Table {
+  if (table.columns.every((c) => c.role === undefined || isColumnRole(c.role))) return table;
+  return {
+    ...table,
+    columns: table.columns.map((c) => {
+      if (c.role === undefined || isColumnRole(c.role)) return c;
+      const { role: _dropped, ...rest } = c;
+      return rest;
+    }),
+  };
+}
+
 function validDoc(value: unknown): value is GraphDoc {
   if (!isRecord(value)) return false;
   const mapping = value.mapping;
@@ -108,6 +133,55 @@ function validDoc(value: unknown): value is GraphDoc {
     Array.isArray(mapping.attrs) &&
     mapping.attrs.every((a) => typeof a === "string")
   );
+}
+
+/**
+ * Type overrides arrive keyed by cell values anyone chose, so the records are
+ * rebuilt null-prototyped, colors are held to #rrggbb the way the palette's
+ * custom colors are, and anything shaped wrong is dropped rather than worn.
+ * Image sources are strings here and vetted by `imageSource` at apply time.
+ * A block with a column and no overrides is kept: the chosen column is the
+ * section's own state, and losing it on a round trip would be losing work.
+ */
+const isHexColor = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+
+const validAttrs = (v: unknown): string[] | undefined =>
+  Array.isArray(v) ? v.filter((a): a is string => typeof a === "string") : undefined;
+
+function validNodeTypeStyles(value: unknown): TypeStyles<NodeTypeStyle> | undefined {
+  if (!isRecord(value) || typeof value.column !== "string" || !isRecord(value.styles)) {
+    return undefined;
+  }
+  const styles = Object.create(null) as Record<string, NodeTypeStyle>;
+  for (const [key, raw] of Object.entries(value.styles)) {
+    if (!isRecord(raw)) continue;
+    const out: NodeTypeStyle = {};
+    if (isHexColor(raw.color)) out.color = raw.color;
+    if (typeof raw.size === "number" && isFinite(raw.size)) out.size = raw.size;
+    if (typeof raw.image === "string") out.image = raw.image;
+    if (typeof raw.labelColumn === "string") out.labelColumn = raw.labelColumn;
+    const attrs = validAttrs(raw.attrs);
+    if (attrs !== undefined) out.attrs = attrs;
+    if (Object.keys(out).length > 0) styles[key] = out;
+  }
+  return { column: value.column, styles };
+}
+
+function validEdgeTypeStyles(value: unknown): TypeStyles<EdgeTypeStyle> | undefined {
+  if (!isRecord(value) || typeof value.column !== "string" || !isRecord(value.styles)) {
+    return undefined;
+  }
+  const styles = Object.create(null) as Record<string, EdgeTypeStyle>;
+  for (const [key, raw] of Object.entries(value.styles)) {
+    if (!isRecord(raw)) continue;
+    const out: EdgeTypeStyle = {};
+    if (isHexColor(raw.color)) out.color = raw.color;
+    if (typeof raw.width === "number" && isFinite(raw.width)) out.width = raw.width;
+    const attrs = validAttrs(raw.attrs);
+    if (attrs !== undefined) out.attrs = attrs;
+    if (Object.keys(out).length > 0) styles[key] = out;
+  }
+  return { column: value.column, styles };
 }
 
 /**
@@ -125,6 +199,7 @@ function validStyle(value: unknown): GraphStyle {
     nodeColor: token("nodeColor"),
     nodeSize: token("nodeSize"),
     nodeImage: token("nodeImage"),
+    nodeLabel: token("nodeLabel"),
     edgeWidth: token("edgeWidth"),
     edgeColor: token("edgeColor"),
     arrows: typeof raw.arrows === "boolean" ? raw.arrows : DEFAULT_STYLE.arrows,
@@ -132,6 +207,8 @@ function validStyle(value: unknown): GraphStyle {
       typeof raw.spacing === "number" && isFinite(raw.spacing)
         ? raw.spacing
         : DEFAULT_STYLE.spacing,
+    typeStyles: validNodeTypeStyles(raw.typeStyles),
+    edgeTypeStyles: validEdgeTypeStyles(raw.edgeTypeStyles),
   };
 }
 
@@ -176,10 +253,25 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
     );
   }
 
+  // The mapping is rebuilt field by field: `nodeAttrs` is optional and only a
+  // string array counts, so junk in its place falls back to the default rather
+  // than reaching `.includes` calls, and unknown keys are dropped with it.
+  const mapping = workspace.doc.mapping;
+  const nodeAttrs = Array.isArray(mapping.nodeAttrs)
+    ? mapping.nodeAttrs.filter((a): a is string => typeof a === "string")
+    : undefined;
   const doc: GraphDoc = {
     ...workspace.doc,
     name: workspace.doc.name || name,
     nodesDeclared: workspace.doc.nodesDeclared === true,
+    edges: cleanRoles(workspace.doc.edges),
+    nodes: cleanRoles(workspace.doc.nodes),
+    mapping: {
+      source: mapping.source,
+      target: mapping.target,
+      attrs: mapping.attrs,
+      ...(nodeAttrs === undefined ? {} : { nodeAttrs }),
+    },
   };
   // Steps and layouts the app does not recognise are dropped rather than
   // refused: the graph is still the graph, and a chain is a view of it.
@@ -203,6 +295,10 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
         typeof workspace.showIsolated === "boolean" ? workspace.showIsolated : doc.nodesDeclared,
       preventOverlap: workspace.preventOverlap === true,
       positions: positionRecord,
+      // Ids that name no node simply never match one; only the shape matters.
+      ...(Array.isArray(workspace.pinned)
+        ? { pinned: workspace.pinned.filter((p): p is string => typeof p === "string") }
+        : {}),
       scripts: isRecord(workspace.scripts)
         ? (workspace.scripts as Record<string, string>)
         : undefined,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PANELS, type Corner, type Overlay, type Panel } from "../types";
 import { THEME_PREFERENCES, type ThemePreference } from "../lib/hostTheme";
+import { MOTION_PREFERENCES, type MotionPreference } from "../useReducedMotion";
 import { listen, useRootNode } from "../RootContext";
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -9,15 +10,27 @@ const THEME_LABELS: Record<ThemePreference, string> = {
   dark: "Dark",
 };
 
+const MOTION_LABELS: Record<MotionPreference, string> = {
+  auto: "Auto",
+  full: "Full",
+  reduced: "Reduced",
+};
+
+const MOTION_HINTS: Record<MotionPreference, string> = {
+  auto: "Follow the system's motion setting",
+  full: "Animate even where the system asks for less",
+  reduced: "Layouts settle instantly and the view jumps rather than eases",
+};
+
 const OVERLAY_ITEMS: { key: Overlay; name: string; hint: string }[] = [
   { key: "legend", name: "Legend", hint: "The color key in the bottom left" },
   { key: "toolbar", name: "These controls", hint: "The buttons in the top left" },
 ];
 
 const PANEL_ITEMS: Record<Panel, { name: string; hint: string }> = {
-  sidebar: { name: "Sidebar", hint: "The steps down the left" },
-  table: { name: "Data table", hint: "The pane along the bottom" },
-  stats: { name: "Statistics", hint: "The panel on the right" },
+  sidebar: { name: "Graph", hint: "The steps down the left" },
+  table: { name: "Data", hint: "The pane along the bottom" },
+  stats: { name: "Stats", hint: "The panel on the right" },
 };
 
 type Props = {
@@ -29,6 +42,8 @@ type Props = {
   corner: Corner;
   theme: ThemePreference;
   onThemeChange: (next: ThemePreference) => void;
+  motion: MotionPreference;
+  onMotionChange: (next: MotionPreference) => void;
   onSetOverlayVisible: (key: Overlay, visible: boolean) => void;
   onSetPanelOpen: (key: Panel, open: boolean) => void;
   onHideAll: () => void;
@@ -51,6 +66,8 @@ export function ViewMenu({
   corner,
   theme,
   onThemeChange,
+  motion,
+  onMotionChange,
   onSetOverlayVisible,
   onSetPanelOpen,
   onHideAll,
@@ -146,6 +163,22 @@ export function ViewMenu({
                 }
               >
                 {THEME_LABELS[option]}
+              </button>
+            ))}
+          </div>
+
+          <p className="view-menu-title">Motion</p>
+          <div className="view-menu-choice" role="group" aria-label="Motion">
+            {MOTION_PREFERENCES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={option === motion ? "choice-btn active" : "choice-btn"}
+                aria-pressed={option === motion}
+                onClick={() => onMotionChange(option)}
+                title={MOTION_HINTS[option]}
+              >
+                {MOTION_LABELS[option]}
               </button>
             ))}
           </div>

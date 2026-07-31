@@ -23,6 +23,7 @@ import { drag } from "d3-drag";
 import "d3-transition";
 import type {
   BaseGraph,
+  Column,
   Graph,
   GraphLink,
   GraphNode,
@@ -45,15 +46,16 @@ import { endpointId as endpoint, markColor, weightScale } from "../lib/graph";
 import { edgeKey } from "../lib/cells";
 import { isRemoteSource } from "../lib/images";
 import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
-import { formatMetric } from "../lib/format";
+import { displayCell, formatMetric } from "../lib/format";
 import { DEFAULT_COLORS, type GraphTheme, type Palette } from "../theme";
-import { useReducedMotionRef } from "../useReducedMotion";
 
 export interface GraphCanvasHandle {
   fit: () => void;
   reheat: () => void;
   /** Nudge overlapping nodes apart in place, leaving the layout otherwise alone. */
   separate: () => void;
+  /** Travel to one node and put it in the middle at a readable scale. */
+  center: (id: string) => void;
   buildExport: () => { svgText: string; box: ExportBox } | null;
 }
 
@@ -88,7 +90,13 @@ interface GraphCanvasProps {
   /** The colours the marks are drawn with. Values, not a stylesheet: an
    *  exported SVG carries its own attributes and no CSS at all. */
   theme: GraphTheme;
-  attrColumns: string[];
+  /**
+   * What one edge's tooltip lists. A function rather than a list, because a
+   * typed edge can choose its own details; the app compiles the answer.
+   */
+  edgeAttrsFor?: (l: GraphLink) => string[];
+  /** The node side of the same question. */
+  nodeAttrsFor?: (d: GraphNode) => Column[];
   selection: GraphSelection | null;
   onSelect: (next: GraphSelection | null) => void;
   /**
@@ -98,6 +106,13 @@ interface GraphCanvasProps {
    * Data URIs and inline SVG are unaffected, being part of the graph already.
    */
   allowRemoteImages?: boolean;
+  /**
+   * Nodes held at their positions whatever layout is running. The simulation
+   * side of the pin; the set itself lives with the app so it can be saved.
+   */
+  pinned?: ReadonlySet<string>;
+  /** Called when a shift-drag pins a node; plain drags never do. */
+  onPinNode?: (id: string) => void;
   /** Edit mode: adds the create, connect and delete affordances. */
   editing?: boolean;
   /**
@@ -110,6 +125,13 @@ interface GraphCanvasProps {
   onDeleteNode?: (id: string) => void;
   onRenameNode?: (id: string) => void;
   ambient?: boolean;
+  /**
+   * Whether to skip the movement that is decoration: layouts settle instead of
+   * being watched, the view jumps instead of easing. Resolved by the app from
+   * the system preference and the View menu's override, so the canvas takes
+   * one answer rather than asking the media query itself.
+   */
+  reducedMotion?: boolean;
   ref?: Ref<GraphCanvasHandle>;
 }
 
@@ -141,6 +163,10 @@ const linkKeyOf = (l: GraphLink) => edgeKey(endpoint(l.source), endpoint(l.targe
 const SETTLE_LIMIT = 2000;
 const SETTLE_TICKS = 200;
 
+const EMPTY_PINNED: ReadonlySet<string> = new Set();
+const NO_EDGE_ATTRS = (): string[] => [];
+const NO_NODE_ATTRS = (): Column[] => [];
+
 /** Marker id matching an edge stroke color; markers are pre-defined per color. */
 function markerFor(stroke: string, arrowColors: string[], theme: GraphTheme): string {
   if (stroke === theme.edgeLit) return "url(#arrow-lit)";
@@ -162,12 +188,16 @@ export function GraphCanvas({
   colors,
   edgeColors,
   theme,
-  attrColumns,
+  edgeAttrsFor = NO_EDGE_ATTRS,
+  nodeAttrsFor = NO_NODE_ATTRS,
   selection,
   onSelect,
   seedPositions,
   allowRemoteImages = false,
+  pinned = EMPTY_PINNED,
+  onPinNode,
   ambient = false,
+  reducedMotion: reducedMotionProp = false,
   ref,
 }: GraphCanvasProps) {
   const selectedId = selection?.kind === "node" ? selection.id : null;
@@ -185,6 +215,23 @@ export function GraphCanvas({
   );
   const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
+  /**
+   * The base whose scene was built from seed positions. Seeds are consumed on
+   * first use, but StrictMode re-runs the build effect with the same base and
+   * the positions surviving on the nodes; remembering the base keeps the
+   * second run as cold as the first, or it would reheat and destroy the
+   * arrangement the seeds carried.
+   */
+  const seededBaseRef = useRef<BaseGraph | null>(null);
+  /**
+   * Set for the commit that rebuilds the scene, cleared by the last effect of
+   * that same commit. Loading a document changes the pinned set, the layout
+   * parameters and the spacing along with the network, and each has an effect
+   * that reheats the simulation; the rebuild applied all of them itself, so
+   * those effects firing in its commit would only redo, and for a document
+   * that arrived with positions destroy, what was just built.
+   */
+  const justBuiltRef = useRef(false);
   const baseLabelsRef = useRef<Set<string>>(new Set());
   const hoverNodeRef = useRef<string | null>(null);
   /** Paint the marks at the positions the simulation currently holds. */
@@ -194,6 +241,8 @@ export function GraphCanvas({
     () => weightScale(graph.links, isCellStyle(style.edgeWidth)),
     [graph, style.edgeWidth],
   );
+  // A typed edge can carry a width of its own, which skips the scale.
+  const strokeWidth = (d: GraphLink): number => d.width ?? edgeWidth(d);
 
   /**
    * One arrow marker per stroke color in play: the palette's slots, plus
@@ -268,11 +317,14 @@ export function GraphCanvas({
     colors,
     edgeColors,
     arrowColors,
-    attrColumns,
+    edgeAttrsFor,
+    nodeAttrsFor,
     ambient,
     style,
     brokenImages,
     allowRemoteImages,
+    pinned,
+    onPinNode,
     theme,
   });
   liveRef.current = {
@@ -288,11 +340,14 @@ export function GraphCanvas({
     colors,
     edgeColors,
     arrowColors,
-    attrColumns,
+    edgeAttrsFor,
+    nodeAttrsFor,
     ambient,
     style,
     brokenImages,
     allowRemoteImages,
+    pinned,
+    onPinNode,
     theme,
   };
 
@@ -358,7 +413,10 @@ export function GraphCanvas({
     sels.node
       .attr("opacity", (d) => (neighbors && !neighbors.has(d.id) ? 0.14 : 1))
       .attr("stroke", nodeStroke)
-      .attr("stroke-width", nodeStrokeWidth);
+      .attr("stroke-width", nodeStrokeWidth)
+      // The pin is worn as a dashed ring: an attribute on the same circle, so
+      // it survives export and the node stays one mark to hit and drag.
+      .attr("stroke-dasharray", (d) => (liveRef.current.pinned.has(d.id) ? "3 3" : null));
 
     // A selected edge is lit the way a hovered one is, and keeps that whatever
     // the neighbourhood dimming would otherwise have said about it.
@@ -369,7 +427,7 @@ export function GraphCanvas({
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
         return lit ? liveRef.current.theme.edgeLit : edgeBase(d);
       })
-      .attr("stroke-width", (d) => edgeWidth(d) * (picked(d) ? 2.2 : 1))
+      .attr("stroke-width", (d) => strokeWidth(d) * (picked(d) ? 2.2 : 1))
       .attr("opacity", (d) => {
         if (picked(d)) return 1;
         if (!neighbors) return d.colorValue === null ? 0.85 : 0.9;
@@ -425,7 +483,13 @@ export function GraphCanvas({
     baseLabelsRef.current = set;
   };
 
-  const applyLayoutForces = (kick: number) => {
+  /**
+   * `fitOnSettle` refits the view once the simulation runs down, which is the
+   * only moment the layout's true extent is known. It is one-shot and belongs
+   * to the layout run that asked for it: a drag ending or a pin releasing also
+   * runs the simulation out, and neither is a reason to move the camera.
+   */
+  const applyLayoutForces = (kick: number, fitOnSettle = false) => {
     const sim = simRef.current;
     if (!sim) return;
     const nodes = nodesRef.current;
@@ -443,6 +507,19 @@ export function GraphCanvas({
     // Start from a clean slate so a layout never inherits the last one's forces.
     for (const name of ["charge", "link", "x", "y", "collide", "fa2"]) sim.force(name, null);
 
+    // A pinned node keeps its spot through every layout change: fixing it is
+    // exactly what fx/fy are for, and everything else lets go.
+    const held = liveRef.current.pinned;
+    const release = (n: GraphNode) => {
+      if (held.has(n.id)) {
+        n.fx = n.x ?? null;
+        n.fy = n.y ?? null;
+      } else {
+        n.fx = null;
+        n.fy = null;
+      }
+    };
+
     const targets = amb
       ? null
       : current === "script"
@@ -455,17 +532,13 @@ export function GraphCanvas({
           n.tx = t.x * spacing;
           n.ty = t.y * spacing;
         }
-        n.fx = null;
-        n.fy = null;
+        release(n);
       }
       sim
         .force("x", forceX<GraphNode>((d) => d.tx ?? 0).strength(0.3))
         .force("y", forceY<GraphNode>((d) => d.ty ?? 0).strength(0.3));
     } else {
-      for (const n of nodes) {
-        n.fx = null;
-        n.fy = null;
-      }
+      for (const n of nodes) release(n);
       if (!amb && current === "forceatlas2") {
         // ForceAtlas2 supplies its own repulsion, attraction and gravity, so
         // it replaces the charge and link forces rather than joining them.
@@ -514,9 +587,21 @@ export function GraphCanvas({
       sim.alpha(kick).stop();
       sim.tick(SETTLE_TICKS);
       drawRef.current();
+      if (fitOnSettle) fitRef.current(0);
       return;
     }
     sim.alpha(kick).restart();
+    if (fitOnSettle) {
+      sim.on("end.fit", () => {
+        sim.on("end.fit", null);
+        fitRef.current(500);
+      });
+    }
+  };
+
+  /** The user has taken the camera; a fit still waiting on the layout lets go. */
+  const disarmSettleFit = () => {
+    simRef.current?.on("end.fit", null);
   };
 
   /* ---- Reaching the graph from the keyboard ---- */
@@ -536,7 +621,11 @@ export function GraphCanvas({
   const neighborListRef = useRef<Map<string, string[]>>(new Map());
   const focusedIdRef = useRef<string | null>(null);
   const liveRegionRef = useRef<HTMLDivElement>(null);
-  const reducedMotion = useReducedMotionRef();
+  // As a ref, the way the other live values are: d3 handlers installed once
+  // read it when they run, and a re-render in between is neither needed nor
+  // wanted.
+  const reducedMotion = useRef(reducedMotionProp);
+  reducedMotion.current = reducedMotionProp;
 
   /** Say something once, for whoever is listening rather than looking. */
   const announce = (message: string): void => {
@@ -546,9 +635,11 @@ export function GraphCanvas({
 
   const describeNode = (d: GraphNode): string => {
     const neighbors = neighborListRef.current.get(d.id)?.length ?? 0;
-    const parts = [d.id];
+    const parts = [d.label];
+    if (d.label !== d.id) parts.push(d.id);
     if (d.group !== null) parts.push(d.group);
     if (graph.ranking && d.value !== null) parts.push(formatMetric(d.value));
+    if (liveRef.current.pinned.has(d.id)) parts.push("pinned");
     parts.push(`${d.inDegree} in, ${d.outDegree} out`);
     parts.push(neighbors === 1 ? "1 neighbour" : `${neighbors} neighbours`);
     return parts.join(", ");
@@ -737,6 +828,7 @@ export function GraphCanvas({
   };
 
   const nodeTooltip = (d: GraphNode): string => {
+    const idLine = d.label !== d.id ? `<div class="tip-sub">${escapeHtml(d.id)}</div>` : "";
     const group = d.group ? `<div class="tip-sub">${escapeHtml(d.group)}</div>` : "";
     const value =
       graph.ranking && d.value !== null
@@ -752,15 +844,27 @@ export function GraphCanvas({
       source === null
         ? ""
         : `<img class="tip-image" referrerpolicy="no-referrer" src="${escapeHtml(source)}" />`;
+    // The chosen node columns, the way the edge tooltip carries its own.
+    const lines = liveRef.current
+      .nodeAttrsFor(d)
+      .filter((c) => d.row[c.name] !== null && d.row[c.name] !== "" && d.row[c.name] !== undefined)
+      .map(
+        (c) =>
+          `<div class="tip-row"><span>${escapeHtml(c.name)}</span>${escapeHtml(
+            displayCell(c, d.row[c.name]),
+          )}</div>`,
+      )
+      .join("");
     return (
-      `<div class="tip-title">${escapeHtml(d.id)}</div>${group}${value}${image}` +
-      `<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
+      `<div class="tip-title">${escapeHtml(d.label)}</div>${idLine}${group}${value}${image}` +
+      `${lines}<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
     );
   };
 
   const linkTooltip = (l: GraphLink): string => {
-    const { attrColumns: attrs } = liveRef.current;
-    const head = `<div class="tip-title">${escapeHtml(endpoint(l.source))} → ${escapeHtml(endpoint(l.target))}</div>`;
+    const attrs = liveRef.current.edgeAttrsFor(l);
+    const name = (e: string | GraphNode) => (typeof e === "string" ? e : e.label);
+    const head = `<div class="tip-title">${escapeHtml(name(l.source))} → ${escapeHtml(name(l.target))}</div>`;
     const row = l.rows[0] as Row | undefined;
     const lines = row
       ? attrs
@@ -857,7 +961,7 @@ export function GraphCanvas({
       .join("path")
       .attr("fill", "none")
       .attr("stroke", (d) => edgeBase(d))
-      .attr("stroke-width", (d) => edgeWidth(d))
+      .attr("stroke-width", (d) => strokeWidth(d))
       .attr("stroke-linecap", "round")
       .attr("marker-end", (d) =>
         amb || !st.arrows ? null : markerFor(edgeBase(d), arrowColors, theme),
@@ -918,7 +1022,7 @@ export function GraphCanvas({
       .selectAll<SVGTextElement, GraphNode>("text")
       .data(amb ? [] : nodes, (d) => d.id)
       .join("text")
-      .text((d) => d.id)
+      .text((d) => d.label)
       .attr("text-anchor", "middle")
       .attr("font-size", 11)
       .attr("font-weight", 500)
@@ -960,6 +1064,7 @@ export function GraphCanvas({
       node.call(
         drag<SVGCircleElement, GraphNode>()
           .on("start", (_event, d) => {
+            disarmSettleFit();
             simRef.current?.alphaTarget(0.25).restart();
             d.fx = d.x;
             d.fy = d.y;
@@ -971,7 +1076,18 @@ export function GraphCanvas({
           })
           .on("end", (event, d) => {
             simRef.current?.alphaTarget(0);
-            if (liveRef.current.layout === "force" || liveRef.current.layout === "forceatlas2") {
+            const shiftPin = event.sourceEvent instanceof MouseEvent && event.sourceEvent.shiftKey;
+            if (liveRef.current.pinned.has(d.id) || shiftPin) {
+              // Pinned, or being pinned: the dropped spot is the point.
+              d.fx = event.x;
+              d.fy = event.y;
+              d.tx = event.x;
+              d.ty = event.y;
+              if (!liveRef.current.pinned.has(d.id)) liveRef.current.onPinNode?.(d.id);
+            } else if (
+              liveRef.current.layout === "force" ||
+              liveRef.current.layout === "forceatlas2"
+            ) {
               d.fx = null;
               d.fy = null;
             } else {
@@ -1022,9 +1138,22 @@ export function GraphCanvas({
     simRef.current = sim;
 
     computeBaseLabels();
-    applyLayoutForces(1);
+    // Seeds covering most of the graph are a layout already run somewhere
+    // else: a GEXF with positions, a shared workspace. The forces are hooked
+    // up but given no heat at all, because any heat lets the links pull an
+    // arrangement that is not their equilibrium toward it; the simulation
+    // ends on its first step, which is also what fires the settle fit. The
+    // Layout button is still there for whoever wants it re-run.
+    const seededCount = seeds === null ? 0 : nodes.filter((n) => seeds.has(n.id)).length;
+    const seeded =
+      (seededCount > 0 && seededCount * 2 >= nodes.length) || seededBaseRef.current === base;
+    seededBaseRef.current = seeded ? base : null;
+    justBuiltRef.current = true;
+    applyLayoutForces(seeded ? 0 : 1, true);
     refreshStyles();
 
+    // Early feedback while the layout is still spreading; the settle fit
+    // armed above re-frames whatever it ends as.
     const timer = window.setTimeout(() => fit(650), 700);
     return () => {
       window.clearTimeout(timer);
@@ -1059,6 +1188,7 @@ export function GraphCanvas({
       const next = incoming.get(live.id);
       if (!next) continue;
       if (live.radius !== next.radius) resized = true;
+      live.label = next.label;
       live.group = next.group;
       live.value = next.value;
       live.color = next.color;
@@ -1073,9 +1203,11 @@ export function GraphCanvas({
       live.weight = next.weight;
       live.colorValue = next.colorValue;
       live.color = next.color;
+      live.width = next.width;
     }
 
     sels.node.attr("r", (d) => d.radius);
+    sels.label.text((d) => d.label);
     if (!liveRef.current.ambient) sels.node.attr("aria-label", (d) => describeNode(d));
     computeBaseLabels();
     refreshStyles();
@@ -1083,30 +1215,38 @@ export function GraphCanvas({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
 
-  // Layout and spacing switches morph the existing scene.
-  const firstLayoutRun = useRef(true);
+  // Layout and spacing switches morph the existing scene. A rebuild in the
+  // same commit already applied them, which covers the mount as well.
   useEffect(() => {
-    if (firstLayoutRun.current) {
-      firstLayoutRun.current = false;
-      return;
-    }
-    applyLayoutForces(0.9);
+    if (justBuiltRef.current) return;
+    applyLayoutForces(0.9, true);
     // Physics layouts are still spreading at 700ms, so fit once early for
-    // feedback and again once the simulation has actually settled.
+    // feedback; the settle fit re-frames the layout once it actually ends.
     const early = window.setTimeout(() => fit(650), 700);
-    const settled = window.setTimeout(() => fit(500), 2600);
     return () => {
       window.clearTimeout(early);
-      window.clearTimeout(settled);
     };
+    // Scripted targets are part of the layout: re-running a script while the
+    // "script" layout is already chosen changes them and nothing else.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, layoutParams, preventOverlap, style.spacing]);
+  }, [layout, layoutParams, preventOverlap, style.spacing, scriptedTargets]);
 
   useEffect(() => {
     computeBaseLabels();
     refreshStyles();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [labelMode, selection, style.arrows, theme]);
+
+  // Pinning holds the node where it stands; unpinning hands it back to the
+  // layout, which is the same act as switching layouts, so the same code runs
+  // it, with just enough heat for the released node to drift home. A document
+  // load replaces the set wholesale, and the rebuild has already honoured it.
+  useEffect(() => {
+    if (justBuiltRef.current) return;
+    applyLayoutForces(0.08);
+    refreshStyles();
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinned]);
 
   // A pattern that has just been dropped from the defs must stop being named
   // before anything paints, or the node it filled would come out blank. Fills
@@ -1141,6 +1281,9 @@ export function GraphCanvas({
       .scaleExtent([0.05, 6])
       .on("zoom", (event) => {
         select(viewport).attr("transform", event.transform.toString());
+        // A sourceEvent means a hand on the wheel rather than our own fit
+        // transition, and a camera the user has taken is not snatched back.
+        if (event.sourceEvent) disarmSettleFit();
       });
     zoomRef.current = behavior;
     const sel = select(svg);
@@ -1163,15 +1306,40 @@ export function GraphCanvas({
     };
   }, [ambient]);
 
+  // Declared after every effect that consults it, so it runs last in each
+  // commit and the rebuild's stand-down lasts exactly that one commit.
+  useEffect(() => {
+    justBuiltRef.current = false;
+  });
+
   useImperativeHandle(ref, () => ({
     fit: () => fit(600),
     reheat: () => {
-      applyLayoutForces(0.9);
+      applyLayoutForces(0.9, true);
     },
     separate: () => {
       noverlap(nodesRef.current);
       simRef.current?.alpha(0.05).restart();
       window.setTimeout(() => fit(500), 60);
+    },
+    center: (id: string) => {
+      const svg = svgRef.current;
+      const container = containerRef.current;
+      const behavior = zoomRef.current;
+      const node = nodesRef.current.find((n) => n.id === id);
+      if (!svg || !container || !behavior || !node) return;
+      // Zoomed out the label would arrive unreadable, so the travel also
+      // brings the scale up to one; zoomed in it stays where the reader put it.
+      const k = Math.max(zoomTransform(svg).k, 1);
+      const next = zoomIdentity
+        .translate(
+          container.clientWidth / 2 - k * (node.x ?? 0),
+          container.clientHeight / 2 - k * (node.y ?? 0),
+        )
+        .scale(k);
+      const sel = select(svg);
+      if (reducedMotion.current) sel.call(behavior.transform, next);
+      else sel.transition().duration(450).call(behavior.transform, next);
     },
     buildExport: () => {
       const svg = svgRef.current;
@@ -1209,10 +1377,13 @@ export function GraphCanvas({
           ))}
         </defs>
         <g ref={viewportRef} data-viewport="">
+          {/* The edge hit paths sit below the nodes: they are invisible, so
+              their order is purely about the pointer, and a click on a node
+              must reach the node even where an edge passes under it. */}
           <g data-links="" />
+          <g data-hits="" />
           <g data-nodes="" />
           <g data-labels="" />
-          <g data-hits="" />
         </g>
       </svg>
       {!ambient && <div className="graph-tooltip" ref={tooltipRef} />}

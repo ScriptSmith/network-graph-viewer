@@ -14,6 +14,7 @@ export { NGV_EXTENSION, writeWorkspace } from "./ngv";
 export { parseWorkspace, looksLikeWorkspace } from "./ngv";
 export { writeGexf } from "./gexf";
 export { writeGraphml } from "./graphml";
+export { exportHtml } from "./html";
 export * from "./gist";
 export * from "./url";
 

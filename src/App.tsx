@@ -9,8 +9,11 @@ import {
 } from "react";
 import type {
   CellValue,
+  Column,
   Dataset,
   GraphDoc,
+  GraphLink,
+  GraphNode,
   GraphStyle,
   LabelMode,
   Mapping,
@@ -27,6 +30,7 @@ import {
   detectFormat,
   downloadText,
   exportAs,
+  exportHtml,
   extractGistFileHint,
   extractGistId,
   fetchGist,
@@ -47,6 +51,8 @@ import {
   applyComputedColumns,
   buildDoc,
   clearComputedColumns,
+  edgeDetailColumnsFor,
+  nodeDetailColumnsFor,
   reconcileNodes,
   retargetStyle,
 } from "./lib/doc";
@@ -66,9 +72,11 @@ import { detectHostTheme, watchHostTheme, type ThemePreference } from "./lib/hos
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
+import { useReducedMotion, type MotionPreference } from "./useReducedMotion";
 import { useCornerDrag } from "./useCornerDrag";
 import { useDocHistory } from "./useDocHistory";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
+import { NodeSearch } from "./components/NodeSearch";
 import { Sidebar } from "./components/Sidebar";
 import { SampleList } from "./components/SampleList";
 import { StatsPanel } from "./components/StatsPanel";
@@ -168,6 +176,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const [labelMode, setLabelMode] = useState<LabelMode>("auto");
   // One selection covers both marks: a node, or an edge between two of them.
   const [selection, setSelection] = useState<GraphSelection | null>(null);
+  // Nodes held where they were put, whatever the layout does around them.
+  const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
   const selectedId = selectedNode(selection);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   // Seeded, not set in an effect: a host whose workspace would not read has
@@ -209,6 +219,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const toolbarDrag = useCornerDrag(toolbarCorner, setToolbarCorner);
 
   const canvasRef = useRef<GraphCanvasHandle>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   // Positions handed to the canvas on its next rebuild: a node just dropped,
   // or a whole layout that arrived with an imported file.
   const seedPositionsRef = useRef<Map<string, Position> | null>(null);
@@ -224,17 +235,32 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     [base, doc, style],
   );
   // Everything that draws in colour reads these two: the palette in force, and
-  // the group-to-slot map it produced for the graph on screen.
+  // the group-to-slot map it produced for the graph on screen. Type overrides
+  // land on the map here, once, so the legend, the bars and the details panel
+  // all answer with the same swatch the marks are wearing.
   const palette = useMemo(() => resolvePalette(style), [style]);
-  const colors = useMemo(
-    () => (graph ? groupColorMap(graph.groups, palette.categorical) : new Map<string, string>()),
-    [graph, palette],
-  );
-  const edgeColors = useMemo(
-    () =>
-      graph ? groupColorMap(graph.edgeGroups, palette.categorical) : new Map<string, string>(),
-    [graph, palette],
-  );
+  const colors = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const map = groupColorMap(graph.groups, palette.categorical);
+    const typeStyles = style.typeStyles;
+    if (typeStyles && styleColumn(style.nodeColor) === typeStyles.column) {
+      for (const [value, override] of Object.entries(typeStyles.styles)) {
+        if (override.color !== undefined && map.has(value)) map.set(value, override.color);
+      }
+    }
+    return map;
+  }, [graph, palette, style.typeStyles, style.nodeColor]);
+  const edgeColors = useMemo(() => {
+    if (!graph) return new Map<string, string>();
+    const map = groupColorMap(graph.edgeGroups, palette.categorical);
+    const types = style.edgeTypeStyles;
+    if (types && styleColumn(style.edgeColor) === types.column) {
+      for (const [value, override] of Object.entries(types.styles)) {
+        if (override.color !== undefined && map.has(value)) map.set(value, override.color);
+      }
+    }
+    return map;
+  }, [graph, palette, style.edgeTypeStyles, style.edgeColor]);
 
   // What the address bar last pointed at, so a link this app wrote is not
   // mistaken for one the user just pasted in.
@@ -274,6 +300,21 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     themeRoot.setAttribute("data-theme", themeMode);
     return () => themeRoot.removeAttribute("data-theme");
   }, [themeRoot, themeMode]);
+
+  /**
+   * Motion, resolved the way the colour scheme is: the system preference is
+   * the default and the View menu can override it either way. The one answer
+   * goes to the canvas as a prop and onto the root as `data-motion`, where the
+   * stylesheet's transitions read it, so the two halves cannot disagree.
+   */
+  const [motionPref, setMotionPref] = useState<MotionPreference>("auto");
+  const systemReducedMotion = useReducedMotion();
+  const reducedMotion = motionPref === "auto" ? systemReducedMotion : motionPref === "reduced";
+
+  useEffect(() => {
+    themeRoot.setAttribute("data-motion", reducedMotion ? "reduced" : "full");
+    return () => themeRoot.removeAttribute("data-motion");
+  }, [themeRoot, reducedMotion]);
   const rewriteUrl = useCallback(
     (href: string) => {
       const source = readUrlSource(href);
@@ -301,6 +342,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setChain([]);
       setShowIsolated(next.nodesDeclared);
       setSelection(null);
+      setPinned(new Set());
       setError(null);
       setNotice(null);
       setAllowRemoteImages(false);
@@ -316,7 +358,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setNodeTableIndex(null);
       seedPositionsRef.current = positions ?? null;
       resetDoc(next);
-      setStyle(workspace?.style ?? guessStyle(next.edges, next.mapping));
+      setStyle(workspace?.style ?? guessStyle(next.edges, next.mapping, next.nodes));
       setChain(workspace?.chain ?? []);
       setShowIsolated(workspace?.showIsolated ?? next.nodesDeclared);
       if (workspace) {
@@ -328,6 +370,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         setPreventOverlap(workspace.preventOverlap);
       }
       setSelection(null);
+      setPinned(new Set(workspace?.pinned ?? []));
       setError(null);
       setNotice(null);
       setAllowRemoteImages(false);
@@ -336,15 +379,18 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   );
 
   const adoptDataset = useCallback(
-    (next: Dataset, options: { nodeTable?: number; style?: Partial<GraphStyle> } = {}) => {
+    (
+      next: Dataset,
+      options: { nodeTable?: number; style?: Partial<GraphStyle>; nodeAttrs?: string[] } = {},
+    ) => {
       const edges = next.tables[0];
       const nodeIndex = options.nodeTable ?? null;
       const nodes = nodeIndex === null ? undefined : next.tables[nodeIndex];
-      const nextDoc = buildDoc(next.fileName, edges, { nodes });
+      const nextDoc = buildDoc(next.fileName, edges, { nodes, nodeAttrs: options.nodeAttrs });
       setDataset(next);
       setEdgeTableIndex(0);
       setNodeTableIndex(nodeIndex);
-      adoptDoc(nextDoc, { ...guessStyle(edges, nextDoc.mapping), ...options.style });
+      adoptDoc(nextDoc, { ...guessStyle(edges, nextDoc.mapping, nextDoc.nodes), ...options.style });
       setNotice(
         next.truncated
           ? `Read the first ${next.truncated.read.toLocaleString()} of ${next.truncated.total.toLocaleString()} rows.`
@@ -481,6 +527,29 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     [handleSelect],
   );
 
+  /** A find-box pick selects the node and travels the view to it. */
+  const handleSearchPick = useCallback(
+    (id: string) => {
+      handleSelect(nodeSelection(id));
+      canvasRef.current?.center(id);
+    },
+    [handleSelect],
+  );
+
+  const handleTogglePin = useCallback((id: string) => {
+    setPinned((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /** Shift-dragging only ever pins; letting go is the panel's affordance. */
+  const handlePinNode = useCallback((id: string) => {
+    setPinned((current) => (current.has(id) ? current : new Set(current).add(id)));
+  }, []);
+
   const anythingHidden = hiddenOverlays.size > 0 || collapsed.size > 0;
   const panelsHidden = collapsed.size === PANELS.length;
 
@@ -526,6 +595,12 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       } else if (e.key === "p" || e.key === "P") {
         if (panelsHidden) showPanels();
         else hidePanels();
+      } else if (e.key === "/") {
+        // Focus the find box rather than typing a slash into the page.
+        if (searchRef.current) {
+          e.preventDefault();
+          searchRef.current.focus();
+        }
       } else if (e.key === "Escape") {
         showEverything();
       }
@@ -546,7 +621,11 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const handleSample = useCallback(
     (network: SampleNetwork) => {
       forgetUrlSource();
-      adoptDataset(network.dataset, { nodeTable: network.nodeTable, style: network.style });
+      adoptDataset(network.dataset, {
+        nodeTable: network.nodeTable,
+        style: network.style,
+        nodeAttrs: network.nodeAttrs,
+      });
       // A shipped sample is ours. Its images are a known list on a known CDN,
       // not somebody else's choice of who this machine should talk to.
       setAllowRemoteImages(true);
@@ -678,6 +757,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     setChain([]);
     setShowIsolated(false);
     setSelection(null);
+    setPinned(new Set());
     setCollapsed(new Set<Panel>());
     setHiddenOverlays(new Set());
     setError(null);
@@ -692,7 +772,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       const nextDoc = buildDoc(dataset.fileName, edges, { nodes });
       setEdgeTableIndex(edgeIndex);
       setNodeTableIndex(nodeIndex);
-      adoptDoc(nextDoc, guessStyle(edges, nextDoc.mapping));
+      adoptDoc(nextDoc, guessStyle(edges, nextDoc.mapping, nextDoc.nodes));
     },
     [dataset, adoptDoc],
   );
@@ -709,6 +789,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           const col = styleColumn(token);
           return col === mapping.source || col === mapping.target ? fallback : token;
         };
+        const structural = (name: string) => name === mapping.source || name === mapping.target;
         return {
           ...s,
           nodeColor: fix(s.nodeColor, "none"),
@@ -716,6 +797,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           nodeImage: fix(s.nodeImage, "none"),
           edgeWidth: fix(s.edgeWidth, "uniform"),
           edgeColor: fix(s.edgeColor, "uniform"),
+          typeStyles: s.typeStyles && structural(s.typeStyles.column) ? undefined : s.typeStyles,
+          edgeTypeStyles:
+            s.edgeTypeStyles && structural(s.edgeTypeStyles.column) ? undefined : s.edgeTypeStyles,
         };
       });
     },
@@ -868,6 +952,52 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   );
 
   /**
+   * Progressive exploration: growing the view from the selection is adding
+   * the selected node to the centers of the last enabled ego step, which is
+   * an ordinary chain step, so reordering, disabling, undo and share links
+   * all keep working. With no ego step in the chain the first expansion
+   * starts one, a single hop wide.
+   */
+  const lastEgo = useMemo(() => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const step = chain[i];
+      if (step.kind === "ego" && step.enabled) return step;
+    }
+    return null;
+  }, [chain]);
+
+  const handleExpandFrom = useCallback((id: string) => {
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "ego" && step.enabled) {
+          if (step.centers.includes(id)) return current;
+          return current.map((s) =>
+            s.id === step.id && s.kind === "ego" ? { ...s, centers: [...s.centers, id] } : s,
+          );
+        }
+      }
+      return [
+        ...current,
+        { id: newStepId(), enabled: true, kind: "ego", centers: [id], depth: 1, direction: "any" },
+      ];
+    });
+  }, []);
+
+  const handleEgoDepthChange = useCallback((depth: number) => {
+    const clamped = Math.max(1, Math.min(6, depth));
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "ego" && step.enabled) {
+          return current.map((s) => (s.id === step.id ? { ...s, depth: clamped } : s));
+        }
+      }
+      return current;
+    });
+  }, []);
+
+  /**
    * Clicking a legend entry or a breakdown bar drops a one-value column step
    * onto the chain; clicking the same one again takes it back off.
    */
@@ -905,6 +1035,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       layoutParams,
       showIsolated,
       preventOverlap,
+      pinned: [...pinned],
     };
   }, [
     doc,
@@ -917,6 +1048,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     layoutParams,
     showIsolated,
     preventOverlap,
+    pinned,
   ]);
 
   /** The current session as a link, built on demand because packing costs. */
@@ -948,6 +1080,25 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     [exportInput],
   );
 
+  const appUrl = embed?.appUrl;
+  /**
+   * The HTML export inlines a bundle built beside the app. Served as a page it
+   * sits next to the other assets; embedded there is no "beside us", so it is
+   * fetched from wherever the app itself lives.
+   */
+  const handleExportHtml = useCallback(async () => {
+    const input = exportInput();
+    if (!input) return;
+    try {
+      const bundleUrl = appUrl
+        ? new URL("standalone.js", appUrl.endsWith("/") ? appUrl : `${appUrl}/`).toString()
+        : `${import.meta.env.BASE_URL}standalone.js`;
+      downloadText(await exportHtml(input, { bundleUrl, appUrl }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not build the HTML file.");
+    }
+  }, [exportInput, appUrl]);
+
   const handleExport = useCallback(
     async (format: "svg" | "png") => {
       const result = canvasRef.current?.buildExport();
@@ -974,6 +1125,17 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       if (file) void handleFile(file);
     },
     [handleFile],
+  );
+
+  // What one mark's tooltip lists. Functions rather than lists, because a
+  // typed mark can choose its own details; the canvas just asks.
+  const nodeAttrsFor = useCallback(
+    (d: GraphNode): Column[] => (doc ? nodeDetailColumnsFor(doc, style, d.row) : []),
+    [doc, style],
+  );
+  const edgeAttrsFor = useCallback(
+    (l: GraphLink): string[] => (doc ? edgeDetailColumnsFor(doc, style, l.rows) : []),
+    [doc, style],
   );
 
   const visibleRows = useMemo(() => new Set(base?.rows ?? []), [base]);
@@ -1047,6 +1209,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         chain={chain}
         chainResults={chained?.steps ?? []}
         graph={graph}
+        colors={colors}
+        edgeColors={edgeColors}
         selectedId={selectedId}
         showIsolated={showIsolated}
         layout={layout}
@@ -1072,6 +1236,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         onLabelModeChange={setLabelMode}
         onExport={(f) => void handleExport(f)}
         onExportData={handleExportData}
+        onExportHtml={() => void handleExportHtml()}
         onGist={(reference) => void handleGist(reference)}
         onGistSaved={handleGistSaved}
         gistId={gistId}
@@ -1096,7 +1261,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         <span className="panel-toggle-arrow" aria-hidden="true">
           {sidebarCollapsed ? "›" : "‹"}
         </span>
-        {sidebarCollapsed && <span className="panel-toggle-label">Data</span>}
+        {sidebarCollapsed && <span className="panel-toggle-label">Graph</span>}
       </button>
 
       {/* The same control on the data pane's edge, turned a quarter turn. */}
@@ -1112,7 +1277,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           <span className="panel-toggle-arrow" aria-hidden="true">
             {tableCollapsed ? "‹" : "›"}
           </span>
-          {tableCollapsed && <span className="panel-toggle-label">Table</span>}
+          {tableCollapsed && <span className="panel-toggle-label">Data</span>}
         </button>
       )}
 
@@ -1151,11 +1316,15 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 colors={colors}
                 theme={graphTheme}
                 edgeColors={edgeColors}
-                attrColumns={doc.mapping.attrs}
+                edgeAttrsFor={edgeAttrsFor}
+                nodeAttrsFor={nodeAttrsFor}
                 selection={selection}
                 onSelect={handleSelect}
                 seedPositions={seedPositionsRef}
                 allowRemoteImages={allowRemoteImages}
+                pinned={pinned}
+                onPinNode={handlePinNode}
+                reducedMotion={reducedMotion}
               />
               {hiddenOverlays.has("toolbar") && (
                 <button
@@ -1176,6 +1345,13 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   title="Drag into another corner"
                   {...toolbarDrag.handleProps}
                 >
+                  <NodeSearch
+                    graph={graph}
+                    corner={toolbarCorner}
+                    onPick={handleSearchPick}
+                    inputRef={searchRef}
+                  />
+                  <span className="tool-sep" aria-hidden="true" />
                   <button
                     type="button"
                     className="tool-btn"
@@ -1199,6 +1375,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                     legendAvailable={showLegend}
                     theme={themePref}
                     onThemeChange={setThemePref}
+                    motion={motionPref}
+                    onMotionChange={setMotionPref}
                     corner={toolbarCorner}
                     onSetOverlayVisible={setOverlayVisible}
                     onSetPanelOpen={setPanelOpen}
@@ -1253,10 +1431,10 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 colors={AMBIENT_COLORS}
                 theme={graphTheme}
                 edgeColors={new Map()}
-                attrColumns={[]}
                 selection={null}
                 onSelect={() => {}}
                 ambient
+                reducedMotion={reducedMotion}
               />
               <div className="empty">
                 <div className="empty-card">
@@ -1411,6 +1589,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             rows={filteredRows}
             totalRows={doc.edges.rows.length}
             graph={graph}
+            style={style}
             base={base}
             colorColumn={graph.ranking ? null : colorColumn}
             palette={palette}
@@ -1418,6 +1597,12 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             edgeColors={edgeColors}
             chain={chain}
             selection={selection}
+            pinned={pinned}
+            onTogglePin={handleTogglePin}
+            allowRemoteImages={allowRemoteImages}
+            egoDepth={lastEgo?.depth ?? null}
+            onExpandFrom={handleExpandFrom}
+            onEgoDepthChange={handleEgoDepthChange}
             onToggleValueFilter={handleToggleValueFilter}
             onSelectNode={handleSelectNode}
             onClose={() => setPanelOpen("stats", false)}

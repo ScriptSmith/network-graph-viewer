@@ -104,7 +104,7 @@ test("opens with the graph alone, and every closed panel names itself", async ()
   const labels = [...(el.shadowRoot?.querySelectorAll(".panel-toggle-label") ?? [])].map(
     (n) => n.textContent,
   );
-  expect(labels).toEqual(["Data", "Table", "Stats"]);
+  expect(labels).toEqual(["Graph", "Data", "Stats"]);
 });
 
 test("panels named by the host start open", async () => {
@@ -180,8 +180,8 @@ test("a closed tab names its panel beside the arrow, not in place of it", async 
   });
 
   for (const [selector, name] of [
-    [".sidebar-toggle", "Data"],
-    [".drawer-toggle", "Table"],
+    [".sidebar-toggle", "Graph"],
+    [".drawer-toggle", "Data"],
     [".stats-toggle", "Stats"],
   ] as const) {
     const tab = el.shadowRoot?.querySelector(selector);

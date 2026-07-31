@@ -1,5 +1,16 @@
-import type { CellValue, Column, Dataset, GraphStyle, Mapping, Row, Table } from "../types";
+import type {
+  CellValue,
+  Column,
+  ColumnRole,
+  Dataset,
+  GraphStyle,
+  Mapping,
+  Row,
+  Table,
+} from "../types";
 import { DEFAULT_STYLE } from "../types";
+import { parseColor } from "../theme";
+import { imageSource, isRemoteSource } from "./images";
 import { PARQUET_EXTENSIONS, parseParquet } from "./parquet";
 
 export const SHEET_EXTENSIONS = [".csv", ".tsv", ".txt", ".xlsx", ".xlsm", ".xls", ".ods"];
@@ -133,7 +144,52 @@ const BOOLEAN_WORDS = new Set(["true", "false", "yes", "no"]);
  * re-scanning the rows.
  */
 export function inferColumns(rows: Row[], names: string[]): Column[] {
-  return names.map((name) => ({ name, type: inferColumnType(rows, name) }));
+  return names.map((name) => {
+    const type = inferColumnType(rows, name);
+    const role = inferColumnRole(rows, name, type);
+    return role === undefined ? { name, type } : { name, type, role };
+  });
+}
+
+/** Web addresses that plainly name a picture; the rest are just addresses. */
+const IMAGE_URL = /\.(png|jpe?g|gif|webp|svg|avif)([?#]|$)/i;
+
+/**
+ * What a text column's values are for, when they say so almost unanimously.
+ * Deliberately strict: a wrong role hangs the wrong affordance on every cell,
+ * where no role costs one trip to the column menu.
+ */
+function inferColumnRole(
+  rows: Row[],
+  column: string,
+  type: Column["type"],
+): ColumnRole | undefined {
+  if (type !== "text") return undefined;
+  let filled = 0;
+  let colors = 0;
+  let images = 0;
+  let urls = 0;
+  for (const row of rows.slice(0, 200)) {
+    const v = row[column];
+    if (v === null || v === "" || typeof v !== "string") continue;
+    const text = v.trim();
+    if (text === "") continue;
+    filled++;
+    if (parseColor(text) !== null) {
+      colors++;
+    } else if (isRemoteSource(text)) {
+      if (IMAGE_URL.test(text)) images++;
+      else urls++;
+    } else if (imageSource(text) !== null) {
+      // Not a link, yet drawable: a data URI, inline SVG or bare base64.
+      images++;
+    }
+  }
+  if (filled < 2) return undefined;
+  if (colors / filled >= 0.9) return "color";
+  if (images / filled >= 0.9) return "image";
+  if ((urls + images) / filled >= 0.9 && urls > images) return "url";
+  return undefined;
 }
 
 function inferColumnType(rows: Row[], column: string): Column["type"] {
@@ -187,8 +243,11 @@ export function guessMapping(table: Table): Mapping {
   return { source, target, attrs };
 }
 
-/** Guess appearance defaults: color nodes by a group-like column if present. */
-export function guessStyle(table: Table, mapping: Mapping): GraphStyle {
+/**
+ * Guess appearance defaults: a color-role column paints the marks itself, and
+ * failing that a group-like column keys the palette.
+ */
+export function guessStyle(table: Table, mapping: Mapping, nodes?: Table): GraphStyle {
   const candidate = table.columns.find(
     (c) =>
       c.name !== mapping.source &&
@@ -196,5 +255,15 @@ export function guessStyle(table: Table, mapping: Mapping): GraphStyle {
       c.type === "text" &&
       GROUP_HINTS.test(c.name),
   );
-  return { ...DEFAULT_STYLE, nodeColor: candidate ? `column:${candidate.name}` : "none" };
+  // A column that already holds colors was made to style the graph; a fresh
+  // import with one arrives styled the way its author drew it.
+  const nodeCell = nodes?.columns.find((c) => c.role === "color");
+  const edgeCell = table.columns.find(
+    (c) => c.role === "color" && c.name !== mapping.source && c.name !== mapping.target,
+  );
+  return {
+    ...DEFAULT_STYLE,
+    nodeColor: nodeCell ? `cell:${nodeCell.name}` : candidate ? `column:${candidate.name}` : "none",
+    ...(edgeCell ? { edgeColor: `cell:${edgeCell.name}` } : {}),
+  };
 }

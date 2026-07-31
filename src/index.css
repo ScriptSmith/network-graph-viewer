@@ -866,6 +866,132 @@ body.resizing-y {
   background: var(--hairline);
 }
 
+/* The find box sits in the strip and dresses like its buttons until focused. */
+.node-search {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.node-search-input {
+  width: 108px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 12.5px;
+  color: var(--ink);
+  transition: width 120ms ease;
+}
+
+.node-search-input::placeholder {
+  color: var(--ink-3);
+}
+
+.node-search-input:hover {
+  background: var(--raised);
+}
+
+.node-search-input:focus {
+  width: 190px;
+  background: var(--raised);
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Rides inside the box's right edge while there is something to clear. */
+.node-search-clear {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.node-search-clear:hover {
+  color: var(--ink);
+}
+
+.node-search-head {
+  padding: 3px 8px 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* Opens into the stage the way the view menu does, whatever the corner. */
+.node-search-menu {
+  position: absolute;
+  z-index: 4;
+  min-width: 230px;
+  max-width: 330px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 30px var(--shadow);
+}
+
+.node-search-menu.from-top-left,
+.node-search-menu.from-top-right {
+  top: calc(100% + 9px);
+}
+
+.node-search-menu.from-bottom-left,
+.node-search-menu.from-bottom-right {
+  bottom: calc(100% + 9px);
+}
+
+.node-search-menu.from-top-left,
+.node-search-menu.from-bottom-left {
+  left: 0;
+}
+
+.node-search-menu.from-top-right,
+.node-search-menu.from-bottom-right {
+  right: 0;
+}
+
+.node-opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.node-opt.active {
+  background: var(--raised-2);
+}
+
+.node-opt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-opt-id {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.node-opt-empty {
+  color: var(--ink-3);
+  cursor: default;
+}
+
 .view-menu-wrap {
   position: relative;
   display: flex;
@@ -1367,6 +1493,187 @@ body.resizing-y {
   border-radius: 6px;
 }
 
+/* The pin sits beside the ×, quiet until it is holding something. */
+.insp-pin {
+  flex: none;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 550;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.insp-pin:hover {
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+}
+
+.insp-pin.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Role-aware attribute values: a link that wraps, a thumbnail that behaves. */
+.cell-link {
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.insp-thumb {
+  display: block;
+  max-width: 120px;
+  max-height: 80px;
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+/* ---- Style step: the Nodes and Edges groups ---- */
+
+.style-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.style-group + .style-group {
+  border-top: 1px dashed var(--hairline);
+  padding-top: 12px;
+}
+
+.style-group-head {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+/* One type's overrides, inset and edged so it reads as aimed rather than
+   global: everything inside applies to the chosen kind alone. */
+.ts-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--accent);
+}
+
+.ts-color-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-color-note {
+  flex: 1;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.ts-color {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  padding: 1px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.ts-size {
+  width: 90px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.ts-clear {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--ink-3);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ts-clear:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--raised);
+}
+
+.ts-clear:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ts-reset {
+  align-self: flex-start;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.ts-attrs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+/* The expand control and its hop stepper in the node details. */
+.expand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+
+.hop-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.hop-stepper button {
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--ink);
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hop-stepper button:hover:not(:disabled) {
+  border-color: var(--hairline-strong);
+}
+
+.hop-stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The ego step's value list borrows the column menu's box at a smaller cap. */
+.chain-where-values {
+  max-height: 150px;
+  overflow-y: auto;
+}
+
 .insp-close:hover {
   color: var(--ink);
   background: var(--raised);
@@ -1850,7 +2157,8 @@ input.swatch::-moz-color-swatch {
 /* ---- Script panel ---- */
 
 .script-block > summary,
-.gist-save > summary {
+.gist-save > summary,
+.load-other > summary {
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -1860,14 +2168,23 @@ input.swatch::-moz-color-swatch {
 }
 
 .script-block > summary::before,
-.gist-save > summary::before {
+.gist-save > summary::before,
+.load-other > summary::before {
   content: "▸ ";
   color: var(--ink-3);
 }
 
 .script-block[open] > summary::before,
-.gist-save[open] > summary::before {
+.gist-save[open] > summary::before,
+.load-other[open] > summary::before {
   content: "▾ ";
+}
+
+.load-other-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
 }
 
 .script {
@@ -3395,8 +3712,18 @@ input.swatch::-moz-color-swatch {
   color: var(--ink-3);
 }
 
+/* Movement, resolved by the app into `data-motion` on the root that owns it,
+   the way the theme is: the system preference is the default and the View menu
+   can override it either way. `:host` as well, for the shadow-rooted embed. */
+:root[data-motion="reduced"] *,
+:host([data-motion="reduced"]) * {
+  transition: none !important;
+}
+
+/* Until the app has stamped an answer, the system preference stands. */
 @media (prefers-reduced-motion: reduce) {
-  * {
+  :root:not([data-motion]) *,
+  :host(:not([data-motion])) * {
     transition: none !important;
   }
 }

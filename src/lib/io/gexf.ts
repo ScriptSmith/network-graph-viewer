@@ -1,7 +1,7 @@
 import type { Column, GraphDoc, Graph, GraphStyle, Row } from "../../types";
 import { styleColumn } from "../../types";
 import { cellToId } from "../cells";
-import { DEFAULT_NODE_ID_COLUMN } from "../doc";
+import { DEFAULT_NODE_ID_COLUMN, hasColumn } from "../doc";
 import { DEFAULT_COLORS, NEUTRAL, type Palette } from "../../theme";
 import { markColor } from "../graph";
 import {
@@ -244,13 +244,18 @@ export function writeGexf({
     return markColor(node, graph.ranking, colors, palette);
   };
 
+  // The label attribute carries the display name when one is mapped, which is
+  // what Gephi shows; the id stays the id, so the endpoints still resolve.
+  const labelColumn = styleColumn(style.nodeLabel);
+  const labelled = labelColumn !== null && hasColumn(doc.nodes, labelColumn);
+
   const nodesEl = make("nodes");
   for (const row of doc.nodes.rows) {
     const id = cellToId(row[doc.nodeIdColumn]);
     if (id === null) continue;
     const element = make("node");
     element.setAttribute("id", id);
-    element.setAttribute("label", id);
+    element.setAttribute("label", labelled ? (cellToId(row[labelColumn]) ?? id) : id);
 
     const values = attValues(row, "node", nodeAttrs);
     if (values) element.appendChild(values);

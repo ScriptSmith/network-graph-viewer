@@ -1,7 +1,13 @@
 import { expect, test } from "vitest";
 import type { GraphDoc, Row, Table } from "../types";
 import { buildDoc } from "./doc";
-import { applyChain, type FilterSpec, type FilterStep } from "./filter";
+import {
+  applyChain,
+  isFilterStep,
+  retargetChain,
+  type FilterSpec,
+  type FilterStep,
+} from "./filter";
 
 let counter = 0;
 const step = (spec: FilterSpec & { enabled?: boolean }): FilterStep => ({
@@ -57,6 +63,72 @@ test("reordering two steps changes the answer, which is the point of a chain", (
   // Degree first: the hubs survive, and B's neighbourhood within that smaller
   // graph still contains C.
   expect(idsOf(doc, [degree, ego])).toEqual(["B", "C"]);
+});
+
+test("an ego step with an edge constraint walks only the matching edges", () => {
+  // Two routes out of A: a "rail" line through B to C, and a "bus" hop to Y.
+  const rows: Row[] = [
+    { Source: "A", Target: "B", Line: "rail" },
+    { Source: "B", Target: "C", Line: "rail" },
+    { Source: "A", Target: "Y", Line: "bus" },
+    { Source: "Y", Target: "Z", Line: "bus" },
+  ];
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "Source", type: "text" },
+      { name: "Target", type: "text" },
+      { name: "Line", type: "text" },
+    ],
+    rows,
+  };
+  const doc = buildDoc("lines", edges, {
+    mapping: { source: "Source", target: "Target", attrs: ["Line"] },
+  });
+
+  const along = (values: string[]) =>
+    idsOf(doc, [
+      step({
+        kind: "ego",
+        centers: ["A"],
+        depth: 2,
+        direction: "any",
+        where: { column: "Line", values },
+      }),
+    ]);
+
+  expect(along(["rail"])).toEqual(["A", "B", "C"]);
+  expect(along(["bus"])).toEqual(["A", "Y", "Z"]);
+  expect(along(["rail", "bus"])).toEqual(["A", "B", "C", "Y", "Z"]);
+  // The unconstrained step still reaches everything.
+  expect(idsOf(doc, [step({ kind: "ego", centers: ["A"], depth: 2, direction: "any" })])).toEqual([
+    "A",
+    "B",
+    "C",
+    "Y",
+    "Z",
+  ]);
+});
+
+test("the ego constraint is validated and follows column renames", () => {
+  const good: FilterStep = step({
+    kind: "ego",
+    centers: ["A"],
+    depth: 1,
+    direction: "any",
+    where: { column: "Line", values: ["rail"] },
+  });
+  expect(isFilterStep(good)).toBe(true);
+  expect(isFilterStep({ ...good, where: { column: 7, values: [] } })).toBe(false);
+  expect(isFilterStep({ ...good, where: { column: "Line", values: [null] } })).toBe(false);
+
+  const renamed = retargetChain([good], "edges", "Line", "Route");
+  expect(renamed[0].kind === "ego" && renamed[0].where?.column).toBe("Route");
+
+  // Deleting the column drops the constraint, not the step.
+  const dropped = retargetChain([good], "edges", "Line", null);
+  expect(dropped).toHaveLength(1);
+  expect(dropped[0].kind === "ego" && dropped[0].where).toBeUndefined();
 });
 
 test("a disabled step is skipped but still reports the counts around it", () => {

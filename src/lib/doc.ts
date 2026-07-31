@@ -1,4 +1,15 @@
-import type { CellValue, Column, GraphDoc, GraphStyle, Mapping, Row, Table } from "../types";
+import type {
+  CellValue,
+  Column,
+  EdgeTypeStyle,
+  GraphDoc,
+  GraphStyle,
+  Mapping,
+  NodeTypeStyle,
+  Row,
+  Table,
+  TypeStyles,
+} from "../types";
 import { styleColumn } from "../types";
 import type { MetricRunResult } from "./metrics";
 import { cellToId, edgeKey } from "./cells";
@@ -67,9 +78,11 @@ export function guessNodeIdColumn(table: Table): string {
 export function buildDoc(
   name: string,
   edges: Table,
-  options: { nodes?: Table; mapping?: Mapping } = {},
+  options: { nodes?: Table; mapping?: Mapping; nodeAttrs?: string[] } = {},
 ): GraphDoc {
-  const mapping = options.mapping ?? guessMapping(edges);
+  const guessed = options.mapping ?? guessMapping(edges);
+  const mapping =
+    options.nodeAttrs === undefined ? guessed : { ...guessed, nodeAttrs: options.nodeAttrs };
   if (options.nodes) {
     const nodeIdColumn = guessNodeIdColumn(options.nodes);
     return reconcileNodes({
@@ -132,6 +145,62 @@ export function nodeStyleColumns(doc: GraphDoc): Column[] {
   return out;
 }
 
+/**
+ * The node columns shown as details in tooltips and the inspector: the chosen
+ * set where one was chosen, otherwise every column but the id.
+ */
+export function nodeDetailColumns(doc: GraphDoc): Column[] {
+  const candidates = doc.nodes.columns.filter((c) => c.name !== doc.nodeIdColumn);
+  const chosen = doc.mapping.nodeAttrs;
+  if (chosen === undefined) return candidates;
+  const set = new Set(chosen);
+  return candidates.filter((c) => set.has(c.name));
+}
+
+/**
+ * The same question for one particular node: its type may choose its own
+ * details, and a type with no opinion falls back to the shared set. The row
+ * itself answers what type the node is, so this stays a lookup, not a scan.
+ */
+export function nodeDetailColumnsFor(doc: GraphDoc, style: GraphStyle, row: Row): Column[] {
+  const types = style.typeStyles;
+  if (types !== undefined) {
+    const kind = cellToId(row[types.column]);
+    if (kind !== null && Object.hasOwn(types.styles, kind)) {
+      const attrs = types.styles[kind].attrs;
+      if (attrs !== undefined) {
+        const set = new Set(attrs);
+        return doc.nodes.columns.filter((c) => c.name !== doc.nodeIdColumn && set.has(c.name));
+      }
+    }
+  }
+  return nodeDetailColumns(doc);
+}
+
+/**
+ * The edge side: a link merges every row with the same endpoints, and its
+ * type is the first row that says one, matching how the styling reads it.
+ */
+export function edgeDetailColumnsFor(doc: GraphDoc, style: GraphStyle, rows: Row[]): string[] {
+  const types = style.edgeTypeStyles;
+  if (types !== undefined) {
+    const kind = rows.map((r) => cellToId(r[types.column])).find((k) => k !== null) ?? null;
+    if (kind !== null && Object.hasOwn(types.styles, kind)) {
+      const attrs = types.styles[kind].attrs;
+      if (attrs !== undefined) {
+        const set = new Set(attrs);
+        return doc.edges.columns
+          .filter(
+            (c) =>
+              c.name !== doc.mapping.source && c.name !== doc.mapping.target && set.has(c.name),
+          )
+          .map((c) => c.name);
+      }
+    }
+  }
+  return doc.mapping.attrs;
+}
+
 /** Edge columns that aren't the source or target. */
 export function edgeStyleColumns(doc: GraphDoc): Column[] {
   return doc.edges.columns.filter(
@@ -144,6 +213,7 @@ const STYLE_FALLBACKS = {
   nodeColor: "none",
   nodeSize: "metric:degree",
   nodeImage: "none",
+  nodeLabel: "none",
   edgeWidth: "uniform",
   edgeColor: "uniform",
 } as const;
@@ -173,14 +243,83 @@ export function retargetStyle(
 
   const onNodes = hasColumn(next.nodes, from) || hasColumn(next.edges, from);
   const onEdges = hasColumn(next.edges, from);
+  // Labels never fall back to the edges, so only the node table answers them.
+  const onNodeTable = hasColumn(next.nodes, from);
+
   return {
     ...style,
     nodeColor: move("nodeColor", onNodes),
     nodeSize: move("nodeSize", onNodes),
     nodeImage: move("nodeImage", onNodes),
+    nodeLabel: move("nodeLabel", onNodeTable),
     edgeWidth: move("edgeWidth", onEdges),
     edgeColor: move("edgeColor", onEdges),
+    typeStyles: retargetNodeTypes(style.typeStyles, from, to, onNodes, onNodeTable),
+    edgeTypeStyles: retargetEdgeTypes(style.edgeTypeStyles, from, to, onEdges),
   };
+}
+
+/**
+ * Type blocks name columns in two places: the type column itself, and inside
+ * each override, where a label column or a chosen detail set does. A rename
+ * follows into all of them; a delete drops exactly the part that named it,
+ * the whole block for the type column, one field for the rest.
+ */
+function retargetNodeTypes(
+  types: TypeStyles<NodeTypeStyle> | undefined,
+  from: string,
+  to: string | null,
+  resolvesAnywhere: boolean,
+  resolvesOnNodes: boolean,
+): TypeStyles<NodeTypeStyle> | undefined {
+  if (types === undefined) return undefined;
+  let column = types.column;
+  if (column === from && !resolvesAnywhere) {
+    if (to === null) return undefined;
+    column = to;
+  }
+  const styles = Object.create(null) as Record<string, NodeTypeStyle>;
+  for (const [key, override] of Object.entries(types.styles)) {
+    const moved: NodeTypeStyle = { ...override };
+    if (moved.labelColumn === from && !resolvesOnNodes) {
+      if (to === null) delete moved.labelColumn;
+      else moved.labelColumn = to;
+    }
+    if (moved.attrs !== undefined && moved.attrs.includes(from) && !resolvesOnNodes) {
+      moved.attrs =
+        to === null
+          ? moved.attrs.filter((a) => a !== from)
+          : moved.attrs.map((a) => (a === from ? to : a));
+    }
+    styles[key] = moved;
+  }
+  return { column, styles };
+}
+
+function retargetEdgeTypes(
+  types: TypeStyles<EdgeTypeStyle> | undefined,
+  from: string,
+  to: string | null,
+  resolvesOnEdges: boolean,
+): TypeStyles<EdgeTypeStyle> | undefined {
+  if (types === undefined) return undefined;
+  let column = types.column;
+  if (column === from && !resolvesOnEdges) {
+    if (to === null) return undefined;
+    column = to;
+  }
+  const styles = Object.create(null) as Record<string, EdgeTypeStyle>;
+  for (const [key, override] of Object.entries(types.styles)) {
+    const moved: EdgeTypeStyle = { ...override };
+    if (moved.attrs !== undefined && moved.attrs.includes(from) && !resolvesOnEdges) {
+      moved.attrs =
+        to === null
+          ? moved.attrs.filter((a) => a !== from)
+          : moved.attrs.map((a) => (a === from ? to : a));
+    }
+    styles[key] = moved;
+  }
+  return { column, styles };
 }
 
 /**
@@ -192,6 +331,8 @@ export function colorCellColumns(doc: GraphDoc, scope: "nodes" | "edges"): Colum
   const candidates = scope === "nodes" ? nodeStyleColumns(doc) : edgeStyleColumns(doc);
   return candidates.filter((c) => {
     if (c.type !== "text") return false;
+    // A declared role settles it either way; counting is for the undeclared.
+    if (c.role !== undefined) return c.role === "color";
     // Node styling resolves against the node table first, so that is where the
     // cells are read from when both tables happen to carry the name.
     const rows =

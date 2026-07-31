@@ -19,6 +19,7 @@ import base64
 import datetime
 import decimal
 import math
+import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -153,6 +154,58 @@ def infer_column_type(values: Iterable[Cell]) -> str:
     return "number" if numeric / seen >= 0.8 else "text"
 
 
+COLUMN_ROLES = ("color", "size", "image", "url")
+
+_COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|rgba|hsl|hsla)\(.*\))$")
+_URL = re.compile(r"^https?://", re.IGNORECASE)
+_IMAGE_URL = re.compile(r"\.(png|jpe?g|gif|webp|svg|avif)([?#]|$)", re.IGNORECASE)
+_DATA_IMAGE = re.compile(r"^data:image/", re.IGNORECASE)
+
+
+def infer_column_role(values: Iterable[Cell]) -> str | None:
+    """What a text column's values are for, when they say so almost unanimously.
+
+    The viewer runs the same kind of census on import. Deliberately strict,
+    and narrower than the app's (named CSS colors need a browser to read):
+    a wrong role is worse than none, since the role decides which affordances
+    hang on every cell.
+    """
+    filled = colors = images = urls = 0
+    for value in list(values)[:200]:
+        if not isinstance(value, str) or value.strip() == "":
+            continue
+        text = value.strip()
+        filled += 1
+        if _COLOR.match(text):
+            colors += 1
+        elif _URL.match(text):
+            if _IMAGE_URL.search(text):
+                images += 1
+            else:
+                urls += 1
+        elif _DATA_IMAGE.match(text):
+            images += 1
+    if filled < 2:
+        return None
+    if colors / filled >= 0.9:
+        return "color"
+    if images / filled >= 0.9:
+        return "image"
+    if (urls + images) / filled >= 0.9 and urls > images:
+        return "url"
+    return None
+
+
+def _apply_roles(table: dict[str, Any]) -> dict[str, Any]:
+    for column in table["columns"]:
+        if column["type"] != "text" or "role" in column:
+            continue
+        role = infer_column_role(row.get(column["name"]) for row in table["rows"])
+        if role is not None:
+            column["role"] = role
+    return table
+
+
 def _is_dataframe(data: Any) -> bool:
     return hasattr(data, "columns") and hasattr(data, "to_dict") and hasattr(data, "dtypes")
 
@@ -231,14 +284,14 @@ def _table_from_pairs(
 def to_table(data: Any, name: str, *, source: str = "source", target: str = "target") -> dict:
     """Any of the shapes an edge list arrives in, as one table."""
     if _is_dataframe(data):
-        return _table_from_dataframe(data, name)
+        return _apply_roles(_table_from_dataframe(data, name))
     items = list(data)
     if not items:
         raise ValueError("There are no rows to draw.")
     if isinstance(items[0], Mapping):
-        return _table_from_records(items, name)
+        return _apply_roles(_table_from_records(items, name))
     if isinstance(items[0], Sequence) and not isinstance(items[0], (str, bytes)):
-        return _table_from_pairs(items, name, source, target)
+        return _apply_roles(_table_from_pairs(items, name, source, target))
     raise TypeError(
         "Edges must be a DataFrame, a sequence of mappings, or a sequence of "
         f"(source, target) pairs; got a sequence of {type(items[0]).__name__}."
@@ -316,6 +369,58 @@ def _style_token(value: str | None, *, default: str) -> str:
     return value if ":" in value else f"column:{value}"
 
 
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}$")
+
+
+def _valid_type_block(
+    value: Mapping[str, Any], *, number_key: str, string_keys: Sequence[str]
+) -> dict[str, Any]:
+    """A per-type override block, shape-checked the way the app checks it.
+
+    Colors are held to '#rrggbb' because that is all that survives the app's
+    own parsing; better a loud error here than a silently grey mark there.
+    The node block's number is 'size' (a radius) and the edge block's is
+    'width' (a stroke); both may pick their own hover details with 'attrs'.
+    """
+    column = value.get("column")
+    styles = value.get("styles")
+    if not isinstance(column, str) or not isinstance(styles, Mapping):
+        raise ValueError("A type styles block needs a 'column' name and a 'styles' mapping.")
+    out: dict[str, dict[str, Any]] = {}
+    for key, raw in styles.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"type styles for {key!r} must be a mapping.")
+        entry: dict[str, Any] = {}
+        if "color" in raw:
+            color = raw["color"]
+            if not isinstance(color, str) or not _HEX_COLOR.fullmatch(color):
+                raise ValueError(f"type style color for {key!r} must be '#rrggbb'.")
+            entry["color"] = color
+        if number_key in raw:
+            number = raw[number_key]
+            if isinstance(number, bool) or not isinstance(number, (int, float)):
+                raise ValueError(f"type style {number_key} for {key!r} must be a number.")
+            entry[number_key] = number
+        for name in string_keys:
+            if name in raw:
+                text = raw[name]
+                if not isinstance(text, str):
+                    raise ValueError(f"type style {name} for {key!r} must be a string.")
+                entry[name] = text
+        if "attrs" in raw:
+            attrs = raw["attrs"]
+            if (
+                not isinstance(attrs, Sequence)
+                or isinstance(attrs, (str, bytes))
+                or not all(isinstance(a, str) for a in attrs)
+            ):
+                raise ValueError(f"type style attrs for {key!r} must be a list of column names.")
+            entry["attrs"] = list(attrs)
+        if entry:
+            out[str(key)] = entry
+    return {"column": column, "styles": out}
+
+
 def build_workspace(
     edges: Any,
     *,
@@ -323,10 +428,15 @@ def build_workspace(
     target: str | None = None,
     nodes: Any = None,
     node_id: str | None = None,
+    node_attrs: Sequence[str] | None = None,
+    roles: Mapping[str, str] | None = None,
+    type_styles: Mapping[str, Any] | None = None,
+    edge_type_styles: Mapping[str, Any] | None = None,
     name: str = "Graph",
     color: str | None = None,
     size: str | None = None,
     image: str | None = None,
+    label: str | None = None,
     edge_color: str | None = None,
     edge_width: str | None = None,
     arrows: bool = True,
@@ -334,6 +444,7 @@ def build_workspace(
     layout: str = "force",
     show_isolated: bool | None = None,
     positions: Mapping[str, Mapping[str, float]] | None = None,
+    pinned: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble a workspace the viewer can open.
 
@@ -376,6 +487,28 @@ def build_workspace(
         node_table = derive_nodes(edge_table["rows"], source, target)
         node_id = DEFAULT_NODE_ID_COLUMN
 
+    if node_attrs is not None:
+        node_columns = [c["name"] for c in node_table["columns"]]
+        for column in node_attrs:
+            if column not in node_columns:
+                raise ValueError(
+                    f"No node column named {column!r} for node_attrs; the node table has "
+                    f"{', '.join(repr(c) for c in node_columns)}."
+                )
+
+    # Declared roles override the census, wherever the name matches.
+    for column_name, role in (roles or {}).items():
+        if role not in COLUMN_ROLES:
+            raise ValueError(f"Unknown role {role!r}; expected one of {', '.join(COLUMN_ROLES)}.")
+        matched = False
+        for table in (edge_table, node_table):
+            for column in table["columns"]:
+                if column["name"] == column_name:
+                    column["role"] = role
+                    matched = True
+        if not matched:
+            raise ValueError(f"No column named {column_name!r} to give the {role!r} role.")
+
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -388,6 +521,8 @@ def build_workspace(
                 "source": source,
                 "target": target,
                 "attrs": [c for c in edge_columns if c not in (source, target)],
+                # Absent means every node column; only a chosen set is written.
+                **({} if node_attrs is None else {"nodeAttrs": list(node_attrs)}),
             },
             "nodesDeclared": declared,
         },
@@ -395,10 +530,29 @@ def build_workspace(
             "nodeColor": _style_token(color, default="none"),
             "nodeSize": _style_token(size, default="metric:degree"),
             "nodeImage": _style_token(image, default="none"),
+            "nodeLabel": _style_token(label, default="none"),
             "edgeColor": _style_token(edge_color, default="uniform"),
             "edgeWidth": _style_token(edge_width, default="uniform"),
             "arrows": arrows,
             "spacing": spacing,
+            **(
+                {}
+                if type_styles is None
+                else {
+                    "typeStyles": _valid_type_block(
+                        type_styles, number_key="size", string_keys=("image", "labelColumn")
+                    )
+                }
+            ),
+            **(
+                {}
+                if edge_type_styles is None
+                else {
+                    "edgeTypeStyles": _valid_type_block(
+                        edge_type_styles, number_key="width", string_keys=()
+                    )
+                }
+            ),
         },
         "chain": [],
         "layout": layout,
@@ -406,4 +560,6 @@ def build_workspace(
         "showIsolated": declared if show_isolated is None else show_isolated,
         "preventOverlap": False,
         "positions": {str(k): dict(v) for k, v in (positions or {}).items()},
+        # Written the way the app writes it: only when something is pinned.
+        **({} if not pinned else {"pinned": [str(p) for p in pinned]}),
     }

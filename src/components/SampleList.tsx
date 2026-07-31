@@ -1,14 +1,21 @@
 import { SAMPLES, type SampleNetwork } from "../samples";
 
 /**
- * The shipped networks other than the first, which both callers offer as
- * their own button. A ruled list rather than a grid, so it reads as a short
- * menu next to the file controls instead of competing with them.
+ * The shipped networks as a ruled list, so it reads as a short menu next to
+ * the file controls instead of competing with them. The empty state's card
+ * offers the first network as a button of its own, so the sidebar's empty
+ * state skips it here; everywhere else the list is the whole menu.
  */
-export function SampleList({ onPick }: { onPick: (network: SampleNetwork) => void }) {
+export function SampleList({
+  onPick,
+  all = false,
+}: {
+  onPick: (network: SampleNetwork) => void;
+  all?: boolean;
+}) {
   return (
     <div className="sample-links">
-      {SAMPLES.slice(1).map((network) => (
+      {(all ? SAMPLES : SAMPLES.slice(1)).map((network) => (
         <button
           key={network.id}
           type="button"

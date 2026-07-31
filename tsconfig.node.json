@@ -20,8 +20,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  /* Both configs: the embed one builds the file the Python package publishes,
-     so leaving it out would mean the widget's build is the one thing here that
-     is never type-checked. */
-  "include": ["vite.config.ts", "vite.embed.config.ts"]
+  /* Every config: the embed one builds the file the Python package publishes
+     and the standalone one builds what the HTML export inlines, so leaving
+     either out would leave a shipped build un-type-checked. */
+  "include": ["vite.config.ts", "vite.embed.config.ts", "vite.standalone.config.ts"]
 }

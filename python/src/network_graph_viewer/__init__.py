@@ -9,13 +9,14 @@ w.edges                # the edge table, edits included
 """
 
 from .widget import APP_URL, BUNDLE, GraphWidget, show
-from .workspace import build_workspace, to_cell, to_table
+from .workspace import build_workspace, infer_column_role, to_cell, to_table
 
 __all__ = [
     "APP_URL",
     "BUNDLE",
     "GraphWidget",
     "build_workspace",
+    "infer_column_role",
     "show",
     "to_cell",
     "to_table",

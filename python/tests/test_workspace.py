@@ -109,6 +109,110 @@ def test_style_names_a_column_or_takes_a_token_whole():
     assert workspace["style"]["nodeSize"] == "metric:degree"
 
 
+def test_node_attrs_choose_the_hover_details_and_are_checked_by_name():
+    nodes = [{"Id": "ana", "dept": "design", "seat": "4F"}]
+    workspace = build_workspace(EDGES, source="from", target="to", nodes=nodes, node_attrs=["dept"])
+    assert workspace["doc"]["mapping"]["nodeAttrs"] == ["dept"]
+
+    workspace = build_workspace(EDGES, source="from", target="to", nodes=nodes)
+    assert "nodeAttrs" not in workspace["doc"]["mapping"]
+
+    with pytest.raises(ValueError, match="No node column named 'nope'"):
+        build_workspace(EDGES, source="from", target="to", nodes=nodes, node_attrs=["nope"])
+
+
+def test_a_column_of_colors_earns_the_color_role_and_prose_does_not():
+    rows = [
+        {"a": "x", "b": "y", "paint": "#b7410e", "note": "likes red"},
+        {"a": "y", "b": "z", "paint": "#3987e5", "note": "red again"},
+    ]
+    table = build_workspace(rows, source="a", target="b")["doc"]["edges"]
+    by_name = {c["name"]: c for c in table["columns"]}
+    assert by_name["paint"]["role"] == "color"
+    assert "role" not in by_name["note"]
+
+
+def test_urls_and_image_urls_are_told_apart():
+    rows = [
+        {"a": "x", "b": "y", "site": "https://example.test/a", "pic": "https://example.test/a.png"},
+        {"a": "y", "b": "z", "site": "https://example.test/b", "pic": "https://example.test/b.png"},
+    ]
+    table = build_workspace(rows, source="a", target="b")["doc"]["edges"]
+    by_name = {c["name"]: c for c in table["columns"]}
+    assert by_name["site"]["role"] == "url"
+    assert by_name["pic"]["role"] == "image"
+
+
+def test_declared_roles_override_and_are_checked():
+    nodes = [{"Id": "ana", "swatch": "#fff"}]
+    workspace = build_workspace(
+        EDGES, source="from", target="to", nodes=nodes, roles={"team": "color"}
+    )
+    edge_columns = {c["name"]: c for c in workspace["doc"]["edges"]["columns"]}
+    assert edge_columns["team"]["role"] == "color"
+
+    with pytest.raises(ValueError, match="Unknown role"):
+        build_workspace(EDGES, source="from", target="to", roles={"team": "flavour"})
+    with pytest.raises(ValueError, match="No column named 'nope'"):
+        build_workspace(EDGES, source="from", target="to", roles={"nope": "color"})
+
+
+def test_type_styles_pass_through_shape_checked():
+    workspace = build_workspace(
+        EDGES,
+        source="from",
+        target="to",
+        type_styles={
+            "column": "team",
+            "styles": {"design": {"color": "#e2762f", "size": 12, "attrs": ["weight"]}},
+        },
+        edge_type_styles={
+            "column": "team",
+            "styles": {"design": {"color": "#3f9f6e", "width": 4, "attrs": []}},
+        },
+    )
+    assert workspace["style"]["typeStyles"] == {
+        "column": "team",
+        "styles": {"design": {"color": "#e2762f", "size": 12, "attrs": ["weight"]}},
+    }
+    assert workspace["style"]["edgeTypeStyles"] == {
+        "column": "team",
+        "styles": {"design": {"color": "#3f9f6e", "width": 4, "attrs": []}},
+    }
+
+    with pytest.raises(ValueError, match="must be '#rrggbb'"):
+        build_workspace(
+            EDGES,
+            source="from",
+            target="to",
+            type_styles={"column": "team", "styles": {"design": {"color": "orange"}}},
+        )
+    with pytest.raises(ValueError, match="must be a list of column names"):
+        build_workspace(
+            EDGES,
+            source="from",
+            target="to",
+            edge_type_styles={"column": "team", "styles": {"design": {"attrs": "weight"}}},
+        )
+
+
+def test_pinned_nodes_are_written_only_when_there_are_any():
+    workspace = build_workspace(EDGES, source="from", target="to", pinned=["ana"])
+    assert workspace["pinned"] == ["ana"]
+
+    workspace = build_workspace(EDGES, source="from", target="to")
+    assert "pinned" not in workspace
+
+
+def test_a_label_column_becomes_the_node_label_token():
+    nodes = [{"Id": "ana", "Name": "Ana Lopes"}]
+    workspace = build_workspace(EDGES, source="from", target="to", nodes=nodes, label="Name")
+    assert workspace["style"]["nodeLabel"] == "column:Name"
+
+    workspace = build_workspace(EDGES, source="from", target="to")
+    assert workspace["style"]["nodeLabel"] == "none"
+
+
 def test_a_column_that_is_not_there_is_refused_by_name():
     with pytest.raises(ValueError, match="No source column named 'nope'"):
         build_workspace(EDGES, source="nope", target="to")

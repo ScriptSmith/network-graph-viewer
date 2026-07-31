@@ -188,7 +188,7 @@ way to change data is the data table, which edits the underlying rows.
   and vulnerable); don't switch it to the npm registry version. Its lockfile
   entry carries an `integrity` hash added by hand, since a URL dependency does
   not get one; bumping the version means recomputing it (`openssl dgst -sha512
-  -binary <tgz> | base64 -w0`, prefixed `sha512-`).
+-binary <tgz> | base64 -w0`, prefixed `sha512-`).
 - Nothing aggregates a data-sized array with `Math.max(...values)`: an argument
   list runs out around 125,000 and `PARQUET_ROW_LIMIT` allows 200,000 rows, so
   the spread throws rather than slows. `lib/numbers.ts` has `maxOf`, `minOf`

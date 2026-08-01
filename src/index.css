@@ -716,10 +716,14 @@ body.resizing-y {
   opacity: 0.34;
 }
 
+/* The gestures over the graph are the graph's: a finger dragged across it
+   pans, two of them zoom. Left to the browser they would scroll and pinch the
+   page around the canvas instead. */
 .graph-svg {
   width: 100%;
   height: 100%;
   display: block;
+  touch-action: none;
 }
 
 .graph-tooltip {
@@ -1836,74 +1840,195 @@ body.resizing-y {
 
 /* ---- Responsive & motion ---- */
 
+/* A screen this narrow has nothing to spare beside the graph, so the two side
+   panels stop taking a column and take the window instead: one thing at a
+   time, the way a screen this size shows anything. The columns still describe
+   how wide they are, which is what keeps everything that reads them working,
+   and a collapsed panel zeroes its width the same way it always did. */
 @media (max-width: 900px) {
-  /* The three panels stack instead of flanking the stage: sidebar above,
-     statistics below, the data pane where it always was. */
   .app {
+    --sidebar-col: 100%;
+    --stats-col: 100%;
+    --sidebar-gutter: 0px;
+    --stats-gutter: 0px;
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
-    height: auto;
-    min-height: 100dvh;
   }
 
+  /* Out of the grid entirely: an absolutely positioned grid child is laid out
+     in its grid area unless its placement is `auto`, and a sheet wants the
+     whole height of the window rather than one track of it. */
   .sidebar,
-  .workspace,
   .stats-panel {
-    grid-column: 1;
+    position: absolute;
+    grid-column: auto;
+    top: 0;
+    bottom: 0;
+    z-index: 5;
+    box-shadow: 0 0 40px var(--shadow);
   }
 
   .sidebar {
-    grid-row: 1;
-    border-bottom: 1px solid var(--hairline);
-    max-height: 50dvh;
-  }
-
-  .workspace {
-    grid-row: 2;
-  }
-
-  .stats-panel {
-    grid-row: 3;
-    border-top: 1px solid var(--hairline);
-    max-height: 60dvh;
-  }
-
-  /* Stacked, so each panel spans the screen and there is nothing to drag.
-     The toggles move to the top corner, where there is no vertical edge for
-     them to ride, and still put their panel away. */
-  .resizer,
-  .resizer-stats {
-    display: none;
-  }
-
-  /* The page itself scrolls at this width, so the toggles are pinned to the
-     viewport rather than to the top of the document. */
-  .sidebar-toggle,
-  .stats-toggle {
-    position: fixed;
-    left: auto;
-    right: 12px;
-    transform: none;
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-  }
-
-  .sidebar-toggle {
-    top: 12px;
-    border-left: 1px solid var(--hairline-strong);
-  }
-
-  .stats-toggle {
-    top: 54px;
+    left: 0;
+    width: var(--sidebar-col);
     border-right: 1px solid var(--hairline-strong);
   }
 
-  /* The panels now sit above and below the stage, so the chevrons point that
-     way: up to the sidebar, down to the statistics. */
-  .sidebar-toggle span,
-  .stats-toggle span {
-    transform: rotate(90deg);
+  .stats-panel {
+    right: 0;
+    width: var(--stats-col);
+    border-left: 1px solid var(--hairline-strong);
+  }
+
+  .workspace {
+    grid-column: 1;
+    position: relative;
+  }
+
+  /* And the data pane stops taking a slice off the bottom and takes the window
+     too. Qualified, because its own box is declared further down the file than
+     this and would otherwise be the last word on its height. */
+  .app .drawer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    height: auto;
+  }
+
+  /* The panels cover the stage now rather than share it, so there is no
+     boundary between any of them left to drag. */
+  .resizer,
+  .resizer-stats,
+  .drawer-grip {
+    display: none;
+  }
+
+  /* Over the sheets, or the control that closes one would be behind it. Wider
+     too: a tab is the whole target on a screen with no cursor. */
+  .panel-toggle {
+    z-index: 6;
+  }
+
+  .sidebar-toggle,
+  .stats-toggle {
+    width: 34px;
+  }
+
+  /* Open, a sheet is the window and the edge its tab rode is off the side of
+     it, so the tab comes inside and sits in the corner as a close button. It is
+     pinned to the window rather than to the sheet's first screenful: these
+     panels are long, and a way out that scrolls away is not one. */
+  .app:not(.app-sidebar-collapsed) .sidebar-toggle,
+  .app:not(.app-table-collapsed) .drawer-toggle,
+  .app:not(.app-stats-collapsed) .stats-toggle {
+    top: 10px;
+    right: 10px;
+    bottom: auto;
+    left: auto;
+    margin-inline: 0;
+    transform: none;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--hairline-strong);
+    border-radius: 10px;
+    box-shadow: 0 4px 14px var(--shadow);
+  }
+
+  /* And in that corner it is a close button, not an edge to fold back, so it
+     says so the way every other panel here does. */
+  .app:not(.app-sidebar-collapsed) .sidebar-toggle .panel-toggle-arrow,
+  .app:not(.app-table-collapsed) .drawer-toggle .panel-toggle-arrow,
+  .app:not(.app-stats-collapsed) .stats-toggle .panel-toggle-arrow {
+    display: none;
+  }
+
+  .app:not(.app-sidebar-collapsed) .sidebar-toggle::after,
+  .app:not(.app-table-collapsed) .drawer-toggle::after,
+  .app:not(.app-stats-collapsed) .stats-toggle::after {
+    content: "×";
+    font-size: 23px;
+  }
+
+  /* One panel at a time: while any of them has the window every tab goes,
+     because each is riding an edge that is now behind it. */
+  .app:not(.app-sidebar-collapsed) .panel-toggle,
+  .app:not(.app-table-collapsed) .panel-toggle,
+  .app:not(.app-stats-collapsed) .panel-toggle {
+    display: none;
+  }
+
+  /* Then the one on top gets its own back. These read in document order, and
+     the later rule of two that match is the one that wins: the sidebar comes
+     first, the data pane is painted over it, the statistics panel over both.
+     So whichever of them the reader is actually looking at is the one holding
+     the cross that puts it away. */
+  .app:not(.app-sidebar-collapsed) .sidebar-toggle {
+    display: grid;
+  }
+
+  .app:not(.app-table-collapsed) .sidebar-toggle {
+    display: none;
+  }
+
+  .app:not(.app-table-collapsed) .drawer-toggle {
+    display: grid;
+  }
+
+  .app:not(.app-stats-collapsed) .sidebar-toggle,
+  .app:not(.app-stats-collapsed) .drawer-toggle {
+    display: none;
+  }
+
+  .app:not(.app-stats-collapsed) .stats-toggle {
+    display: grid;
+  }
+
+  /* Which leaves the statistics panel's own cross with nothing to do: two of
+     them in the same corner is one too many. */
+  .app:not(.app-stats-collapsed) .stats-panel .panel-head .insp-close {
+    display: none;
+  }
+
+  /* The data pane's bar is its header now, so it keeps the corner clear the
+     way the other two do by having nothing of their own up there, and takes
+     the top margin the grip above it used to stand in for. */
+  .app:not(.app-table-collapsed) .drawer-bar {
+    padding: 12px 56px 8px 10px;
+  }
+
+  /* Nothing loaded yet, so the sidebar's other steps have nothing to work on
+     and its first step is the onboarding already filling the screen. The tab
+     goes, and the onboarding is the window. A panel somehow opened at this
+     point still keeps the way out above. */
+  .app-empty.app-sidebar-collapsed .sidebar-toggle {
+    display: none;
+  }
+
+  /* No card floating on a backdrop either: it is the page, so it drops its
+     frame and scrolls as one. */
+  .app-empty .empty {
+    display: block;
+    padding: 0;
+    overflow-y: auto;
+  }
+
+  .app-empty .empty-card {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 26px 20px 34px;
+  }
+
+  /* Which leaves the illustration the widest thing on the page: it gives up
+     its padding first, and only scrolls if that was not enough. Qualified,
+     because the cells are styled further down the file than this, and the
+     header and the body only, because the row above them is not cells at all
+     but the arrow drawn across two of them, which has no padding to give. */
+  .app-empty .example-table th,
+  .app-empty .example-table tbody td {
+    padding: 5px 6px;
   }
 
   /* Nothing beside the data pane at this width, so it spans the screen
@@ -1911,10 +2036,109 @@ body.resizing-y {
   .drawer-toggle {
     left: 0;
     right: 0;
+    height: 32px;
   }
 
-  .stage {
-    min-height: 62dvh;
+  /* The strip takes the width of the stage and the find box takes whatever
+     the buttons leave, so nothing has to be small to fit. */
+  .toolbar {
+    left: 14px;
+    right: 14px;
+  }
+
+  .node-search {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .node-search-input {
+    width: 100%;
+  }
+
+  /* A strip that wide leaves no room beside it for a toast, which is centred
+     on the same edge, so the toast opens under it. Only when it is up there:
+     the strip is dragged between the corners and can be put away entirely. */
+  .stage:has(.toolbar.at-top-left, .toolbar.at-top-right) .toast-stack {
+    top: 64px;
+  }
+
+  /* And with the strip that wide, a menu hanging off one of its buttons has
+     nowhere to go sideways: it opens against the strip instead of the button,
+     and scrolls rather than running off the bottom. */
+  .view-menu-wrap {
+    position: static;
+  }
+
+  .view-menu.from-top-left,
+  .view-menu.from-top-right,
+  .view-menu.from-bottom-left,
+  .view-menu.from-bottom-right {
+    left: 0;
+    right: 0;
+    min-width: 0;
+    max-height: 62dvh;
+    overflow-y: auto;
+  }
+
+  /* Wide enough now to reach the edge tabs, so it has to come over them. It
+     cannot be lifted on its own: the strip blurs what is behind it, which
+     makes it a stacking context, and nothing inside one gets out of it. So the
+     strip rises instead, and only while the menu is open and the graph is what
+     is on screen, or it would ride over a sheet that has taken the window. */
+  .app.app-sidebar-collapsed.app-stats-collapsed .toolbar:has(.view-menu) {
+    z-index: 7;
+  }
+}
+
+/* A window pulled down to a strip. The data pane was sized against a screen
+   with height to spare and now wants most of one, so it gives some back, and
+   anything centred on the window is centred inside the pane rather than on the
+   graph. Only where the pane is still a slice off the bottom: narrower than
+   this it is a sheet with the window to itself and none of it applies. */
+@media (min-width: 901px) and (max-height: 600px) {
+  .app {
+    /* What the pane actually gets at this height, which is what the tabs
+       centred on the graph have to measure against too. */
+    --drawer-shown: min(var(--drawer-height, 200px), 40dvh);
+  }
+
+  /* Qualified, because the pane's own height is declared further down the
+     file than this and would otherwise be the last word. */
+  .app .drawer {
+    height: var(--drawer-shown);
+  }
+
+  .drawer-toggle {
+    bottom: var(--drawer-shown);
+  }
+
+  /* Only where there is a pane at all: with no file open there is nothing at
+     the foot of the window and the middle of it is the middle of the graph. */
+  .app:has(.drawer) .sidebar-toggle,
+  .app:has(.drawer) .stats-toggle {
+    top: calc((100% - var(--drawer-shown)) / 2);
+  }
+
+  /* Nothing below to centre against once the pane is away. */
+  .app.app-table-collapsed .sidebar-toggle,
+  .app.app-table-collapsed .stats-toggle {
+    top: 50%;
+  }
+}
+
+/* Without a cursor there is no hovering to find a small control with, and a
+   field under 16px is one iOS zooms the whole page into the moment it takes
+   focus. Written through the app's own root because every control here carries
+   a class, and a rule naming only the element loses to all of them. */
+@media (pointer: coarse) {
+  .tool-btn {
+    padding: 9px 12px;
+  }
+
+  .app input,
+  .app select,
+  .app textarea {
+    font-size: max(16px, 1em);
   }
 }
 
@@ -3630,6 +3854,15 @@ input.swatch::-moz-color-swatch {
 }
 
 /* ---- Example table (empty state) ---- */
+
+/* The table below is names that must not wrap, so where it does not fit it
+   takes a scrollbar of its own rather than pushing the card sideways. `flex:
+   none` because a flex item that scrolls may shrink to nothing, and this one
+   sits in a card that is already taller than the window it is centred in. */
+.example-scroll {
+  flex: none;
+  overflow-x: auto;
+}
 
 .example-table {
   border-collapse: collapse;

@@ -74,11 +74,13 @@ import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
 import { useReducedMotion, type MotionPreference } from "./useReducedMotion";
 import { useCornerDrag } from "./useCornerDrag";
+import { isNarrow } from "./narrow";
 import { useDocHistory } from "./useDocHistory";
 import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
 import { NodeSearch } from "./components/NodeSearch";
 import { Sidebar } from "./components/Sidebar";
 import { SampleList } from "./components/SampleList";
+import { GistLoad } from "./components/GistLoad";
 import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
 import { Legend } from "./components/Legend";
@@ -122,6 +124,17 @@ const STATS_SIZE: PanelSizeOptions = {
 /** Names a URL source, so a link the app wrote is not read straight back in. */
 function sourceKey(source: UrlSource): string {
   return source.kind === "gist" ? `gist:${source.reference}` : `data:${source.payload}`;
+}
+
+/**
+ * What is put away before anything has been asked for. Wide, the panels sit
+ * around the graph and cover nothing, so all three are out. Narrow each one is
+ * the whole window, and a window opening under one of them shows the reader a
+ * panel instead of the thing the panel is about: the graph, or, with nothing
+ * loaded yet, the onboarding. They are asked for at that width.
+ */
+function defaultCollapsed(): Set<Panel> {
+  return isNarrow() ? new Set(PANELS) : new Set<Panel>();
 }
 
 /**
@@ -208,7 +221,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // not throw away a half-written script, an unsaved gist token, or the search
   // and grouping set up over the table.
   const [collapsed, setCollapsed] = useState<ReadonlySet<Panel>>(() => {
-    if (!embed) return new Set<Panel>();
+    if (!embed) return defaultCollapsed();
     const open = new Set(embed.panels ?? []);
     return new Set(PANELS.filter((p) => !open.has(p)));
   });
@@ -335,6 +348,18 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     if (urlSourceRef.current !== null) rewriteUrl(withoutUrlSource());
   }, [rewriteUrl]);
 
+  /**
+   * Narrow, a graph that has just arrived is standing behind whichever sheet
+   * was used to fetch it, so all three step aside and let it through. Wide they
+   * are around the graph rather than over it, cover nothing, and stay as the
+   * reader left them. Only a new graph does this, never a rebuild of the one
+   * already open: that is the reader working in the sidebar, and the sidebar
+   * closing under them is not an answer to anything they asked.
+   */
+  const revealGraph = useCallback(() => {
+    if (isNarrow()) setCollapsed(new Set(PANELS));
+  }, []);
+
   const adoptDoc = useCallback(
     (next: GraphDoc, nextStyle: GraphStyle) => {
       resetDoc(next);
@@ -374,8 +399,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setError(null);
       setNotice(null);
       setAllowRemoteImages(false);
+      revealGraph();
     },
-    [resetDoc],
+    [resetDoc, revealGraph],
   );
 
   const adoptDataset = useCallback(
@@ -396,8 +422,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           ? `Read the first ${next.truncated.read.toLocaleString()} of ${next.truncated.total.toLocaleString()} rows.`
           : null,
       );
+      revealGraph();
     },
-    [adoptDoc],
+    [adoptDoc, revealGraph],
   );
 
   const handleFile = useCallback(
@@ -758,7 +785,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     setShowIsolated(false);
     setSelection(null);
     setPinned(new Set());
-    setCollapsed(new Set<Panel>());
+    setCollapsed(defaultCollapsed());
     setHiddenOverlays(new Set());
     setError(null);
   }, [resetDoc, forgetUrlSource]);
@@ -1181,9 +1208,14 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       onPointerDown={() => {
         if (appRef.current && !appRef.current.contains(activeWithin(root))) appRef.current.focus();
       }}
-      className={`app${sidebarCollapsed ? " app-sidebar-collapsed" : ""}${
-        tableCollapsed ? " app-table-collapsed" : ""
-      }${statsCollapsed ? " app-stats-collapsed" : ""}`}
+      // `app-empty` is the onboarding showing rather than a graph. Narrow, that
+      // is the whole window, and the tabs that would open panels with nothing
+      // in them yet go away with it.
+      className={`app${doc === null ? " app-empty" : ""}${
+        sidebarCollapsed ? " app-sidebar-collapsed" : ""
+      }${tableCollapsed ? " app-table-collapsed" : ""}${
+        statsCollapsed ? " app-stats-collapsed" : ""
+      }`}
       style={
         {
           "--sidebar-width": `${sidebar.size}px`,
@@ -1445,45 +1477,50 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                     become the arrows, everything else becomes detail you can style, filter, and
                     chart.
                   </p>
-                  <table className="example-table">
-                    <thead>
-                      <tr className="example-arrow" aria-hidden="true">
-                        <td>
-                          <span className="arrow-tail" />
-                        </td>
-                        <td>
-                          <span className="arrow-head" />
-                        </td>
-                        <td colSpan={2} />
-                      </tr>
-                      <tr>
-                        <th>Supervisor</th>
-                        <th>Supervisee</th>
-                        <th>Department</th>
-                        <th>Meetings</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Alex Rivera</td>
-                        <td>Priya Sharma</td>
-                        <td>Engineering</td>
-                        <td>4</td>
-                      </tr>
-                      <tr>
-                        <td>Priya Sharma</td>
-                        <td>Grace Okafor</td>
-                        <td>Engineering</td>
-                        <td>4</td>
-                      </tr>
-                      <tr>
-                        <td>Alex Rivera</td>
-                        <td>Kenji Mori</td>
-                        <td>Operations</td>
-                        <td>2</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  {/* The illustration is four columns of names that must not
+                      wrap, so on a narrow screen it scrolls rather than
+                      losing the shape it is there to show. */}
+                  <div className="example-scroll">
+                    <table className="example-table">
+                      <thead>
+                        <tr className="example-arrow" aria-hidden="true">
+                          <td>
+                            <span className="arrow-tail" />
+                          </td>
+                          <td>
+                            <span className="arrow-head" />
+                          </td>
+                          <td colSpan={2} />
+                        </tr>
+                        <tr>
+                          <th>Supervisor</th>
+                          <th>Supervisee</th>
+                          <th>Department</th>
+                          <th>Meetings</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>Alex Rivera</td>
+                          <td>Priya Sharma</td>
+                          <td>Engineering</td>
+                          <td>4</td>
+                        </tr>
+                        <tr>
+                          <td>Priya Sharma</td>
+                          <td>Grace Okafor</td>
+                          <td>Engineering</td>
+                          <td>4</td>
+                        </tr>
+                        <tr>
+                          <td>Alex Rivera</td>
+                          <td>Kenji Mori</td>
+                          <td>Operations</td>
+                          <td>2</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                   <p className="example-caption">
                     Any column names work; you pick which is which after loading.
                   </p>
@@ -1503,6 +1540,12 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   </button>
                   <p className="example-caption">Or one of these:</p>
                   <SampleList onPick={handleSample} />
+                  {/* The last way in that is not a file. It lives here as well
+                      as in the sidebar because on a narrow screen this card is
+                      the whole app: the sidebar is not reachable until there is
+                      something for its other steps to work on. */}
+                  <p className="example-caption">Or load a GitHub gist:</p>
+                  <GistLoad onLoad={(reference) => void handleGist(reference)} />
                 </div>
               </div>
             </>

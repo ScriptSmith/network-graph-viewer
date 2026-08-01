@@ -137,6 +137,23 @@ way to change data is the data table, which edits the underlying rows.
   `lib/hostTheme.ts` works out what the surrounding page is doing, reading
   JupyterLab's and VS Code's attributes and otherwise measuring the background,
   which is the only signal Colab gives.
+- Wide and narrow. Wide, the three panels sit around the stage in grid columns
+  and cover nothing. Under `900px` each one is the whole window instead, laid
+  over the graph, and all three start collapsed: the app opens on the graph,
+  or on the onboarding, and a panel is asked for. `--sidebar-col` and
+  `--stats-col` still say how wide a panel is, which is what keeps everything
+  that reads them working at either size, and a collapsed panel still zeroes
+  its own width. Open, the tab that rode a panel's edge comes inside and sits
+  in the corner as a close button, pinned to the window rather than to the
+  panel's first screenful: these are long, and a way out that scrolls away is
+  not one. `src/narrow.ts` is that same breakpoint in JS, for the two things a
+  stylesheet cannot decide: what starts collapsed (`defaultCollapsed`) and what
+  stands down when a graph arrives (`revealGraph`, which fires for a new
+  document only, never for a rebuild of the open one, or the sidebar would
+  close under someone working in it). With nothing loaded the onboarding is the
+  window: `app-empty` takes the sidebar's tab away and the card drops its frame
+  and scrolls as a page, which is why the gist loader sits there as well as in
+  the sidebar. At that width the sidebar cannot be reached at all.
 - `src/embed.tsx` + `src/RootContext.ts` - the app mounted inside a host. It
   goes in a **shadow root**, which is what keeps the app's stylesheet off the
   host's page and the app's global listeners off the host's keyboard. Anything
@@ -232,6 +249,25 @@ way to change data is the data table, which edits the underlying rows.
   arrows to walk the graph, Enter to select. New marks need an `aria-label`, and
   new keys must not collide with the app's single-key shortcuts, which give way
   to a focused node via the `[data-nodes]` check in `App.tsx`.
+- The narrow layout is one panel at a time, and the cross on the one in front
+  is the reader's only way out of it, so the rules that hide the other tabs
+  must never end up hiding all three. They work by hiding every tab while any
+  panel is open and then giving the front one its own back, in the order the
+  panels are painted: sidebar, the data pane over it, the statistics panel over
+  both. Equal specificity, so the later rule is the one that wins, which is why
+  the order they are written in **is** the logic. A fourth panel means a term
+  in the right place, not another rule on the end.
+- `index.css` states the responsive layout above the sections that style the
+  components themselves, so a narrow-width rule and a component's own rule for
+  the same property are settled by document order and the media query loses.
+  `.app .drawer` and `.app-empty .example-table` carry an extra class for that
+  reason alone. Check where a property is already declared before assuming a
+  media query is the last word on it.
+- Touch is not a small mouse. `.graph-svg` is `touch-action: none`, so a finger
+  dragged across the graph pans it instead of scrolling the page around it, and
+  under `(pointer: coarse)` the fields go to 16px, which is the size below
+  which iOS zooms the whole page in on focus. Both are easy to undo by accident
+  and neither shows up on a desktop.
 - Movement that is decoration gives way to `prefers-reduced-motion`:
   `useReducedMotion.ts` is the one place that asks. `App.tsx` resolves it and
   the View menu's override into one answer, stamped as `data-motion` on the

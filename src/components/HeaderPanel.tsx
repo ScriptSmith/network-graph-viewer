@@ -7,6 +7,8 @@ interface HeaderPanelProps {
   popover: HeaderPopover;
   width: number;
   className: string;
+  /** A cap of the panel's own, under whatever the window allows it. */
+  maxHeight?: number;
   children: ReactNode;
 }
 
@@ -15,10 +17,16 @@ interface HeaderPanelProps {
  * exists only while it is open, so its listeners go up once when it opens
  * rather than being torn down and put back as the table moves underneath.
  */
-export function HeaderPanel({ popover, width, className, children }: HeaderPanelProps) {
+export function HeaderPanel({ popover, width, className, maxHeight, children }: HeaderPanelProps) {
   if (popover.anchor === null) return null;
   return (
-    <Panel popover={popover} anchor={popover.anchor} width={width} className={className}>
+    <Panel
+      popover={popover}
+      anchor={popover.anchor}
+      width={width}
+      className={className}
+      maxHeight={maxHeight}
+    >
       {children}
     </Panel>
   );
@@ -29,6 +37,7 @@ function Panel({
   anchor,
   width,
   className,
+  maxHeight,
   children,
 }: HeaderPanelProps & { anchor: HeaderAnchor }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -66,7 +75,13 @@ function Panel({
     <div
       ref={panelRef}
       className={className}
-      style={{ left: anchor.left, bottom: anchor.bottom, width }}
+      style={{
+        left: anchor.left,
+        top: anchor.top,
+        bottom: anchor.bottom,
+        width,
+        maxHeight: Math.min(anchor.maxHeight, maxHeight ?? Infinity),
+      }}
     >
       {children}
     </div>,

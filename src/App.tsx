@@ -68,11 +68,17 @@ import { interpretResult, normalizeEdgeKeys, toScriptGraph } from "./lib/script/
 import type { ScriptRunRequest } from "./components/ScriptPanel";
 import { activeWithin, listen, useRootNode } from "./RootContext";
 import { GRAPH_THEMES, type ThemeMode } from "./theme";
-import { detectHostTheme, watchHostTheme, type ThemePreference } from "./lib/hostTheme";
+import {
+  detectHostTheme,
+  isThemePreference,
+  watchHostTheme,
+  type ThemePreference,
+} from "./lib/hostTheme";
 import { downloadPng, downloadSvg } from "./lib/export";
 import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
-import { useReducedMotion, type MotionPreference } from "./useReducedMotion";
+import { isMotionPreference, useReducedMotion, type MotionPreference } from "./useReducedMotion";
+import { usePreference } from "./usePreference";
 import { useCornerDrag } from "./useCornerDrag";
 import { isNarrow } from "./narrow";
 import { useDocHistory } from "./useDocHistory";
@@ -286,13 +292,18 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const embedded = embed !== undefined;
 
   /**
-   * Colour scheme. A page defaults to the dark it has always been; embedded it
-   * defaults to following whatever the notebook is doing, since a dark widget
-   * sitting in a light notebook looks like a bug rather than a choice.
+   * Colour scheme. A page defaults to the dark it has always been and then
+   * remembers whatever was chosen instead; embedded it defaults to following
+   * whatever the notebook is doing, since a dark widget sitting in a light
+   * notebook looks like a bug rather than a choice, and a host that named a
+   * theme has said what it wants.
    */
-  const [themePref, setThemePref] = useState<ThemePreference>(
-    () => embed?.theme ?? (embed ? "auto" : "dark"),
-  );
+  const [themePref, setThemePref] = usePreference<ThemePreference>({
+    key: "ngv:theme",
+    fallback: embed?.theme ?? (embed ? "auto" : "dark"),
+    isValid: isThemePreference,
+    remember: !embedded,
+  });
   const [hostTheme, setHostTheme] = useState<ThemeMode>(() => detectHostTheme());
   const themeRoot = root instanceof Document ? root.documentElement : (root.host as HTMLElement);
 
@@ -318,9 +329,16 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
    * Motion, resolved the way the colour scheme is: the system preference is
    * the default and the View menu can override it either way. The one answer
    * goes to the canvas as a prop and onto the root as `data-motion`, where the
-   * stylesheet's transitions read it, so the two halves cannot disagree.
+   * stylesheet's transitions read it, so the two halves cannot disagree. An
+   * override is remembered alongside the colours: someone who asked for
+   * stillness once should not have to ask again on the next visit.
    */
-  const [motionPref, setMotionPref] = useState<MotionPreference>("auto");
+  const [motionPref, setMotionPref] = usePreference<MotionPreference>({
+    key: "ngv:motion",
+    fallback: "auto",
+    isValid: isMotionPreference,
+    remember: !embedded,
+  });
   const systemReducedMotion = useReducedMotion();
   const reducedMotion = motionPref === "auto" ? systemReducedMotion : motionPref === "reduced";
 

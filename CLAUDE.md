@@ -136,7 +136,11 @@ way to change data is the data table, which edits the underlying rows.
   exported twice must not differ because someone flipped the UI.
   `lib/hostTheme.ts` works out what the surrounding page is doing, reading
   JupyterLab's and VS Code's attributes and otherwise measuring the background,
-  which is the only signal Colab gives.
+  which is the only signal Colab gives. The colour scheme and the motion
+  setting are the reader's rather than the graph's, so they are remembered
+  through `usePreference.ts` instead of travelling in the workspace, and only
+  as a page: embedded, the surroundings answer the question already and
+  localStorage is per origin rather than per notebook.
 - Wide and narrow. Wide, the three panels sit around the stage in grid columns
   and cover nothing. Under `900px` each one is the whole window instead, laid
   over the graph, and all three start collapsed: the app opens on the graph,
@@ -177,8 +181,11 @@ way to change data is the data table, which edits the underlying rows.
   fill, and the value list whose
   "rename selected" is both a facet rename and, on the id column, a merge. It
   builds the transforms itself and hands up whole `GraphDoc` updates.
-  `useHeaderPopover` + `HeaderPanel` position it and the filter funnel against
-  the viewport, since the pane they hang in is often two rows tall.
+  `useHeaderPopover` + `HeaderPanel` position it, the filter funnel and the
+  data pane's own bar menus against the viewport, since the pane they hang in
+  is often two rows tall and its bar wraps. Each picks the side of its button
+  with more room and is capped to it, so a panel opens into the window rather
+  than off the top of it when the pane is the whole screen.
 - `src/components/StyleSection.tsx` - the Style step: a Nodes group and an
   Edges group, each with a type column and an "apply to" scope, so the global
   rules and one type's overrides are edited through the same fields. Hover

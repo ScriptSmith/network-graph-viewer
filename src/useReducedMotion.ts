@@ -21,6 +21,10 @@ const QUERY = "(prefers-reduced-motion: reduce)";
 export const MOTION_PREFERENCES = ["auto", "full", "reduced"] as const;
 export type MotionPreference = (typeof MOTION_PREFERENCES)[number];
 
+export function isMotionPreference(value: unknown): value is MotionPreference {
+  return typeof value === "string" && (MOTION_PREFERENCES as readonly string[]).includes(value);
+}
+
 function match(): MediaQueryList | null {
   return typeof window === "undefined" || !window.matchMedia ? null : window.matchMedia(QUERY);
 }

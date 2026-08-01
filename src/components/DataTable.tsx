@@ -63,7 +63,7 @@ export interface DataTableProps {
   visible: ReadonlySet<Row>;
   onlyVisible: boolean;
   /**
-   * Index of the row the Add row button just created. A fresh row is blank, so
+   * Index of the row the Add menu just created. A fresh row is blank, so
    * the filter chain and the search would both drop it; it stays listed anyway
    * until the next add, so the user can see what they made.
    */

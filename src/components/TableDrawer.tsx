@@ -1,13 +1,16 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { VisibilityState } from "@tanstack/react-table";
-import type { CellValue, ColumnFilter, GraphDoc, GraphSelection, Row } from "../types";
+import type { CellValue, ColumnFilter, ColumnType, GraphDoc, GraphSelection, Row } from "../types";
 import { deleteRows, type EditTarget } from "../lib/edit";
 import { addColumn, reorderColumns, structuralColumns } from "../lib/bulk";
 import { cellToId } from "../lib/cells";
+import { hasColumn } from "../lib/doc";
 import { findColumnStep, narrows, newStepId, type FilterStep } from "../lib/filter";
 import { downloadText, toCsv } from "../lib/io";
 import type { PanelHandleProps } from "../usePanelSize";
+import { useHeaderPopover } from "../useHeaderPopover";
 import { DataTable, type Aggregation, type DataTableHandle, type RowTarget } from "./DataTable";
+import { HeaderPanel } from "./HeaderPanel";
 
 interface TableDrawerProps {
   doc: GraphDoc;
@@ -42,6 +45,17 @@ interface TableDrawerProps {
   /** The pane's height is the shell's business, the way the sidebar's is. */
   gripProps: PanelHandleProps;
 }
+
+const MENU_WIDTH = 230;
+// These hang over the graph, so they stop well short of what the window allows.
+const MENU_HEIGHT = 260;
+
+/** What a new column starts as; the column menu can retype it afterwards. */
+const COLUMN_TYPES: { id: ColumnType; name: string }[] = [
+  { id: "text", name: "Text" },
+  { id: "number", name: "Number" },
+  { id: "bool", name: "True/false" },
+];
 
 const AGGREGATIONS: { id: Aggregation; name: string }[] = [
   { id: "count", name: "Count" },
@@ -81,10 +95,17 @@ export function TableDrawer({
     nodes: {},
     edges: {},
   });
-  const [columnsOpen, setColumnsOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  // The bar's three menus. They are laid out against the viewport rather than
+  // against their buttons, because the bar wraps: at a narrow width the last
+  // button can end up at the left edge, where a menu hung off its right would
+  // open past the side of the window. Opening one dismisses the others, since
+  // the press that opened it landed outside them.
+  const columnsMenu = useHeaderPopover(MENU_WIDTH);
+  const deleteMenu = useHeaderPopover(MENU_WIDTH);
+  const addMenu = useHeaderPopover(MENU_WIDTH);
   const [newColumn, setNewColumn] = useState("");
-  // Where the last Add row landed, so the table can keep it in sight.
+  const [newColumnType, setNewColumnType] = useState<ColumnType>("text");
+  // Where the last added row landed, so the table can keep it in sight.
   const [addedIndex, setAddedIndex] = useState<number | null>(null);
   const [shownCount, setShownCount] = useState(0);
   const tableRef = useRef<DataTableHandle>(null);
@@ -206,6 +227,12 @@ export function TableDrawer({
 
   const structural = useMemo(() => structuralColumns(doc, target), [doc, target]);
 
+  /** Whether the name being typed is one this table could actually take. */
+  const columnNameFree = useMemo(() => {
+    const name = newColumn.trim();
+    return name !== "" && !hasColumn(table, name);
+  }, [newColumn, table]);
+
   /** How the table splits between what the filter chain kept and what it took. */
   const inViewCount = useMemo(
     () => table.rows.reduce((n, row) => n + (visible.has(row) ? 1 : 0), 0),
@@ -229,7 +256,7 @@ export function TableDrawer({
     ) {
       return;
     }
-    setDeleteOpen(false);
+    deleteMenu.close();
     setAddedIndex(null);
     onBulkEdit(`deleting ${indexes.length} row${indexes.length === 1 ? "" : "s"}`, (current) =>
       deleteRows(current, target, indexes),
@@ -316,10 +343,11 @@ export function TableDrawer({
                 onTargetChange(id);
                 setGroupBy("");
                 setAddedIndex(null);
-                // Both menus name this table's columns and rows, so neither
-                // survives a move to the other one.
-                setColumnsOpen(false);
-                setDeleteOpen(false);
+                // Every menu names this table's columns and rows, so none of
+                // them survives a move to the other one.
+                columnsMenu.close();
+                deleteMenu.close();
+                addMenu.close();
               }}
             >
               {id === "edges" ? "Edges" : "Nodes"}
@@ -402,91 +430,67 @@ export function TableDrawer({
           </button>
         )}
 
-        <div className="drawer-columns">
-          <button
-            type="button"
-            className="drawer-btn"
-            onClick={() => {
-              setColumnsOpen((v) => !v);
-              setDeleteOpen(false);
-            }}
-            aria-expanded={columnsOpen}
-          >
-            Columns
-          </button>
-          {columnsOpen && (
-            <div className="drawer-menu">
-              <ColumnList
-                names={table.columns.map((c) => c.name)}
-                hidden={visibility[target]}
-                onToggle={(name, shown) =>
-                  setVisibility((v) => ({ ...v, [target]: { ...v[target], [name]: shown } }))
-                }
-                onMove={moveColumn}
-                onDrop={dropColumn}
-              />
-              <form
-                className="drawer-menu-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const name = newColumn.trim();
-                  if (name === "") return;
-                  setNewColumn("");
-                  onBulkEdit(`adding the "${name}" column`, (current) =>
-                    addColumn(current, target, name),
-                  );
-                }}
-              >
-                <input
-                  value={newColumn}
-                  onChange={(e) => setNewColumn(e.target.value)}
-                  placeholder="New column"
-                  aria-label="Name for a new column"
-                />
-                <button type="submit" disabled={newColumn.trim() === ""}>
-                  Add
-                </button>
-              </form>
-            </div>
-          )}
-        </div>
+        <button
+          ref={columnsMenu.buttonRef}
+          type="button"
+          className="drawer-btn"
+          onClick={columnsMenu.toggle}
+          aria-expanded={columnsMenu.open}
+        >
+          Columns
+        </button>
+        <HeaderPanel
+          popover={columnsMenu}
+          width={MENU_WIDTH}
+          maxHeight={MENU_HEIGHT}
+          className="drawer-menu"
+        >
+          <ColumnList
+            names={table.columns.map((c) => c.name)}
+            hidden={visibility[target]}
+            onToggle={(name, shown) =>
+              setVisibility((v) => ({ ...v, [target]: { ...v[target], [name]: shown } }))
+            }
+            onMove={moveColumn}
+            onDrop={dropColumn}
+          />
+        </HeaderPanel>
 
-        <div className="drawer-columns">
+        <button
+          ref={deleteMenu.buttonRef}
+          type="button"
+          className="drawer-btn"
+          onClick={deleteMenu.toggle}
+          aria-expanded={deleteMenu.open}
+          title="Delete rows by the side of the filter chain they fell on"
+        >
+          Delete rows
+        </button>
+        <HeaderPanel
+          popover={deleteMenu}
+          width={MENU_WIDTH}
+          maxHeight={MENU_HEIGHT}
+          className="drawer-menu"
+        >
           <button
             type="button"
-            className="drawer-btn"
-            onClick={() => {
-              setDeleteOpen((v) => !v);
-              setColumnsOpen(false);
-            }}
-            aria-expanded={deleteOpen}
-            title="Delete rows by the side of the filter chain they fell on"
+            className="drawer-menu-item"
+            disabled={inViewCount === 0}
+            onClick={() => deleteScope(true)}
           >
-            Delete rows
+            Rows in view
+            <span className="drawer-tab-count">{inViewCount}</span>
           </button>
-          {deleteOpen && (
-            <div className="drawer-menu">
-              <button
-                type="button"
-                className="drawer-menu-item"
-                disabled={inViewCount === 0}
-                onClick={() => deleteScope(true)}
-              >
-                Rows in view
-                <span className="drawer-tab-count">{inViewCount}</span>
-              </button>
-              <button
-                type="button"
-                className="drawer-menu-item"
-                disabled={inViewCount === table.rows.length}
-                onClick={() => deleteScope(false)}
-              >
-                Rows the filters removed
-                <span className="drawer-tab-count">{table.rows.length - inViewCount}</span>
-              </button>
-            </div>
-          )}
-        </div>
+          <button
+            type="button"
+            className="drawer-menu-item"
+            disabled={inViewCount === table.rows.length}
+            onClick={() => deleteScope(false)}
+          >
+            Rows the filters removed
+            <span className="drawer-tab-count">{table.rows.length - inViewCount}</span>
+          </button>
+        </HeaderPanel>
 
         <span className="drawer-count">{shownCount} rows</span>
 
@@ -524,17 +528,84 @@ export function TableDrawer({
           </button>
         </div>
 
+        {/* One control for both directions the table can grow in. A row is a
+            click; a column is a name and a type, so it is a form. */}
         <button
+          ref={addMenu.buttonRef}
           type="button"
           className="drawer-btn"
-          onClick={() => {
-            // A row is always appended, so it lands at the current end.
-            setAddedIndex(table.rows.length);
-            onAddRow(target);
-          }}
+          onClick={addMenu.toggle}
+          aria-expanded={addMenu.open}
+          title="Add a row or a column to this table"
         >
-          Add row
+          Add
+          <span className="drawer-caret" aria-hidden="true">
+            ▾
+          </span>
         </button>
+        <HeaderPanel
+          popover={addMenu}
+          width={MENU_WIDTH}
+          maxHeight={MENU_HEIGHT}
+          className="drawer-menu"
+        >
+          <button
+            type="button"
+            className="drawer-menu-item"
+            onClick={() => {
+              addMenu.close();
+              // A row is always appended, so it lands at the current end.
+              setAddedIndex(table.rows.length);
+              onAddRow(target);
+            }}
+          >
+            {target === "nodes" ? "Row, as a new node" : "Row, as a new edge"}
+          </button>
+
+          <form
+            className="drawer-menu-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!columnNameFree) return;
+              const name = newColumn.trim();
+              const type = newColumnType;
+              setNewColumn("");
+              addMenu.close();
+              onBulkEdit(`adding the "${name}" column`, (current) =>
+                addColumn(current, target, name, type),
+              );
+            }}
+          >
+            <input
+              value={newColumn}
+              onChange={(e) => setNewColumn(e.target.value)}
+              placeholder="New column"
+              aria-label="Name for a new column"
+              aria-invalid={newColumn.trim() !== "" && !columnNameFree}
+            />
+            <div className="drawer-menu-row">
+              <select
+                value={newColumnType}
+                onChange={(e) => setNewColumnType(e.target.value as ColumnType)}
+                aria-label="Type for the new column"
+              >
+                {COLUMN_TYPES.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <button type="submit" disabled={!columnNameFree}>
+                Add column
+              </button>
+            </div>
+            {/* Adding onto a name already in the table would quietly do
+                nothing, so it says so before the button is reached for. */}
+            {newColumn.trim() !== "" && !columnNameFree && (
+              <p className="drawer-menu-note">That name is taken</p>
+            )}
+          </form>
+        </HeaderPanel>
       </header>
 
       <DataTable

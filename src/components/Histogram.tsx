@@ -63,10 +63,28 @@ export function Histogram({
     return bins.min + t * span;
   };
 
+  // A pointer reports far more moves than the step grid has quanta, and every
+  // write lands on the chain, so a move that did not cross a quantum is not a
+  // change at all. The last write rides a ref because a drag's move listener
+  // keeps the closure it was installed with: judged against drag-start props,
+  // every move after the first crossing would read as a change.
+  const sent = useRef<{ min: number | null; max: number | null } | null>(null);
   const commit = (which: "min" | "max", value: number) => {
     const v = snap(clampVal(value), bins.step);
-    if (which === "min") onChange(v <= bins.min ? null : Math.min(v, hi), max);
-    else onChange(min, v >= bins.max ? null : Math.max(v, lo));
+    const last = sent.current ?? { min, max };
+    if (which === "min") {
+      const next = v <= bins.min ? null : Math.min(v, hi);
+      if (next !== last.min) {
+        sent.current = { min: next, max: last.max };
+        onChange(next, last.max);
+      }
+    } else {
+      const next = v >= bins.max ? null : Math.max(v, lo);
+      if (next !== last.max) {
+        sent.current = { min: last.min, max: next };
+        onChange(last.min, next);
+      }
+    }
   };
 
   /** Slide the whole window, holding its width, saturating at either end. */
@@ -74,25 +92,39 @@ export function Histogram({
     const width = hi - lo;
     const nextLo = Math.max(bins.min, Math.min(bins.max - width, fromLo + delta));
     const nextHi = nextLo + width;
-    onChange(
-      snap(nextLo, bins.step) <= bins.min ? null : snap(nextLo, bins.step),
-      snap(nextHi, bins.step) >= bins.max ? null : snap(nextHi, bins.step),
-    );
+    const boundLo = snap(nextLo, bins.step) <= bins.min ? null : snap(nextLo, bins.step);
+    const boundHi = snap(nextHi, bins.step) >= bins.max ? null : snap(nextHi, bins.step);
+    const last = sent.current ?? { min, max };
+    if (boundLo !== last.min || boundHi !== last.max) {
+      sent.current = { min: boundLo, max: boundHi };
+      onChange(boundLo, boundHi);
+    }
   };
 
+  /** A gesture is over; the next one measures change from wherever props stand. */
+  const finish = () => {
+    sent.current = null;
+    onChangeEnd?.();
+  };
+
+  // A cancelled pointer (touch scroll taking over, a pen leaving range) must
+  // end the drag the way a release does, or the move listener outlives the
+  // gesture and a preview-then-commit caller never gets its commit.
   const startBracketDrag = (which: "min" | "max") => (e: PointerEvent<HTMLDivElement>) => {
     if (span === 0) return;
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const move = (ev: globalThis.PointerEvent) => commit(which, valueAt(ev.clientX));
-    const up = () => {
+    const done = () => {
       el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", up);
-      onChangeEnd?.();
+      el.removeEventListener("pointerup", done);
+      el.removeEventListener("pointercancel", done);
+      finish();
     };
     el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
+    el.addEventListener("pointerup", done);
+    el.addEventListener("pointercancel", done);
     commit(which, valueAt(e.clientX));
   };
 
@@ -105,13 +137,15 @@ export function Histogram({
     const loAtGrab = lo;
     const move = (ev: globalThis.PointerEvent) =>
       commitWindow(loAtGrab, valueAt(ev.clientX) - grabbedAt);
-    const up = () => {
+    const done = () => {
       el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", up);
-      onChangeEnd?.();
+      el.removeEventListener("pointerup", done);
+      el.removeEventListener("pointercancel", done);
+      finish();
     };
     el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
+    el.addEventListener("pointerup", done);
+    el.addEventListener("pointercancel", done);
   };
 
   const bracketKeys = (which: "min" | "max") => (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -138,7 +172,7 @@ export function Histogram({
     }
     e.preventDefault();
     commit(which, next);
-    onChangeEnd?.();
+    finish();
   };
 
   const windowKeys = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -158,7 +192,7 @@ export function Histogram({
     }
     e.preventDefault();
     commitWindow(lo, delta);
-    onChangeEnd?.();
+    finish();
   };
 
   return (

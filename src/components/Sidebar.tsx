@@ -39,6 +39,8 @@ interface SidebarProps {
   edgeColors: Map<string, string>;
   selectedId: string | null;
   showIsolated: boolean;
+  /** Whether the sidebar is on screen; it is hidden with CSS, never unmounted. */
+  visible: boolean;
   layout: LayoutId;
   layoutParams: LayoutParams;
   preventOverlap: boolean;
@@ -105,6 +107,7 @@ export function Sidebar({
   edgeColors,
   selectedId,
   showIsolated,
+  visible,
   layout,
   layoutParams,
   preventOverlap,
@@ -427,6 +430,7 @@ export function Sidebar({
               results={chainResults}
               selectedId={selectedId}
               showIsolated={showIsolated}
+              active={visible}
               onChange={onChainChange}
             />
           ) : (

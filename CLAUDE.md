@@ -149,21 +149,26 @@ way to change data is the data table, which edits the underlying rows.
   `PROJECTION_PAIR_LIMIT` and reports how far it got.
 - `src/lib/histogram.ts` + `components/Histogram.tsx` - binning and the
   draggable min/max brackets, drawn behind range filter steps and the
-  timeline. Bins are computed when an editor opens over what actually enters
-  that step (`chainInputBefore` in filter.ts), never inside `applyChain`'s
-  render path. Brackets are sliders to the keyboard; a bracket parked on its
-  own end of the range means no bound at all.
+  timeline. Bins are computed over what actually enters that step
+  (`chainInputBefore` in filter.ts), never inside `applyChain`'s render
+  path, only while the Filter pane is on screen (the chain's `active` prop),
+  and behind `useDeferredValue`, so a drag on an earlier step reshapes them
+  between frames. A drag writes the chain only when it crosses a quantum of
+  the step grid. Brackets are sliders to the keyboard; a bracket parked on
+  its own end of the range means no bound at all.
 - `src/lib/timeline.ts` + `components/Timeline.tsx` - the time strip: an
   editor for one ordinary `timewindow` chain step (bounds inclusive, cells
   read through `asTime`). It only appears for columns that read as a time
   axis: dated text always, number columns only when every sampled value
   looks like a year or an epoch, or every count and weight would sprout a
   timeline. The strip parks in a corner and drags between them like the
-  legend. While the brush is dragging or playing the window reaches the
-  canvas as dimming only (the `dimmed` prop, painted by `refreshStyles`);
-  the step is committed on release or pause, which is when structure, stats
-  and downstream steps see it. That split exists because a true step change
-  rebuilds the scene.
+  legend. While the brush is dragging or playing, the bound step's committed
+  bounds are lifted (`effectiveChain` in `App.tsx`), so the whole axis is on
+  stage, and the in-flight window reaches the canvas as dimming only (the
+  `dimmed` prop, painted by `refreshStyles`): a dim can only veil marks that
+  exist. The step is committed on release or pause, which is when structure,
+  stats and downstream steps see it; hiding the strip discards the preview.
+  That split exists because a true step change rebuilds the scene.
 - `src/lib/expand.ts` - what one more hop from a node would bring in, counted
   by node type and edge type for the expansion preview in `NodeDetails`; its
   line checkboxes write the same ego `where` the Filter step's editor writes.

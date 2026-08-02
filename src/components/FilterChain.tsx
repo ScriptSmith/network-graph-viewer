@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import type { BaseGraph, GraphDoc, Row, Table } from "../types";
 import {
   chainInputBefore,
@@ -27,6 +27,8 @@ interface FilterChainProps {
   selectedId: string | null;
   /** The chain's own setting, so a step editor sees what the step sees. */
   showIsolated: boolean;
+  /** Whether the pane is on screen; the histograms stand down while it is not. */
+  active: boolean;
   onChange: (chain: FilterStep[]) => void;
 }
 
@@ -34,7 +36,10 @@ interface FilterChainProps {
  * The subgraph entering one step, for its editor to draw a histogram over.
  * Keyed on the serialized prefix rather than the chain itself: the value the
  * brackets are writing lives on the step being edited, and a drag must not
- * recompute what feeds it on every frame.
+ * recompute what feeds it on every frame. The prefix is read through
+ * `useDeferredValue` on top of that, so a drag on an *earlier* step reshapes
+ * this histogram between frames rather than inside them. `enabled` carries
+ * the pane's visibility down: a histogram nobody can see costs nothing.
  */
 function useChainInput(
   doc: GraphDoc,
@@ -47,10 +52,11 @@ function useChainInput(
     const at = chain.findIndex((s) => s.id === stepId);
     return JSON.stringify(chain.slice(0, at === -1 ? 0 : at));
   }, [chain, stepId]);
+  const settledKey = useDeferredValue(prefixKey);
   return useMemo(
     () => (enabled ? chainInputBefore(doc, chain, stepId, { showIsolated }) : null),
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-    [doc, prefixKey, stepId, showIsolated, enabled],
+    [doc, settledKey, stepId, showIsolated, enabled],
   );
 }
 
@@ -86,6 +92,7 @@ export function FilterChain({
   results,
   selectedId,
   showIsolated,
+  active,
   onChange,
 }: FilterChainProps) {
   const [adding, setAdding] = useState(false);
@@ -235,6 +242,7 @@ export function FilterChain({
                 doc={doc}
                 chain={chain}
                 showIsolated={showIsolated}
+                active={active}
                 step={step}
                 selectedId={selectedId}
                 onChange={(patch) => update(step.id, patch)}
@@ -301,6 +309,7 @@ function StepBody({
   doc,
   chain,
   showIsolated,
+  active,
   step,
   selectedId,
   onChange,
@@ -308,6 +317,7 @@ function StepBody({
   doc: GraphDoc;
   chain: FilterStep[];
   showIsolated: boolean;
+  active: boolean;
   step: FilterStep;
   selectedId: string | null;
   onChange: (patch: Partial<FilterStep>) => void;
@@ -319,6 +329,7 @@ function StepBody({
           doc={doc}
           chain={chain}
           showIsolated={showIsolated}
+          active={active}
           step={step}
           onChange={onChange}
         />
@@ -330,6 +341,7 @@ function StepBody({
           doc={doc}
           chain={chain}
           showIsolated={showIsolated}
+          active={active}
           step={step}
           onChange={onChange}
         />
@@ -439,6 +451,7 @@ function StepBody({
           doc={doc}
           chain={chain}
           showIsolated={showIsolated}
+          active={active}
           step={step}
           onChange={onChange}
         />
@@ -451,17 +464,19 @@ function TimewindowStep({
   doc,
   chain,
   showIsolated,
+  active,
   step,
   onChange,
 }: {
   doc: GraphDoc;
   chain: FilterStep[];
   showIsolated: boolean;
+  active: boolean;
   step: Extract<FilterStep, { kind: "timewindow" }>;
   onChange: (patch: Partial<FilterStep>) => void;
 }) {
   const options = useMemo(() => timeColumns(doc), [doc]);
-  const input = useChainInput(doc, chain, step.id, showIsolated, true);
+  const input = useChainInput(doc, chain, step.id, showIsolated, active);
   const bins = useMemo(() => {
     if (!input) return null;
     const rows = step.table === "edges" ? input.rows : input.graph.nodes.map((n) => n.row);
@@ -611,18 +626,20 @@ function DegreeStep({
   doc,
   chain,
   showIsolated,
+  active,
   step,
   onChange,
 }: {
   doc: GraphDoc;
   chain: FilterStep[];
   showIsolated: boolean;
+  active: boolean;
   step: Extract<FilterStep, { kind: "degree" }>;
   onChange: (patch: Partial<FilterStep>) => void;
 }) {
   // Degree is measured on the incoming subgraph, exactly the way the step
   // measures it, so the bars describe what the brackets will cut.
-  const input = useChainInput(doc, chain, step.id, showIsolated, true);
+  const input = useChainInput(doc, chain, step.id, showIsolated, active);
   const bins = useMemo(() => {
     if (!input) return null;
     const values = input.graph.nodes.map((n) =>
@@ -676,12 +693,14 @@ function ColumnStep({
   doc,
   chain,
   showIsolated,
+  active,
   step,
   onChange,
 }: {
   doc: GraphDoc;
   chain: FilterStep[];
   showIsolated: boolean;
+  active: boolean;
   step: Extract<FilterStep, { kind: "column" }>;
   onChange: (patch: Partial<FilterStep>) => void;
 }) {
@@ -692,7 +711,13 @@ function ColumnStep({
   // an edge step sees the surviving edge rows, a node step the surviving
   // nodes' own rows. Only fetched for a numeric column, where there are bars
   // to draw at all.
-  const input = useChainInput(doc, chain, step.id, showIsolated, column?.type === "number");
+  const input = useChainInput(
+    doc,
+    chain,
+    step.id,
+    showIsolated,
+    active && column?.type === "number",
+  );
   const binRows = useMemo(() => {
     if (!input) return undefined;
     return step.table === "edges" ? input.rows : input.graph.nodes.map((n) => n.row);

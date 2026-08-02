@@ -111,10 +111,15 @@ export function Timeline({
       return;
     }
     if (bins === null || bins.counts.length < 2) return;
-    // Starting from nothing: open a one-bin window at the front.
+    // Starting from nothing: open a one-bin window at the front. Starting
+    // from a committed window: preview it as it stands, so the step's bounds
+    // are lifted right away and the marks the playback will reveal are on
+    // stage before the first tick, not after it.
     if (window_ === null || (window_.min === null && window_.max === null)) {
       const binWidth = (bins.max - bins.min) / bins.counts.length;
       onPreview({ min: null, max: bins.min + binWidth });
+    } else {
+      onPreview({ min: window_.min, max: window_.max });
     }
     setPlaying(true);
   };

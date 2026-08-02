@@ -219,6 +219,12 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     undoLabel,
     redoLabel,
   } = useDocHistory();
+  // The latest document, for async flows that must notice the tables moving
+  // under them between their awaits and their commit.
+  const docRef = useRef(doc);
+  useEffect(() => {
+    docRef.current = doc;
+  });
   const [style, setStyle] = useState<GraphStyle>(DEFAULT_STYLE);
   const [chain, setChain] = useState<FilterStep[]>([]);
   // The compute runs made so far, as instructions rather than values, so
@@ -307,9 +313,36 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // or a whole layout that arrived with an imported file.
   const seedPositionsRef = useRef<Map<string, Position> | null>(null);
 
+  // The timeline's window state lives up here because the chain the canvas
+  // sees depends on it. A dim can only veil marks that exist, so while a
+  // brush or playback is in flight the bound step's committed bounds are
+  // lifted: the whole axis is on stage, and the in-flight window reaches the
+  // canvas as dimming only. Committing writes the step and puts the bounds
+  // back, which is when the structure actually changes.
+  const lastTimewindow = useMemo(() => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const step = chain[i];
+      if (step.kind === "timewindow" && step.enabled) return step;
+    }
+    return null;
+  }, [chain]);
+  const [timeDraft, setTimeDraftState] = useState<TimeWindow | null>(null);
+  const timeDraftRef = useRef<TimeWindow | null>(null);
+  // Only whether a preview is in flight, not the window itself: each tick of
+  // one moves the window, and the lifted chain must not rebuild per tick.
+  const previewingTime = timeDraft !== null;
+  const effectiveChain = useMemo(() => {
+    if (!previewingTime || lastTimewindow === null) return chain;
+    // No committed bounds means nothing to lift, and the chain must pass
+    // through untouched: a cloned step is a new identity, and identity is
+    // what rebuilds the scene.
+    if (lastTimewindow.min === null && lastTimewindow.max === null) return chain;
+    return chain.map((s) => (s.id === lastTimewindow.id ? { ...s, min: null, max: null } : s));
+  }, [chain, previewingTime, lastTimewindow]);
+
   const chained = useMemo(
-    () => (doc ? applyChain(doc, chain, { showIsolated }) : null),
-    [doc, chain, showIsolated],
+    () => (doc ? applyChain(doc, effectiveChain, { showIsolated }) : null),
+    [doc, effectiveChain, showIsolated],
   );
   const base = chained?.graph ?? null;
   const filteredRows = base?.rows ?? [];
@@ -559,10 +592,39 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           incomingDataset = await parseFile(file);
           incoming = doc;
         }
+        let nextEdgeIndex = 0;
+        let nextNodeIndex: number | null = null;
+        let lostNodeSheet: string | null = null;
+        let guessedEdgeSheet: string | null = null;
+        let keptMapping = false;
         if (incomingDataset !== null) {
-          const edges = incomingDataset.tables[0];
-          const nodes =
-            nodeTableIndex !== null ? incomingDataset.tables[nodeTableIndex] : undefined;
+          const tables = incomingDataset.tables;
+          // Both sheets are found again by name, not by position: sheet order
+          // is the first thing a re-export shuffles, and a wrong sheet
+          // standing in for either table would merge nonsense silently. An
+          // edge sheet that lost its name falls back to the first sheet that
+          // is not the node sheet, so a rename alone cannot strand the update.
+          const namedNode =
+            nodeTableIndex !== null ? tables.findIndex((t) => t.name === doc.nodes.name) : -1;
+          const namedEdge = tables.findIndex((t) => t.name === doc.edges.name);
+          nextEdgeIndex =
+            namedEdge !== -1
+              ? namedEdge
+              : Math.max(
+                  0,
+                  tables.findIndex((_, i) => i !== namedNode),
+                );
+          const edges = tables[nextEdgeIndex];
+          if (namedEdge === -1 && tables.length > 1) guessedEdgeSheet = edges.name;
+          let nodes;
+          if (nodeTableIndex !== null) {
+            if (namedNode !== -1 && namedNode !== nextEdgeIndex) {
+              nodes = tables[namedNode];
+              nextNodeIndex = namedNode;
+            } else {
+              lostNodeSheet = doc.nodes.name;
+            }
+          }
           // The recipe keeps the mapping wherever the new file still answers
           // to it; otherwise the columns are guessed the way a fresh load
           // guesses them.
@@ -573,6 +635,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   attrs: doc.mapping.attrs.filter((a) => hasColumn(edges, a)),
                 }
               : undefined;
+          keptMapping = mapping !== undefined;
           incoming = buildDoc(file.name, edges, { nodes, mapping });
         }
 
@@ -596,6 +659,22 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             run.options,
           );
           final = applyComputedColumns(final, computed.result);
+        }
+
+        // The hover pickers are refiltered only now, against the merged
+        // tables, because the overlay may have just restored user-added
+        // columns the early guess against the raw file could not see.
+        if (incomingDataset !== null && keptMapping) {
+          final = {
+            ...final,
+            mapping: {
+              ...final.mapping,
+              attrs: doc.mapping.attrs.filter((a) => hasColumn(final.edges, a)),
+              ...(doc.mapping.nodeAttrs !== undefined
+                ? { nodeAttrs: doc.mapping.nodeAttrs.filter((a) => hasColumn(final.nodes, a)) }
+                : {}),
+            },
+          };
         }
 
         // Steps and tokens naming columns the new data lacks degrade exactly
@@ -629,6 +708,16 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           (style.typeStyles !== undefined && nextStyle.typeStyles === undefined ? 1 : 0) +
           (style.edgeTypeStyles !== undefined && nextStyle.edgeTypeStyles === undefined ? 1 : 0);
 
+        // Everything above was computed against the tables as they stood
+        // before the parse and the metrics awaited; an edit made in that
+        // window must not be steamrolled by a merge that never saw it.
+        if (docRef.current !== doc) {
+          setError(
+            'The tables changed while the update was being prepared. Run "Update data" again.',
+          );
+          return;
+        }
+
         forgetUrlSource();
         // "keep": the update swaps the data under the edits; the overlay is
         // exactly what must survive it.
@@ -637,8 +726,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         setChain(nextChain);
         setSelection(null);
         setDataset(incomingDataset ?? { fileName: file.name, tables: [final.edges, final.nodes] });
-        setEdgeTableIndex(0);
-        if (incomingDataset === null) setNodeTableIndex(1);
+        setEdgeTableIndex(nextEdgeIndex);
+        setNodeTableIndex(incomingDataset === null ? 1 : nextNodeIndex);
 
         const parts = [
           `Updated the data from "${file.name}": ${final.edges.rows.length.toLocaleString()} edge rows, ${final.nodes.rows.length.toLocaleString()} nodes.`,
@@ -666,6 +755,16 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             what.push(`${changedChannels} style ${changedChannels === 1 ? "channel" : "channels"}`);
           }
           parts.push(`${what.join(" and ")} referenced columns not in this file.`);
+        }
+        if (guessedEdgeSheet !== null) {
+          parts.push(
+            `No sheet named "${doc.edges.name}" in this file; read "${guessedEdgeSheet}" as the edges.`,
+          );
+        }
+        if (lostNodeSheet !== null) {
+          parts.push(
+            `No sheet named "${lostNodeSheet}" in this file; node attributes were derived from the edges instead.`,
+          );
         }
         setNotice(parts.join(" "));
         setError(null);
@@ -854,8 +953,15 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       }
       // Clicking the background lets go of the route the way it lets go of a
       // selection; picking a node or an edge keeps the card in reach, since
-      // walking the route's stops is itself a selection change.
+      // walking the route's stops is itself a selection change. Letting go
+      // also disarms the tool: Escape on a focused node arrives here as a
+      // null selection, not as a keydown, and an armed tool surviving its
+      // own cancellation would fire on the next Enter.
       if (next === null) {
+        if (pathFrom !== null) {
+          setPathFrom(null);
+          setLiveMessage("Path tracing cancelled.");
+        }
         setPathHighlight(null);
         setPathResult(null);
       }
@@ -875,15 +981,31 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   );
 
   // Filters or edits that change the structure take the route with them: the
-  // path was an answer about a graph that is no longer on screen. A stale
-  // timeline preview is the same kind of leftover, so it goes too.
+  // path was an answer about a graph that is no longer on screen.
   useEffect(() => {
     setPathFrom(null);
     setPathHighlight(null);
     setPathResult(null);
+  }, [base]);
+
+  // A stale timeline preview is the same kind of leftover, but the base
+  // cannot be its trigger: starting a preview changes the base on purpose,
+  // by lifting the bound step's bounds. What actually invalidates a preview
+  // is the document, the chain, or the isolated-node rule moving under it.
+  // Commits clear the draft themselves before they touch the chain.
+  useEffect(() => {
     timeDraftRef.current = null;
     setTimeDraftState(null);
-  }, [base]);
+  }, [doc, chain, showIsolated]);
+
+  // Hiding the strip mid-preview would otherwise strand the dim on screen
+  // with nothing left to explain or clear it; the committed step stays.
+  useEffect(() => {
+    if (hiddenOverlays.has("timeline")) {
+      timeDraftRef.current = null;
+      setTimeDraftState(null);
+    }
+  }, [hiddenOverlays]);
 
   const handlePathFrom = useCallback(
     (id: string) => {
@@ -1227,12 +1349,23 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       if (!doc) return;
       const { doc: next, report } = projectBipartite(doc, keep);
       editDoc(`the projection onto ${keep}s`, () => next);
-      // The old columns are gone wholesale, so steps naming them go the way
-      // they do when a named column is deleted; the shared count is what a
-      // projection is for, so it drives the edge width from the start.
+      // The old edge columns are gone wholesale, so steps and style tokens
+      // naming them go the way they do when a named column is deleted: the
+      // chain empties, and each vanished column folds through retargetStyle,
+      // which spares anything the surviving node table still answers. The
+      // shared count is what a projection is for, so it drives the edge
+      // width from the start.
       setChain([]);
       setSelection(null);
-      setStyle((s) => ({ ...s, edgeWidth: "column:Shared count" }));
+      setStyle((s) => {
+        let styled: GraphStyle = { ...s, edgeWidth: "column:Shared count" };
+        for (const column of doc.edges.columns) {
+          if (!hasColumn(next.edges, column.name)) {
+            styled = retargetStyle(styled, next, column.name, null);
+          }
+        }
+        return styled;
+      });
       const summary = `Projected ${report.nodes} nodes into ${report.edges} shared-counterpart links.`;
       const capped =
         report.counterparts.used < report.counterparts.total
@@ -1522,22 +1655,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   /**
    * The timeline. Its strip is an editor for one ordinary chain step, kind
    * "timewindow", bound the way the exploration binds its ego step: the last
-   * enabled one. While a brush or playback is in flight the window lives in
-   * `timeDraft` and reaches the canvas as dimming only; committing it writes
-   * the step, which is when the structure, the counts and everything
-   * downstream actually change.
+   * enabled one. The window state itself lives above the chain memo, since a
+   * preview lifts the bound step's committed bounds.
    */
-  const lastTimewindow = useMemo(() => {
-    for (let i = chain.length - 1; i >= 0; i--) {
-      const step = chain[i];
-      if (step.kind === "timewindow" && step.enabled) return step;
-    }
-    return null;
-  }, [chain]);
-
-  const [timeDraft, setTimeDraftState] = useState<TimeWindow | null>(null);
-  const timeDraftRef = useRef<TimeWindow | null>(null);
-
   const handleTimePreview = useCallback((window: TimeWindow) => {
     timeDraftRef.current = window;
     setTimeDraftState(window);
@@ -1894,6 +2014,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         edgeColors={edgeColors}
         selectedId={selectedId}
         showIsolated={showIsolated}
+        visible={!sidebarCollapsed}
         layout={layout}
         layoutParams={layoutParams}
         preventOverlap={preventOverlap}

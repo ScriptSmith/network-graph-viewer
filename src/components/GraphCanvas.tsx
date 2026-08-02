@@ -37,6 +37,7 @@ import {
   computeTargets,
   forceAtlas2,
   forceAtlas2Params,
+  labelNoverlap,
   layoutWeightColumn,
   noverlap,
   type LayoutId,
@@ -49,11 +50,22 @@ import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
 import { displayCell, formatMetric } from "../lib/format";
 import { DEFAULT_COLORS, type GraphTheme, type Palette } from "../theme";
 
+/** A set of marks named together: nodes by id, links by `edgeKey`. */
+export interface MarkSet {
+  nodes: ReadonlySet<string>;
+  links: ReadonlySet<string>;
+}
+
+/** A route to light up: its nodes, and its links by `edgeKey` in both directions. */
+export type PathHighlight = MarkSet;
+
 export interface GraphCanvasHandle {
   fit: () => void;
   reheat: () => void;
   /** Nudge overlapping nodes apart in place, leaving the layout otherwise alone. */
   separate: () => void;
+  /** The same nudge, but against the visible labels' estimated boxes. */
+  tidyLabels: () => void;
   /** Travel to one node and put it in the middle at a readable scale. */
   center: (id: string) => void;
   buildExport: () => { svgText: string; box: ExportBox } | null;
@@ -99,6 +111,17 @@ interface GraphCanvasProps {
   nodeAttrsFor?: (d: GraphNode) => Column[];
   selection: GraphSelection | null;
   onSelect: (next: GraphSelection | null) => void;
+  /**
+   * A shortest path to light: painted like hover and selection are, through
+   * `refreshStyles`, attributes only, never a scene rebuild.
+   */
+  highlightPath?: PathHighlight | null;
+  /**
+   * Marks faded out by the timeline's in-flight window: appearance only, so
+   * scrubbing and playback never rebuild the scene. Committing the window to
+   * the chain is what changes the structure, and that happens on release.
+   */
+  dimmed?: MarkSet | null;
   /**
    * Whether node images may be fetched from the web. Off until the reader says
    * otherwise: an image cell in a shared graph is a request to somebody else's
@@ -192,6 +215,8 @@ export function GraphCanvas({
   nodeAttrsFor = NO_NODE_ATTRS,
   selection,
   onSelect,
+  highlightPath = null,
+  dimmed = null,
   seedPositions,
   allowRemoteImages = false,
   pinned = EMPTY_PINNED,
@@ -238,8 +263,8 @@ export function GraphCanvas({
   const drawRef = useRef<() => void>(() => {});
 
   const edgeWidth = useMemo(
-    () => weightScale(graph.links, isCellStyle(style.edgeWidth)),
-    [graph, style.edgeWidth],
+    () => weightScale(graph.links, isCellStyle(style.edgeWidth), style.edgeWidthCurve ?? "sqrt"),
+    [graph, style.edgeWidth, style.edgeWidthCurve],
   );
   // A typed edge can carry a width of its own, which skips the scale.
   const strokeWidth = (d: GraphLink): number => d.width ?? edgeWidth(d);
@@ -326,6 +351,8 @@ export function GraphCanvas({
     pinned,
     onPinNode,
     theme,
+    highlightPath,
+    dimmed,
   });
   liveRef.current = {
     layout,
@@ -349,6 +376,8 @@ export function GraphCanvas({
     pinned,
     onPinNode,
     theme,
+    highlightPath,
+    dimmed,
   };
 
   /** What color the node stands for, image or no image. */
@@ -363,12 +392,16 @@ export function GraphCanvas({
   // A pictured node keeps its colour as a ring, so an image never costs the
   // reader whatever the colours were encoding.
   const nodeFill = (d: GraphNode): string => imageFill(d) ?? nodeTint(d);
+  const onPathNode = (d: GraphNode): boolean =>
+    liveRef.current.highlightPath?.nodes.has(d.id) ?? false;
   const nodeStroke = (d: GraphNode): string => {
-    if (d.id === liveRef.current.selectedId) return liveRef.current.theme.selectRing;
+    if (d.id === liveRef.current.selectedId || onPathNode(d)) {
+      return liveRef.current.theme.selectRing;
+    }
     return imageFill(d) === null ? liveRef.current.theme.surface : nodeTint(d);
   };
   const nodeStrokeWidth = (d: GraphNode): number => {
-    if (d.id === liveRef.current.selectedId) return 2.5;
+    if (d.id === liveRef.current.selectedId || onPathNode(d)) return 2.5;
     return imageFill(d) === null ? 1.5 : 2;
   };
 
@@ -403,15 +436,35 @@ export function GraphCanvas({
   const refreshStyles = () => {
     const sels = selsRef.current;
     if (!sels) return;
-    const { selectedId: sel, selectedEdge: edge, style: st } = liveRef.current;
+    const {
+      selectedId: sel,
+      selectedEdge: edge,
+      style: st,
+      highlightPath: path,
+      dimmed: dim,
+    } = liveRef.current;
     const focus = hoverNodeRef.current ?? sel;
     const neighbors = focus ? adjacencyRef.current.get(focus) : null;
     const base = baseLabelsRef.current;
     const picked = (d: GraphLink) =>
       edge !== null && endpoint(d.source) === edge.source && endpoint(d.target) === edge.target;
+    // The lit route wins every dimming rule: a path that faded under the
+    // selection that created it would answer and then hide the answer.
+    const onPath = (d: GraphLink) => path !== null && path.links.has(linkKeyOf(d));
+    const outOfWindow = (d: GraphLink) => dim !== null && dim.links.has(linkKeyOf(d));
 
     sels.node
-      .attr("opacity", (d) => (neighbors && !neighbors.has(d.id) ? 0.14 : 1))
+      .attr("opacity", (d) => {
+        // A lit route mutes everything off it, the way a selection mutes the
+        // rest of the graph: the answer is the route, so the route is what
+        // shows. A selected edge mutes everything but its two ends the same
+        // way.
+        if (path !== null) return path.nodes.has(d.id) ? 1 : 0.14;
+        if (dim?.nodes.has(d.id)) return 0.08;
+        if (neighbors) return neighbors.has(d.id) ? 1 : 0.14;
+        if (edge !== null) return d.id === edge.source || d.id === edge.target ? 1 : 0.14;
+        return 1;
+      })
       .attr("stroke", nodeStroke)
       .attr("stroke-width", nodeStrokeWidth)
       // The pin is worn as a dashed ring: an attribute on the same circle, so
@@ -424,20 +477,27 @@ export function GraphCanvas({
       .attr("stroke", (d) => {
         const lit =
           picked(d) ||
+          onPath(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
         return lit ? liveRef.current.theme.edgeLit : edgeBase(d);
       })
-      .attr("stroke-width", (d) => strokeWidth(d) * (picked(d) ? 2.2 : 1))
+      .attr("stroke-width", (d) => strokeWidth(d) * (picked(d) || onPath(d) ? 2.2 : 1))
       .attr("opacity", (d) => {
-        if (picked(d)) return 1;
-        if (!neighbors) return d.colorValue === null ? 0.85 : 0.9;
-        const touches = endpoint(d.source) === focus || endpoint(d.target) === focus;
-        return touches ? 0.95 : 0.06;
+        if (picked(d) || onPath(d)) return 1;
+        if (path !== null) return 0.06;
+        if (outOfWindow(d)) return 0.04;
+        if (neighbors) {
+          const touches = endpoint(d.source) === focus || endpoint(d.target) === focus;
+          return touches ? 0.95 : 0.06;
+        }
+        if (edge !== null) return 0.06;
+        return d.colorValue === null ? 0.85 : 0.9;
       })
       .attr("marker-end", (d) => {
         if (!st.arrows) return null;
         const lit =
           picked(d) ||
+          onPath(d) ||
           (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
         return markerFor(
           lit ? liveRef.current.theme.edgeLit : edgeBase(d),
@@ -453,9 +513,12 @@ export function GraphCanvas({
       .attr("stroke", liveRef.current.theme.labelHalo);
 
     sels.label.attr("display", (d) => {
+      if (path !== null) return path.nodes.has(d.id) ? null : "none";
+      if (dim?.nodes.has(d.id)) return "none";
       if (neighbors) return neighbors.has(d.id) ? null : "none";
-      // Selecting an edge names both of its ends, whatever the label mode.
-      if (edge && (d.id === edge.source || d.id === edge.target)) return null;
+      // Selecting an edge names both of its ends and nothing else, whatever
+      // the label mode: the rest of the graph is muted under it.
+      if (edge !== null) return d.id === edge.source || d.id === edge.target ? null : "none";
       return base.has(d.id) || d.id === sel ? null : "none";
     });
   };
@@ -1235,7 +1298,7 @@ export function GraphCanvas({
     computeBaseLabels();
     refreshStyles();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [labelMode, selection, style.arrows, theme]);
+  }, [labelMode, selection, style.arrows, theme, highlightPath, dimmed]);
 
   // Pinning holds the node where it stands; unpinning hands it back to the
   // layout, which is the same act as switching layouts, so the same code runs
@@ -1319,6 +1382,18 @@ export function GraphCanvas({
     },
     separate: () => {
       noverlap(nodesRef.current);
+      simRef.current?.alpha(0.05).restart();
+      window.setTimeout(() => fit(500), 60);
+    },
+    tidyLabels: () => {
+      // Only the labels actually on screen push anything around: the base
+      // set, plus whatever hover or selection has forced visible is
+      // transient and not worth re-arranging the graph for.
+      const visible = new Map<string, string>();
+      for (const node of nodesRef.current) {
+        if (baseLabelsRef.current.has(node.id)) visible.set(node.id, node.label);
+      }
+      labelNoverlap(nodesRef.current, visible, liveRef.current.pinned);
       simRef.current?.alpha(0.05).restart();
       window.setTimeout(() => fit(500), 60);
     },

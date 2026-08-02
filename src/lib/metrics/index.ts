@@ -1,15 +1,21 @@
 import type { BaseGraph, CellValue, ColumnType } from "../../types";
 import { centrality, hits, type CentralityKind } from "./centrality";
-import { DEFAULT_RESOLUTION, louvain } from "./community";
+import { DEFAULT_RESOLUTION, louvain, louvainStability } from "./community";
 import { edgeMetrics } from "./edges";
 import { components, coreness, networkMetrics, triangles } from "./structure";
-import { toMetricGraph, undirected, type MetricGraph } from "./model";
+import { bfsDistances, toMetricGraph, undirected, type MetricGraph } from "./model";
 import { edgeKey } from "../cells";
 
 export { CENTRALITY_NAMES, type CentralityKind } from "./centrality";
 export { DEFAULT_RESOLUTION } from "./community";
 export type { NetworkMetrics } from "./structure";
-export { toMetricGraph, type MetricGraph } from "./model";
+export {
+  shortestPath,
+  shortestPathInfo,
+  shortestRoutes,
+  toMetricGraph,
+  type MetricGraph,
+} from "./model";
 
 /** Scores by node id, for callers holding a projected graph already. */
 export function centralityScores(graph: MetricGraph, kind: CentralityKind): Map<string, number> {
@@ -142,12 +148,27 @@ export interface MetricOptions {
   weightColumn: string | null;
   /** Louvain resolution: higher finds more, smaller communities. */
   resolution: number;
+  /**
+   * Also estimate how firmly each node sits in its Louvain community, as a
+   * companion column. Costs several extra Louvain runs, so it is opt-in.
+   */
+  louvainStability?: boolean;
 }
 
 export const DEFAULT_METRIC_OPTIONS: MetricOptions = {
   weightColumn: null,
   resolution: DEFAULT_RESOLUTION,
 };
+
+/**
+ * One compute run the user asked for, as an instruction rather than as the
+ * values it produced. The workspace carries these so "update data" can run
+ * the same metrics against whatever arrives next.
+ */
+export interface ComputedRecipe {
+  metrics: string[];
+  options: MetricOptions;
+}
 
 export interface ComputedColumn {
   name: string;
@@ -174,6 +195,23 @@ export interface MetricRunResult {
   edgeColumns: ComputedColumn[];
   /** Findings that are about the whole graph rather than one row. */
   summary: { modularity?: number; communityCount?: number };
+}
+
+/**
+ * Hop distance from one node as a computed column: the heat-map question
+ * asked the columns way, so ramps, sizes and filters compose with the answer
+ * for free. Unreachable nodes stay blank rather than wearing a fake number.
+ */
+export function hopsColumn(graph: MetricGraph, from: string, name: string): ComputedColumn | null {
+  const at = graph.ids.indexOf(from);
+  if (at === -1) return null;
+  const dist = new Int32Array(graph.ids.length);
+  bfsDistances(undirected(graph).neighbors, at, dist);
+  const values = emptyValues();
+  graph.ids.forEach((id, i) => {
+    values[id] = dist[i] === -1 ? null : dist[i];
+  });
+  return { name, type: "number", values };
 }
 
 /**
@@ -258,6 +296,10 @@ export function runMetrics(
     nodeColumn("Modularity class", "text", (i) => String(result.communities[i]));
     summary.modularity = result.modularity;
     summary.communityCount = result.communityCount;
+    if (options.louvainStability === true) {
+      const stability = louvainStability(graph, options.resolution, result.communities);
+      nodeColumn("Modularity stability", "number", (i) => stability[i]);
+    }
   }
 
   if (wanted.has("coreness")) {

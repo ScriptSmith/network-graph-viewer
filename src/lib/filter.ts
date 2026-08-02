@@ -1,7 +1,8 @@
 import type { BaseGraph, ColumnFilter, GraphDoc, Row, Table } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
 import { buildBaseGraph, distinctValues, endpointId } from "./graph";
-import { asNumber } from "./parse";
+import { asNumber, asTime } from "./parse";
+import { timeColumns } from "./timeline";
 import { toMetricGraph } from "./metrics";
 import { disparity } from "./metrics/edges";
 import { undirected } from "./metrics/model";
@@ -33,9 +34,26 @@ export type FilterSpec =
       where?: { column: string; values: string[] };
     }
   | { kind: "mutual" }
-  | { kind: "backbone"; alpha: number; weightColumn: string | null };
+  | { kind: "backbone"; alpha: number; weightColumn: string | null }
+  /**
+   * A window over a time column, bounds inclusive, read through `asTime` so
+   * dates and plain numbers both work. An ordinary step: it sits in the
+   * chain, order matters, and the timeline strip is just an editor for it.
+   */
+  | {
+      kind: "timewindow";
+      table: "nodes" | "edges";
+      column: string;
+      min: number | null;
+      max: number | null;
+    };
 
-export type FilterStep = { id: string; enabled: boolean } & FilterSpec;
+/**
+ * `invert` keeps what the step would drop: the complement, taken within the
+ * subgraph entering the step, so an inverted ego step is everything outside
+ * the neighbourhood and an inverted component step is the small islands.
+ */
+export type FilterStep = { id: string; enabled: boolean; invert?: boolean } & FilterSpec;
 
 export interface ChainStepResult {
   id: string;
@@ -57,6 +75,11 @@ export function newStepId(): string {
 }
 
 export function describeStep(step: FilterStep): string {
+  const name = describeSpec(step);
+  return step.invert === true ? `not: ${name}` : name;
+}
+
+function describeSpec(step: FilterStep): string {
   switch (step.kind) {
     case "column":
       return step.column;
@@ -79,6 +102,8 @@ export function describeStep(step: FilterStep): string {
       return "Reciprocated edges";
     case "backbone":
       return `Backbone (α ≤ ${step.alpha})`;
+    case "timewindow":
+      return `${step.column} window`;
   }
 }
 
@@ -97,6 +122,11 @@ export const FILTER_KINDS: { kind: FilterSpec["kind"]; name: string; blurb: stri
     kind: "backbone",
     name: "Disparity backbone",
     blurb: "Keep only statistically significant edges.",
+  },
+  {
+    kind: "timewindow",
+    name: "Time window",
+    blurb: "Keep rows inside a window over a time or number column.",
   },
 ];
 
@@ -121,6 +151,7 @@ function isColumnFilter(value: unknown): value is ColumnFilter {
 export function isFilterStep(value: unknown): value is FilterStep {
   if (!isRecord(value)) return false;
   if (typeof value.id !== "string" || typeof value.enabled !== "boolean") return false;
+  if (value.invert !== undefined && typeof value.invert !== "boolean") return false;
   switch (value.kind) {
     case "column":
       return (
@@ -156,6 +187,13 @@ export function isFilterStep(value: unknown): value is FilterStep {
       return (
         typeof value.alpha === "number" &&
         (value.weightColumn === null || typeof value.weightColumn === "string")
+      );
+    case "timewindow":
+      return (
+        (value.table === "nodes" || value.table === "edges") &&
+        typeof value.column === "string" &&
+        isNumberOrNull(value.min) &&
+        isNumberOrNull(value.max)
       );
     default:
       return false;
@@ -218,6 +256,10 @@ export function retargetChain(
       if (to !== null) out.push({ ...step, column: to });
       continue;
     }
+    if (step.kind === "timewindow" && step.table === table && step.column === from) {
+      if (to !== null) out.push({ ...step, column: to });
+      continue;
+    }
     if (step.kind === "backbone" && table === "edges" && step.weightColumn === from) {
       out.push({ ...step, weightColumn: to });
       continue;
@@ -272,6 +314,24 @@ export function defaultStep(kind: FilterSpec["kind"], doc: GraphDoc): FilterStep
       return { id, enabled: true, kind: "mutual" };
     case "backbone":
       return { id, enabled: true, kind: "backbone", alpha: 0.3, weightColumn: null };
+    case "timewindow": {
+      // Unbounded to start, so adding the step never blanks the canvas, and
+      // aimed at a column that actually reads as a time axis when one exists.
+      const offered = timeColumns(doc)[0];
+      return {
+        id,
+        enabled: true,
+        kind: "timewindow",
+        table: offered?.table ?? "edges",
+        column:
+          offered?.column ??
+          doc.edges.columns.find((c) => c.type === "number")?.name ??
+          doc.edges.columns[0]?.name ??
+          "",
+        min: null,
+        max: null,
+      };
+    }
   }
 }
 
@@ -296,7 +356,7 @@ export function applyChain(doc: GraphDoc, chain: FilterStep[], options: ChainOpt
 
   for (const step of chain) {
     if (step.enabled) {
-      const narrowed = applyStep(step, graph, doc, rows, keepNodes);
+      const narrowed = narrow(step, graph, doc, rows, keepNodes);
       rows = narrowed.rows;
       keepNodes = narrowed.keepNodes;
       graph = build();
@@ -305,6 +365,72 @@ export function applyChain(doc: GraphDoc, chain: FilterStep[], options: ChainOpt
   }
 
   return { graph, steps };
+}
+
+/**
+ * One step's narrowing, inversion included. Inversion is defined here, once,
+ * so every kind inverts the same way: the step runs normally, and what comes
+ * out is the incoming set minus what it kept. Rows complement against the
+ * rows that came in; nodes complement against the nodes of the incoming
+ * subgraph, and the node set is then re-derived by the next build under the
+ * ordinary `showIsolated` rules.
+ */
+function narrow(
+  step: FilterStep,
+  graph: BaseGraph,
+  doc: GraphDoc,
+  rows: Row[],
+  keepNodes: ReadonlySet<string> | null,
+): Narrowing {
+  const narrowed = applyStep(step, graph, doc, rows, keepNodes);
+  if (step.invert !== true) return narrowed;
+
+  let outRows = rows;
+  if (narrowed.rows !== rows) {
+    const kept = new Set(narrowed.rows);
+    outRows = rows.filter((row) => !kept.has(row));
+  }
+
+  let outKeep = keepNodes;
+  if (narrowed.keepNodes !== keepNodes) {
+    const kept = narrowed.keepNodes;
+    const complement = new Set<string>();
+    for (const node of graph.nodes) {
+      if (kept === null || !kept.has(node.id)) complement.add(node.id);
+    }
+    outKeep = intersect(keepNodes, complement);
+  }
+
+  return { rows: outRows, keepNodes: outKeep };
+}
+
+/**
+ * What one step receives: the chain run up to but not including it. A step's
+ * editor should describe what the step will actually see, which stops being
+ * the whole document the moment anything sits above it in the chain. Run when
+ * an editor needs it, never inside `applyChain`'s render path.
+ */
+export function chainInputBefore(
+  doc: GraphDoc,
+  chain: FilterStep[],
+  stepId: string,
+  options: ChainOptions,
+): { graph: BaseGraph; rows: Row[] } {
+  let rows: Row[] = doc.edges.rows;
+  let keepNodes: ReadonlySet<string> | null = null;
+  const build = () =>
+    buildBaseGraph(doc, { edgeRows: rows, showIsolated: options.showIsolated, keepNodes });
+
+  let graph = build();
+  for (const step of chain) {
+    if (step.id === stepId) break;
+    if (!step.enabled) continue;
+    const narrowed = narrow(step, graph, doc, rows, keepNodes);
+    rows = narrowed.rows;
+    keepNodes = narrowed.keepNodes;
+    graph = build();
+  }
+  return { graph, rows };
 }
 
 function applyStep(
@@ -374,6 +500,20 @@ function applyStep(
         }),
         keepNodes,
       };
+    }
+
+    case "timewindow": {
+      const { min, max } = step;
+      const inside = (row: Row): boolean => {
+        const t = asTime(row[step.column]);
+        if (t === null) return false;
+        if (min !== null && t < min) return false;
+        if (max !== null && t > max) return false;
+        return true;
+      };
+      return step.table === "edges"
+        ? { rows: rows.filter(inside), keepNodes }
+        : { rows, keepNodes: intersect(keepNodes, nodeIdsWhere(doc, inside)) };
     }
 
     case "backbone": {

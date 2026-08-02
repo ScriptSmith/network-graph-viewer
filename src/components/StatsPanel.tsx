@@ -79,6 +79,33 @@ interface StatsPanelProps {
   egoDepth: number | null;
   onExpandFrom: (id: string) => void;
   onEgoDepthChange: (depth: number) => void;
+  onClearExpand: () => void;
+  /** The exploration's edge constraint, when its ego step carries one. */
+  egoWhere: { column: string; values: string[] } | undefined;
+  onEgoWhereChange: (where: { column: string; values: string[] } | undefined) => void;
+  /** Whether the path tool is waiting for its far end to be picked. */
+  pathArmed: boolean;
+  onPathFrom: (id: string) => void;
+  onCancelPath: () => void;
+  onDistancesFrom: (id: string) => void;
+  /** The selected node's distance column when one exists, so it can undo. */
+  distancesColumn: string | null;
+  onRemoveDistances: (column: string) => void;
+  /** The last traced route, answered as a fact rather than only as paint. */
+  pathResult: {
+    from: string;
+    to: string;
+    routes: string[][];
+    count: number;
+    routeIndex: number;
+    forward: number;
+  } | null;
+  /** Whether path tracing follows the arrows or ignores them. */
+  pathDirected: boolean;
+  onPathDirectedChange: (directed: boolean) => void;
+  /** Light another of the equally short routes. */
+  onPickRoute: (index: number) => void;
+  onClearPath: () => void;
   onToggleValueFilter: (table: "nodes" | "edges", column: string, value: string) => void;
   onSelectNode: (id: string | null) => void;
   onClose: () => void;
@@ -144,6 +171,20 @@ export function StatsPanel({
   egoDepth,
   onExpandFrom,
   onEgoDepthChange,
+  onClearExpand,
+  egoWhere,
+  onEgoWhereChange,
+  pathArmed,
+  onPathFrom,
+  onCancelPath,
+  onDistancesFrom,
+  distancesColumn,
+  onRemoveDistances,
+  pathResult,
+  pathDirected,
+  onPathDirectedChange,
+  onPickRoute,
+  onClearPath,
   onToggleValueFilter,
   onSelectNode,
   onClose,
@@ -256,231 +297,359 @@ export function StatsPanel({
   const avgDegree = graph.nodes.length > 0 ? (2 * graph.links.length) / graph.nodes.length : 0;
 
   return (
-    <aside className="stats-panel" aria-label="Statistics">
+    <aside className="stats-panel" aria-label="Information">
       <header className="panel-head">
-        <h2>Statistics</h2>
+        <h2>Information</h2>
         <button
           type="button"
           className="insp-close"
           onClick={onClose}
-          title="Hide the statistics panel"
-          aria-label="Hide the statistics panel"
+          title="Hide the information panel"
+          aria-label="Hide the information panel"
         >
           ×
         </button>
       </header>
 
-      {selection?.kind === "node" && (
-        <NodeDetails
-          doc={doc}
-          graph={graph}
-          style={style}
-          selectedId={selection.id}
-          palette={palette}
-          colors={colors}
-          pinned={pinned.has(selection.id)}
-          onTogglePin={() => onTogglePin(selection.id)}
-          allowRemoteImages={allowRemoteImages}
-          egoDepth={egoDepth}
-          onExpandFrom={() => onExpandFrom(selection.id)}
-          onEgoDepthChange={onEgoDepthChange}
-          onSelect={onSelectNode}
-        />
-      )}
+      {/* The panel splits in two: facts about what is picked out on the
+          canvas above, the whole network's numbers below. */}
+      <section className="info-zone" aria-label="Facts about the selection">
+        <h3 className="info-zone-head">Facts</h3>
 
-      {selection?.kind === "edge" && (
-        <EdgeDetails
-          doc={doc}
-          graph={graph}
-          style={style}
-          edge={selection}
-          palette={palette}
-          colors={colors}
-          edgeColors={edgeColors}
-          onSelectNode={onSelectNode}
-          onClear={() => onSelectNode(null)}
-        />
-      )}
-
-      {rows.length < totalRows && (
-        <p className="insp-meta">
-          {rows.length} of {totalRows} rows after filters
-        </p>
-      )}
-
-      <div className="stat-tiles">
-        <div className="stat-tile">
-          <span className="stat-value">{graph.nodes.length}</span>
-          <span className="stat-label">nodes</span>
-        </div>
-        <div className="stat-tile">
-          <span className="stat-value">{graph.links.length}</span>
-          <span className="stat-label">edges</span>
-        </div>
-        <div className="stat-tile">
-          <span className="stat-value">{formatNumber(avgDegree)}</span>
-          <span className="stat-label">avg links</span>
-        </div>
-        <div className="stat-tile">
-          <span className="stat-value">{components}</span>
-          <span className="stat-label">components</span>
-        </div>
-      </div>
-
-      <section className="insp-section">
-        <h4>Network metrics</h4>
-        <div className="metric-rows">
-          <div className="metric-row">
-            <span className="metric-name">Density</span>
-            <span className="metric-value">{formatMetric(metrics.density)}</span>
-          </div>
-          <div className="metric-row">
-            <span className="metric-name">Diameter</span>
-            <span className="metric-value">{formatMetric(metrics.diameter)}</span>
-          </div>
-          <div className="metric-row">
-            <span className="metric-name">Avg path length</span>
-            <span className="metric-value">{formatMetric(metrics.avgPathLength)}</span>
-          </div>
-          <div className="metric-row">
-            <span className="metric-name">Clustering</span>
-            <span className="metric-value">{formatMetric(metrics.clustering)}</span>
-          </div>
-        </div>
-        {metrics.approximate && (
-          <p className="note">Large graph: path measures estimated from sampled nodes.</p>
+        {selection?.kind === "node" && (
+          <NodeDetails
+            doc={doc}
+            graph={graph}
+            style={style}
+            selectedId={selection.id}
+            palette={palette}
+            colors={colors}
+            pinned={pinned.has(selection.id)}
+            onTogglePin={() => onTogglePin(selection.id)}
+            allowRemoteImages={allowRemoteImages}
+            egoDepth={egoDepth}
+            onExpandFrom={() => onExpandFrom(selection.id)}
+            onEgoDepthChange={onEgoDepthChange}
+            onClearExpand={onClearExpand}
+            egoWhere={egoWhere}
+            onEgoWhereChange={onEgoWhereChange}
+            pathArmed={pathArmed}
+            pathDirected={pathDirected}
+            onPathDirectedChange={onPathDirectedChange}
+            onPathFrom={() => onPathFrom(selection.id)}
+            onCancelPath={onCancelPath}
+            onDistancesFrom={() => onDistancesFrom(selection.id)}
+            distancesColumn={distancesColumn}
+            onRemoveDistances={() => distancesColumn && onRemoveDistances(distancesColumn)}
+            onSelect={onSelectNode}
+          />
         )}
-        <details className="metric-help">
-          <summary>What do these mean?</summary>
-          <dl>
-            {METRIC_HELP.map((h) => (
-              <div key={h.term}>
-                <dt>{h.term}</dt>
-                <dd>{h.text}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="note">All measures treat connections as undirected.</p>
-        </details>
-      </section>
 
-      <section className="insp-section">
-        <h4>Breakdown</h4>
-        <div className="pivot-controls">
-          <label className="field">
-            <span className="field-label">Group by</span>
-            <select
-              className="control"
-              value={groupBy}
-              onChange={(e) => setGroupBy(e.target.value)}
-            >
-              {groupable.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">Measure</span>
-            <select
-              className="control"
-              value={measure}
-              onChange={(e) => setMeasure(e.target.value)}
-            >
-              <option value="count">Edge count</option>
-              {numericColumns.map((c) => (
-                <option key={`sum:${c}`} value={`sum:${c}`}>
-                  Sum of {c}
-                </option>
-              ))}
-              {numericColumns.map((c) => (
-                <option key={`avg:${c}`} value={`avg:${c}`}>
-                  Average {c}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="bar-list">
-          {bars.slice(0, MAX_BARS).map((b) => (
-            <button
-              key={b.key}
-              type="button"
-              className={isActiveBar(b.key) ? "bar-row active" : "bar-row"}
-              onClick={() => onToggleValueFilter("edges", groupBy, b.key)}
-              title={`Filter to ${groupBy} = ${b.key === "" ? "(blank)" : b.key}`}
-            >
-              <span className="bar-head">
-                <span className="bar-name">{b.key === "" ? "(blank)" : b.key}</span>
-                <span className="bar-value">{formatNumber(b.value)}</span>
-              </span>
-              <span className="bar-track">
-                <span
-                  className="bar-fill"
-                  style={{
-                    width: `${Math.max(1.5, (100 * b.value) / maxBar)}%`,
-                    background: barColor(b.key),
-                  }}
-                />
-              </span>
-            </button>
-          ))}
-          {bars.length > MAX_BARS && <p className="note">+{bars.length - MAX_BARS} more groups</p>}
-          {bars.length === 0 && <p className="note">No rows match the current filters.</p>}
-        </div>
-        <p className="note">Click a bar to filter the graph to that value; click again to clear.</p>
-      </section>
+        {selection?.kind === "edge" && (
+          <EdgeDetails
+            doc={doc}
+            graph={graph}
+            style={style}
+            edge={selection}
+            palette={palette}
+            colors={colors}
+            edgeColors={edgeColors}
+            onSelectNode={onSelectNode}
+            onClear={() => onSelectNode(null)}
+          />
+        )}
 
-      {base.nodes.length > 0 && (
-        <section className="insp-section">
-          <h4>Top nodes</h4>
-          <label className="field">
-            <span className="field-label">Rank by</span>
-            <select
-              className="control"
-              value={centralityKind}
-              onChange={(e) => setCentralityKind(e.target.value as CentralityKind)}
-            >
-              {(Object.keys(CENTRALITY_NAMES) as CentralityKind[]).map((k) => (
-                <option key={k} value={k}>
-                  {RANK_OPTION_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {ranking === "working" && (
-            <p className="note" role="status">
-              Ranking by {RANK_OPTION_LABELS[centralityKind].toLowerCase()}…
-            </p>
-          )}
-          {ranking === "failed" && (
-            <p className="note">That ranking could not be computed for this graph.</p>
-          )}
-          <div className="bar-list">
-            {topNodes.map((n) => (
+        {pathResult && (
+          <section className="insp-section path-card" aria-label="Traced path">
+            <h4>
+              Path
               <button
-                key={n.id}
                 type="button"
-                className="bar-row"
-                onClick={() => onSelectNode(n.id)}
-                title={`Highlight ${labelOf.get(n.id) ?? n.id} in the graph`}
+                className="insp-close"
+                onClick={onClearPath}
+                title="Clear the traced path"
+                aria-label="Clear the traced path"
+              >
+                ×
+              </button>
+            </h4>
+            {pathResult.routes.length === 0 ? (
+              <p className="insp-meta">
+                No path between {labelOf.get(pathResult.from) ?? pathResult.from} and{" "}
+                {labelOf.get(pathResult.to) ?? pathResult.to}
+                {pathDirected
+                  ? " along the arrows. Untick the box below to walk edges either way."
+                  : ": they sit on different islands of the current view."}
+              </p>
+            ) : (
+              (() => {
+                const route = pathResult.routes[pathResult.routeIndex];
+                const hops = route.length - 1;
+                return (
+                  <>
+                    <p className="insp-meta">
+                      {hops} hop{hops === 1 ? "" : "s"} on the graph as filtered
+                      {pathResult.count > 1
+                        ? `, one of ${pathResult.count.toLocaleString()} equally short routes`
+                        : ", and the only route this short"}
+                      .
+                    </p>
+                    {!pathDirected && hops > 0 && (
+                      <p className="insp-meta">
+                        {pathResult.forward === hops
+                          ? "Follows the arrows the whole way."
+                          : `Follows the arrows on ${pathResult.forward} of ${hops} hops.`}
+                      </p>
+                    )}
+                    {pathResult.routes.length > 1 && (
+                      <div className="expand-row">
+                        <span className="hop-stepper">
+                          <button
+                            type="button"
+                            onClick={() => onPickRoute(pathResult.routeIndex - 1)}
+                            disabled={pathResult.routeIndex === 0}
+                            aria-label="Light the previous route"
+                          >
+                            −
+                          </button>
+                          route {pathResult.routeIndex + 1} of {pathResult.routes.length}
+                          {pathResult.count > pathResult.routes.length ? " listed" : ""}
+                          <button
+                            type="button"
+                            onClick={() => onPickRoute(pathResult.routeIndex + 1)}
+                            disabled={pathResult.routeIndex >= pathResult.routes.length - 1}
+                            aria-label="Light the next route"
+                          >
+                            +
+                          </button>
+                        </span>
+                      </div>
+                    )}
+                    <ol className="path-route">
+                      {route.map((id) => (
+                        <li key={id}>
+                          <button
+                            type="button"
+                            className="path-stop"
+                            onClick={() => onSelectNode(id)}
+                            title={`Select ${labelOf.get(id) ?? id}`}
+                          >
+                            {labelOf.get(id) ?? id}
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                );
+              })()
+            )}
+            <label className="check-item">
+              <input
+                type="checkbox"
+                checked={pathDirected}
+                onChange={(e) => onPathDirectedChange(e.target.checked)}
+              />
+              <span className="check-name">Follow arrows only</span>
+            </label>
+          </section>
+        )}
+
+        {selection === null && pathResult === null && (
+          <p className="note">
+            Select a node or an edge, or trace a path between two nodes, and its facts land here.
+          </p>
+        )}
+      </section>
+
+      <div className="info-divider" role="presentation" />
+
+      <section className="info-zone" aria-label="Whole-network statistics">
+        <h3 className="info-zone-head">Network</h3>
+
+        {rows.length < totalRows && (
+          <p className="insp-meta">
+            {rows.length} of {totalRows} rows after filters
+          </p>
+        )}
+
+        <div className="stat-tiles">
+          <div className="stat-tile">
+            <span className="stat-value">{graph.nodes.length}</span>
+            <span className="stat-label">nodes</span>
+          </div>
+          <div className="stat-tile">
+            <span className="stat-value">{graph.links.length}</span>
+            <span className="stat-label">edges</span>
+          </div>
+          <div className="stat-tile">
+            <span className="stat-value">{formatNumber(avgDegree)}</span>
+            <span className="stat-label">avg links</span>
+          </div>
+          <div className="stat-tile">
+            <span className="stat-value">{components}</span>
+            <span className="stat-label">components</span>
+          </div>
+        </div>
+
+        <section className="insp-section">
+          <h4>Network metrics</h4>
+          <div className="metric-rows">
+            <div className="metric-row">
+              <span className="metric-name">Density</span>
+              <span className="metric-value">{formatMetric(metrics.density)}</span>
+            </div>
+            <div className="metric-row">
+              <span className="metric-name">Diameter</span>
+              <span className="metric-value">{formatMetric(metrics.diameter)}</span>
+            </div>
+            <div className="metric-row">
+              <span className="metric-name">Avg path length</span>
+              <span className="metric-value">{formatMetric(metrics.avgPathLength)}</span>
+            </div>
+            <div className="metric-row">
+              <span className="metric-name">Clustering</span>
+              <span className="metric-value">{formatMetric(metrics.clustering)}</span>
+            </div>
+          </div>
+          {metrics.approximate && (
+            <p className="note">Large graph: path measures estimated from sampled nodes.</p>
+          )}
+          <details className="metric-help">
+            <summary>What do these mean?</summary>
+            <dl>
+              {METRIC_HELP.map((h) => (
+                <div key={h.term}>
+                  <dt>{h.term}</dt>
+                  <dd>{h.text}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="note">All measures treat connections as undirected.</p>
+          </details>
+        </section>
+
+        <section className="insp-section">
+          <h4>Breakdown</h4>
+          <div className="pivot-controls">
+            <label className="field">
+              <span className="field-label">Group by</span>
+              <select
+                className="control"
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value)}
+              >
+                {groupable.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Measure</span>
+              <select
+                className="control"
+                value={measure}
+                onChange={(e) => setMeasure(e.target.value)}
+              >
+                <option value="count">Edge count</option>
+                {numericColumns.map((c) => (
+                  <option key={`sum:${c}`} value={`sum:${c}`}>
+                    Sum of {c}
+                  </option>
+                ))}
+                {numericColumns.map((c) => (
+                  <option key={`avg:${c}`} value={`avg:${c}`}>
+                    Average {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="bar-list">
+            {bars.slice(0, MAX_BARS).map((b) => (
+              <button
+                key={b.key}
+                type="button"
+                className={isActiveBar(b.key) ? "bar-row active" : "bar-row"}
+                onClick={() => onToggleValueFilter("edges", groupBy, b.key)}
+                title={`Filter to ${groupBy} = ${b.key === "" ? "(blank)" : b.key}`}
               >
                 <span className="bar-head">
-                  <span className="bar-name">{labelOf.get(n.id) ?? n.id}</span>
-                  <span className="bar-value">{formatMetric(centrality.get(n.id) ?? 0)}</span>
+                  <span className="bar-name">{b.key === "" ? "(blank)" : b.key}</span>
+                  <span className="bar-value">{formatNumber(b.value)}</span>
                 </span>
                 <span className="bar-track">
                   <span
-                    className="bar-fill neutral"
+                    className="bar-fill"
                     style={{
-                      width: `${Math.max(1.5, (100 * (centrality.get(n.id) ?? 0)) / maxCentrality)}%`,
+                      width: `${Math.max(1.5, (100 * b.value) / maxBar)}%`,
+                      background: barColor(b.key),
                     }}
                   />
                 </span>
               </button>
             ))}
+            {bars.length > MAX_BARS && (
+              <p className="note">+{bars.length - MAX_BARS} more groups</p>
+            )}
+            {bars.length === 0 && <p className="note">No rows match the current filters.</p>}
           </div>
+          <p className="note">
+            Click a bar to filter the graph to that value; click again to clear.
+          </p>
         </section>
-      )}
+
+        {base.nodes.length > 0 && (
+          <section className="insp-section">
+            <h4>Top nodes</h4>
+            <label className="field">
+              <span className="field-label">Rank by</span>
+              <select
+                className="control"
+                value={centralityKind}
+                onChange={(e) => setCentralityKind(e.target.value as CentralityKind)}
+              >
+                {(Object.keys(CENTRALITY_NAMES) as CentralityKind[]).map((k) => (
+                  <option key={k} value={k}>
+                    {RANK_OPTION_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {ranking === "working" && (
+              <p className="note" role="status">
+                Ranking by {RANK_OPTION_LABELS[centralityKind].toLowerCase()}…
+              </p>
+            )}
+            {ranking === "failed" && (
+              <p className="note">That ranking could not be computed for this graph.</p>
+            )}
+            <div className="bar-list">
+              {topNodes.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  className="bar-row"
+                  onClick={() => onSelectNode(n.id)}
+                  title={`Highlight ${labelOf.get(n.id) ?? n.id} in the graph`}
+                >
+                  <span className="bar-head">
+                    <span className="bar-name">{labelOf.get(n.id) ?? n.id}</span>
+                    <span className="bar-value">{formatMetric(centrality.get(n.id) ?? 0)}</span>
+                  </span>
+                  <span className="bar-track">
+                    <span
+                      className="bar-fill neutral"
+                      style={{
+                        width: `${Math.max(1.5, (100 * (centrality.get(n.id) ?? 0)) / maxCentrality)}%`,
+                      }}
+                    />
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+      </section>
     </aside>
   );
 }

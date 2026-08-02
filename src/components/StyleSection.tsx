@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type {
   EdgeTypeStyle,
   GraphDoc,
@@ -6,9 +6,10 @@ import type {
   LabelMode,
   Mapping,
   NodeTypeStyle,
+  StyleCurve,
 } from "../types";
-import { isCellStyle } from "../types";
-import { CELL_RADIUS, CELL_WIDTH, distinctValues } from "../lib/graph";
+import { isCellStyle, styleColumn } from "../types";
+import { CELL_RADIUS, CELL_WIDTH, CENTRALITY_TOKENS, distinctValues } from "../lib/graph";
 import {
   colorCellColumns,
   edgeStyleColumns,
@@ -162,6 +163,39 @@ function AttrsEditor({
   );
 }
 
+/**
+ * The interpolation for a numeric channel: linear, square root or log. Shown
+ * only where a value is being mapped onto a scale; `cell:` tokens are literal
+ * and uniform channels have nothing to curve. The fallback is what the channel
+ * does with the field unset, so the select always shows the truth.
+ */
+function CurveSelect({
+  label,
+  value,
+  fallback,
+  onChange,
+}: {
+  label: string;
+  value: StyleCurve | undefined;
+  fallback: StyleCurve;
+  onChange: (curve: StyleCurve) => void;
+}) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <select
+        className="control"
+        value={value ?? fallback}
+        onChange={(e) => onChange(e.target.value as StyleCurve)}
+      >
+        <option value="linear">Linear</option>
+        <option value="sqrt">Square root</option>
+        <option value="log">Log</option>
+      </select>
+    </label>
+  );
+}
+
 const emptyOverride = <T extends object>(o: T): boolean =>
   Object.values(o).every((v) => v === undefined);
 
@@ -198,6 +232,8 @@ export function NodeStyleSection({
   style,
   colors,
   labelMode,
+  chosenScope,
+  onScopeChange,
   onStyleChange,
   onMappingChange,
   onLabelModeChange,
@@ -207,11 +243,17 @@ export function NodeStyleSection({
   /** Color map in force, overrides included, so swatches match the marks. */
   colors: Map<string, string>;
   labelMode: LabelMode;
+  /**
+   * The "apply to" scope, held by the app so the schema view's pencil can
+   * point this section at a type from outside. null is the global rules.
+   */
+  chosenScope: string | null;
+  onScopeChange: (scope: string | null) => void;
   onStyleChange: (patch: Partial<GraphStyle>) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
   onLabelModeChange: (mode: LabelMode) => void;
 }) {
-  const [chosenScope, setChosenScope] = useState<string | null>(null);
+  const setChosenScope = onScopeChange;
   const types = style.typeStyles;
 
   const styleColumns = useMemo(() => nodeStyleColumns(doc), [doc]);
@@ -298,6 +340,15 @@ export function NodeStyleSection({
       : {};
   const scopeName = scope === "" ? "(blank)" : (scope ?? "");
 
+  // The curve selects show only where a number is being mapped onto a scale.
+  const colorCol = styleColumn(style.nodeColor);
+  const colorNumeric =
+    style.nodeColor in CENTRALITY_TOKENS ||
+    (colorCol !== null &&
+      !isCellStyle(style.nodeColor) &&
+      numberColumns.some((c) => c.name === colorCol));
+  const sizeNumeric = style.nodeSize !== "metric:uniform" && !isCellStyle(style.nodeSize);
+
   return (
     <GroupShell title="Nodes">
       {textColumns.length > 0 && (
@@ -367,6 +418,14 @@ export function NodeStyleSection({
             </select>
           </label>
           {isCellStyle(style.nodeColor) && <p className="note">{COLOR_CELL_NOTE}</p>}
+          {colorNumeric && (
+            <CurveSelect
+              label="Color scale"
+              value={style.nodeColorCurve}
+              fallback="linear"
+              onChange={(nodeColorCurve) => onStyleChange({ nodeColorCurve })}
+            />
+          )}
           <label className="field">
             <span className="field-label">Size nodes by</span>
             <select
@@ -406,6 +465,14 @@ export function NodeStyleSection({
               Numbers are radii in pixels, held between {CELL_RADIUS.min} and {CELL_RADIUS.max}. A
               cell with no number in it keeps the plain size.
             </p>
+          )}
+          {sizeNumeric && (
+            <CurveSelect
+              label="Size scale"
+              value={style.nodeSizeCurve}
+              fallback="sqrt"
+              onChange={(nodeSizeCurve) => onStyleChange({ nodeSizeCurve })}
+            />
           )}
           <label className="field">
             <span className="field-label">Node images from</span>
@@ -581,16 +648,21 @@ export function EdgeStyleSection({
   doc,
   style,
   edgeColors,
+  chosenScope,
+  onScopeChange,
   onStyleChange,
   onMappingChange,
 }: {
   doc: GraphDoc;
   style: GraphStyle;
   edgeColors: Map<string, string>;
+  /** See `NodeStyleSection`: the scope lives with the app. */
+  chosenScope: string | null;
+  onScopeChange: (scope: string | null) => void;
   onStyleChange: (patch: Partial<GraphStyle>) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
 }) {
-  const [chosenScope, setChosenScope] = useState<string | null>(null);
+  const setChosenScope = onScopeChange;
   const types = style.edgeTypeStyles;
 
   const styleColumns = useMemo(() => edgeStyleColumns(doc), [doc]);
@@ -738,6 +810,14 @@ export function EdgeStyleSection({
               Numbers are stroke widths in pixels, held between {CELL_WIDTH.min} and{" "}
               {CELL_WIDTH.max}.
             </p>
+          )}
+          {style.edgeWidth.startsWith("column:") && (
+            <CurveSelect
+              label="Width scale"
+              value={style.edgeWidthCurve}
+              fallback="sqrt"
+              onChange={(edgeWidthCurve) => onStyleChange({ edgeWidthCurve })}
+            />
           )}
           <label className="check-item">
             <input

@@ -126,18 +126,33 @@ export function ComputePanel({
       )}
 
       {selected.includes("louvain") && (
-        <label className="field">
-          <span className="field-label">Community resolution {options.resolution.toFixed(1)}</span>
-          <input
-            type="range"
-            className="range"
-            min={0.2}
-            max={3}
-            step={0.1}
-            value={options.resolution}
-            onChange={(e) => setOptions((o) => ({ ...o, resolution: Number(e.target.value) }))}
-          />
-        </label>
+        <>
+          <label className="field">
+            <span className="field-label">
+              Community resolution {options.resolution.toFixed(1)}
+            </span>
+            <input
+              type="range"
+              className="range"
+              min={0.2}
+              max={3}
+              step={0.1}
+              value={options.resolution}
+              onChange={(e) => setOptions((o) => ({ ...o, resolution: Number(e.target.value) }))}
+            />
+          </label>
+          <label
+            className="check-item"
+            title="Any single run is one local optimum. This runs several more under shuffled orders and writes how often each node stayed put, 0 to 1."
+          >
+            <input
+              type="checkbox"
+              checked={options.louvainStability === true}
+              onChange={(e) => setOptions((o) => ({ ...o, louvainStability: e.target.checked }))}
+            />
+            <span className="check-name">Estimate stability (slower)</span>
+          </label>
+        </>
       )}
 
       {heavySelected && nodeCount > HEAVY_NODE_WARNING && (

@@ -5,6 +5,7 @@ import { KITCHEN } from "./kitchen";
 import { CITATIONS } from "./citations";
 import { TOOLCHAIN } from "./toolchain";
 import { TRANSIT } from "./transit";
+import { VOYAGES } from "./voyages";
 
 export type { SampleNetwork } from "./build";
 
@@ -13,7 +14,8 @@ export type { SampleNetwork } from "./build";
  * is the one behind the empty state; the rest are each a different shape at a
  * different size: dense communities, a two-mode graph, a layered dependency
  * graph whose nodes wear their logos, chains and a ring that bring their own
- * colours, and one large enough that reading it means filtering it.
+ * colours, one with coordinates and dates for the map and the timeline, and
+ * one large enough that reading it means filtering it.
  */
 export const SAMPLES: SampleNetwork[] = [
   SUPERVISION,
@@ -21,6 +23,7 @@ export const SAMPLES: SampleNetwork[] = [
   KITCHEN,
   TOOLCHAIN,
   TRANSIT,
+  VOYAGES,
   CITATIONS,
 ];
 

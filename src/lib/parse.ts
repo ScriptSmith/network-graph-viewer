@@ -221,6 +221,23 @@ export function asNumber(v: CellValue): number | null {
   return null;
 }
 
+/**
+ * A cell as a point on a time axis: a number as itself (a year, an epoch, a
+ * frame counter), else a date the platform can parse, as epoch milliseconds.
+ * The time window filter and the timeline both read cells through this, so
+ * the brush and the step cannot disagree about where a row sits.
+ */
+export function asTime(v: CellValue): number | null {
+  const n = asNumber(v);
+  if (n !== null) return n;
+  if (typeof v !== "string") return null;
+  const text = v.trim();
+  // Digits are required: Date.parse is enthusiastic about bare month names.
+  if (!/\d/.test(text)) return null;
+  const t = Date.parse(text);
+  return isNaN(t) ? null : t;
+}
+
 const SOURCE_HINTS = /^(source|from|supervisor|manager|parent|origin|start|head)$/i;
 const TARGET_HINTS = /^(target|to|supervisee|report|child|destination|end|employee)$/i;
 const SOURCE_SOFT = /source|from|supervisor|manager|parent/i;

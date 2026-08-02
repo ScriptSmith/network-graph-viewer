@@ -10,10 +10,11 @@ export type ColumnType = "text" | "number" | "bool";
  * What a column's values are *for*, on top of what they are. A role never
  * changes the data and never causes a fetch; it tells the UI which affordances
  * fit: a color column can paint the marks, a url column renders as a link, an
- * image column as a thumbnail, a size column as pixels. Inferred cautiously at
- * import, settable from the column menu, and carried by the workspace.
+ * image column as a thumbnail, a size column as pixels, a time column runs
+ * the timeline. Inferred cautiously at import, settable from the column
+ * menu, and carried by the workspace.
  */
-export const COLUMN_ROLES = ["color", "size", "image", "url"] as const;
+export const COLUMN_ROLES = ["color", "size", "image", "url", "time"] as const;
 export type ColumnRole = (typeof COLUMN_ROLES)[number];
 
 export function isColumnRole(value: unknown): value is ColumnRole {
@@ -26,6 +27,19 @@ export interface Column {
   /** Set on columns written by the metrics compute step. */
   computed?: boolean;
   role?: ColumnRole;
+}
+
+/**
+ * How a numeric mapping lands on its channel: the normalized value as itself,
+ * compressed by a square root, or compressed harder by a log. Heavy-tailed
+ * metrics like degree and PageRank put almost every node at the bottom of a
+ * linear scale; the curves are what keep the middle readable.
+ */
+export const STYLE_CURVES = ["linear", "sqrt", "log"] as const;
+export type StyleCurve = (typeof STYLE_CURVES)[number];
+
+export function isStyleCurve(value: unknown): value is StyleCurve {
+  return typeof value === "string" && (STYLE_CURVES as readonly string[]).includes(value);
 }
 
 /** A named grid of rows. Column types are inferred once, at import. */
@@ -146,6 +160,15 @@ export interface GraphStyle extends PaletteChoice {
   arrows: boolean;
   /** Multiplier applied to layout distances, 0.6 to 1.8. */
   spacing: number;
+  /**
+   * Curves for the numeric channels. Absent means what each channel has
+   * always done: sizes on a square root, the color ramp linear, edge widths
+   * on a square root. They only apply where a value is being mapped; a
+   * `cell:` token is already the answer and takes no curve.
+   */
+  nodeSizeCurve?: StyleCurve;
+  nodeColorCurve?: StyleCurve;
+  edgeWidthCurve?: StyleCurve;
   typeStyles?: TypeStyles<NodeTypeStyle>;
   edgeTypeStyles?: TypeStyles<EdgeTypeStyle>;
 }
@@ -239,8 +262,11 @@ export interface Graph extends BaseGraph {
   groups: string[];
   /** Distinct edge color values, most frequent first. */
   edgeGroups: string[];
-  /** Present when node color is a numeric ranking; range of node.value. */
-  ranking: { min: number; max: number } | null;
+  /**
+   * Present when node color is a numeric ranking; range of node.value, plus
+   * the curve the ramp reads it through when one was chosen.
+   */
+  ranking: { min: number; max: number; curve?: StyleCurve } | null;
 }
 
 /**
@@ -272,7 +298,7 @@ export type LabelMode = "auto" | "all" | "none";
  * its own, from its own corner × or from the View menu, and "Show everything"
  * puts them all back.
  */
-export const OVERLAYS = ["toolbar", "legend"] as const;
+export const OVERLAYS = ["toolbar", "legend", "timeline"] as const;
 export type Overlay = (typeof OVERLAYS)[number];
 
 /**

@@ -15,6 +15,8 @@ import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
 import { parseWorkspace, writeWorkspace } from "./ngv";
 import { detectFormat, extractGistFileHint, extractGistId, matchesFileHint, toCsv } from "./index";
+import { compoundKey } from "../cells";
+import { overlayFromJson } from "../overlay";
 
 const table = SAMPLE_DATASET.tables[0];
 const doc = buildDoc("sample", table);
@@ -112,6 +114,46 @@ test("a workspace round trip restores the whole session", () => {
   expect(workspace.pinned).toEqual(["a"]);
   expect(summarize(workspace.doc)).toEqual(summarize(doc));
   expect(positions?.size).toBe(graph.nodes.length);
+});
+
+test("the geographic layout and its columns survive the workspace round trip", () => {
+  const text = writeWorkspace({
+    doc,
+    graph: null,
+    style: DEFAULT_STYLE,
+    chain: [],
+    layout: "geo",
+    layoutParams: { latColumn: "Lat", lonColumn: "Lon" },
+    showIsolated: false,
+    preventOverlap: false,
+  });
+  const { workspace } = parseWorkspace(text, "x");
+  expect(workspace.layout).toBe("geo");
+  expect(workspace.layoutParams).toEqual({ latColumn: "Lat", lonColumn: "Lon" });
+});
+
+test("style curves round-trip when valid and are dropped when not", () => {
+  const written = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: { ...DEFAULT_STYLE, nodeSizeCurve: "log", edgeWidthCurve: "linear" },
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+    }),
+  );
+  const { workspace } = parseWorkspace(JSON.stringify(written), "x");
+  expect(workspace.style.nodeSizeCurve).toBe("log");
+  expect(workspace.style.edgeWidthCurve).toBe("linear");
+  expect(workspace.style.nodeColorCurve).toBeUndefined();
+
+  written.style.nodeSizeCurve = "cubic"; // not a curve the app knows
+  const cleaned = parseWorkspace(JSON.stringify(written), "x").workspace.style;
+  expect(cleaned.nodeSizeCurve).toBeUndefined();
+  expect(cleaned.edgeWidthCurve).toBe("linear");
 });
 
 test("type blocks keep their shape-checked parts and drop the junk", () => {
@@ -328,4 +370,106 @@ test("CSV defuses cells a spreadsheet would run as a formula", () => {
 test("CSV leaves plain numbers alone, sign and all", () => {
   const csv = toCsv(["a"], [{ a: -5 }, { a: "-5" }, { a: 12.5 }, { a: "+3" }, { a: "1e6" }]);
   expect(csv).toBe("a\n-5\n-5\n12.5\n+3\n1e6");
+});
+
+test("the compute recipe rides the workspace, unknown metric ids dropped", () => {
+  const written = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: DEFAULT_STYLE,
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+      computed: [
+        { metrics: ["degree", "louvain"], options: { weightColumn: null, resolution: 1.4 } },
+      ],
+    }),
+  );
+  const { workspace } = parseWorkspace(JSON.stringify(written), "x");
+  expect(workspace.computed).toEqual([
+    { metrics: ["degree", "louvain"], options: { weightColumn: null, resolution: 1.4 } },
+  ]);
+
+  written.computed[0].metrics.push("astrology");
+  written.computed.push({ metrics: ["astrology"], options: {} });
+  const cleaned = parseWorkspace(JSON.stringify(written), "x").workspace;
+  expect(cleaned.computed).toHaveLength(1);
+  expect(cleaned.computed?.[0].metrics).toEqual(["degree", "louvain"]);
+});
+
+test("the edits overlay rides the workspace and validates on the way back", () => {
+  const dirty = compoundKey("nodes", "Alex Rivera", "Department");
+  const written = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: DEFAULT_STYLE,
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+      edits: {
+        dirtyCells: new Set([dirty]),
+        tombstones: new Set<string>(),
+        addedRows: new Set<string>(),
+        idRenames: [{ from: "Old", to: "New" }],
+        columnOps: [{ op: "add", table: "nodes", name: "Notes", type: "text" }],
+      },
+    }),
+  );
+  const { workspace } = parseWorkspace(JSON.stringify(written), "x");
+  expect(workspace.edits?.dirtyCells).toEqual([dirty]);
+  expect(workspace.edits?.idRenames).toEqual([{ from: "Old", to: "New" }]);
+
+  written.edits.columnOps.push({ op: "detonate", table: "nodes" });
+  const cleaned = parseWorkspace(JSON.stringify(written), "x").workspace;
+  const back = overlayFromJson(cleaned.edits);
+  expect(back.columnOps).toEqual([{ op: "add", table: "nodes", name: "Notes", type: "text" }]);
+  expect(back.dirtyCells.has(dirty)).toBe(true);
+
+  // A workspace with no edits carries no block at all.
+  const plain = JSON.parse(
+    writeWorkspace({
+      doc,
+      graph: null,
+      style: DEFAULT_STYLE,
+      chain: [],
+      layout: "force",
+      layoutParams: {},
+      showIsolated: false,
+      preventOverlap: false,
+    }),
+  );
+  expect(plain.edits).toBeUndefined();
+  expect(plain.computed).toBeUndefined();
+});
+
+test("a timewindow step survives the workspace round trip", () => {
+  const text = writeWorkspace({
+    doc,
+    graph: null,
+    style: DEFAULT_STYLE,
+    chain: [
+      {
+        id: "t1",
+        enabled: true,
+        kind: "timewindow",
+        table: "edges",
+        column: "When",
+        min: 100,
+        max: null,
+      },
+    ],
+    layout: "force",
+    layoutParams: {},
+    showIsolated: false,
+    preventOverlap: false,
+  });
+  const { workspace } = parseWorkspace(text, "x");
+  expect(workspace.chain).toHaveLength(1);
+  expect(workspace.chain[0]).toMatchObject({ kind: "timewindow", column: "When", min: 100 });
 });

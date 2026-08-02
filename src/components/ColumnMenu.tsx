@@ -44,6 +44,7 @@ const ROLES: { id: ColumnRole | ""; name: string; blurb: string }[] = [
   { id: "size", name: "Sizes", blurb: "Cells hold pixel sizes for the marks" },
   { id: "image", name: "Images", blurb: "Cells hold pictures, or links to them" },
   { id: "url", name: "Links", blurb: "Cells hold web addresses, shown as links" },
+  { id: "time", name: "Time", blurb: "Cells hold moments; the timeline runs along them" },
 ];
 
 /** Above this many distinct values the list gets a box to narrow it down. */

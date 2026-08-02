@@ -3,8 +3,9 @@ import { forceSimulation } from "d3-force";
 import type { BaseGraph, GraphLink, GraphNode } from "../../types";
 import { circlePackLayout } from "./circlepack";
 import { forceAtlas2 } from "./forceatlas2";
-import { noverlap, noverlapPass } from "./noverlap";
+import { labelNoverlap, noverlap, noverlapPass } from "./noverlap";
 import { computeTargets, defaultParams, forceAtlas2Params, LAYOUTS } from "./index";
+import { mercator, projectGeo, MERCATOR_LAT_LIMIT } from "./geo";
 
 function node(id: string, radius = 8, group?: string): GraphNode {
   return {
@@ -168,4 +169,130 @@ test("noverlap leaves an already-clear layout alone", () => {
   });
   expect(noverlapPass(nodes, { margin: 4, speed: 0.8 })).toBe(false);
   expect(nodes.map((n) => n.x)).toEqual([0, 200, 400]);
+});
+
+/** Whether two labelled footprints are clear of each other on some axis. */
+function labelBoxesClear(a: GraphNode, b: GraphNode, labelChars: number): boolean {
+  const hw = Math.max(a.radius, (labelChars * 6.4) / 2);
+  const hh = (a.radius + 6 + 14 + a.radius) / 2;
+  const cy = (a.radius + 6 + 14 - a.radius) / 2;
+  const dx = Math.abs((b.x ?? 0) - (a.x ?? 0));
+  const dy = Math.abs((b.y ?? 0) - cy - ((a.y ?? 0) - cy));
+  return dx >= hw * 2 || dy >= hh * 2;
+}
+
+test("labelNoverlap separates a labelled pair whose discs never touched", () => {
+  const a = node("a long node name here", 8);
+  const b = node("b equally long name!!", 8);
+  a.x = 0;
+  a.y = 0;
+  b.x = 40; // discs clear at 40px apart, 21-character labels are not
+  b.y = 0;
+  expect(labelBoxesClear(a, b, 21)).toBe(false);
+  labelNoverlap(
+    [a, b],
+    new Map([
+      [a.id, a.id],
+      [b.id, b.id],
+    ]),
+  );
+  expect(labelBoxesClear(a, b, 21)).toBe(true);
+});
+
+test("labelNoverlap holds a pinned node still and moves the other", () => {
+  const a = node("pinned with a long label", 8);
+  const b = node("free node with long name", 8);
+  a.x = 0;
+  a.y = 0;
+  b.x = 30;
+  b.y = 0;
+  labelNoverlap(
+    [a, b],
+    new Map([
+      [a.id, a.id],
+      [b.id, b.id],
+    ]),
+    new Set([a.id]),
+  );
+  expect(a.x).toBe(0);
+  expect(a.y).toBe(0);
+  expect(Math.abs(b.x ?? 0) + Math.abs(b.y ?? 0)).toBeGreaterThan(30);
+  expect(labelBoxesClear(a, b, 24)).toBe(true);
+});
+
+test("labelNoverlap leaves clearly separated labels alone", () => {
+  const a = node("a", 8);
+  const b = node("b", 8);
+  a.x = 0;
+  a.y = 0;
+  b.x = 400;
+  b.y = 0;
+  labelNoverlap(
+    [a, b],
+    new Map([
+      [a.id, "a"],
+      [b.id, "b"],
+    ]),
+  );
+  expect(a.x).toBe(0);
+  expect(b.x).toBe(400);
+});
+
+test("unlabelled nodes still block a label from landing on them", () => {
+  const labelled = node("wearing a very long label", 8);
+  const plain = node("z-plain", 8);
+  labelled.x = 0;
+  labelled.y = 0;
+  // Sitting right where the label is drawn: above the labelled disc.
+  plain.x = 0;
+  plain.y = -18;
+  labelNoverlap([labelled, plain], new Map([[labelled.id, labelled.id]]));
+  const gapX = Math.abs((plain.x ?? 0) - (labelled.x ?? 0));
+  const gapY = Math.abs((plain.y ?? 0) - (labelled.y ?? 0));
+  expect(Math.max(gapX, gapY)).toBeGreaterThan(18);
+});
+
+test("mercator pins the equator, clamps the poles, and points north up", () => {
+  expect(mercator(0, 0).x).toBeCloseTo(0, 12);
+  expect(mercator(0, 0).y).toBeCloseTo(0, 12);
+  // North is negative y on screen, and further north is further negative.
+  expect(mercator(45, 0).y).toBeLessThan(0);
+  expect(mercator(-45, 0).y).toBeGreaterThan(0);
+  expect(mercator(60, 0).y).toBeLessThan(mercator(45, 0).y);
+  // The poles clamp to the projection's usable band instead of running away.
+  expect(isFinite(mercator(90, 0).y)).toBe(true);
+  expect(mercator(90, 0).y).toBeCloseTo(mercator(MERCATOR_LAT_LIMIT, 0).y, 10);
+  // Longitude is linear.
+  expect(mercator(0, 90).x).toBeCloseTo(Math.PI / 2, 10);
+});
+
+test("projectGeo places coordinates and parks the rows without any", () => {
+  const nodes = [node("london"), node("sydney"), node("nowhere"), node("badlat")];
+  nodes[0].row = { Id: "london", Lat: 51.5, Lon: -0.12 };
+  nodes[1].row = { Id: "sydney", Lat: -33.87, Lon: 151.2 };
+  nodes[2].row = { Id: "nowhere", Lat: null, Lon: null };
+  nodes[3].row = { Id: "badlat", Lat: 200, Lon: 10 };
+  const { targets, parked } = projectGeo(graphOf(nodes), "Lat", "Lon");
+
+  expect(parked).toEqual(["nowhere", "badlat"]);
+  const london = targets.get("london") as { x: number; y: number };
+  const sydney = targets.get("sydney") as { x: number; y: number };
+  // West of Sydney and north of it, which on screen is left and up.
+  expect(london.x).toBeLessThan(sydney.x);
+  expect(london.y).toBeLessThan(sydney.y);
+
+  // Parked rows sit below everything that was placed.
+  const placedBottom = Math.max(london.y, sydney.y);
+  for (const id of parked) {
+    expect((targets.get(id) as { y: number }).y).toBeGreaterThan(placedBottom);
+  }
+});
+
+test("projectGeo with nothing placeable still parks every node", () => {
+  const nodes = [node("a"), node("b")];
+  nodes[0].row = { Id: "a" };
+  nodes[1].row = { Id: "b" };
+  const { targets, parked } = projectGeo(graphOf(nodes), "Lat", "Lon");
+  expect(parked).toEqual(["a", "b"]);
+  expect(targets.size).toBe(2);
 });

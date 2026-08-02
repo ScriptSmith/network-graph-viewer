@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { GraphDoc } from "./types";
+import { diffDocs, extendOverlay, EMPTY_OVERLAY, type EditsOverlay } from "./lib/overlay";
 
 /**
  * Undo history over the working document. Every change to the document goes
@@ -10,6 +11,13 @@ import type { GraphDoc } from "./types";
  * Whole documents are kept rather than diffs. The transforms in lib/edit.ts
  * copy only the rows they touch, so a snapshot shares almost everything with
  * the one before it and costs about what recording the change would.
+ *
+ * The edits overlay rides alongside: each recorded step diffs its before and
+ * after documents and folds the delta in, so "update data" can replay the
+ * user's work onto a fresh file. It is snapshotted with each entry, which is
+ * what makes undo rewind the overlay too. Steps applied with `mode: "keep"`
+ * change the document without touching the overlay; replacing the data out
+ * from under the edits is exactly that.
  */
 
 /** How many steps back the table remembers. */
@@ -17,6 +25,7 @@ const DEPTH = 50;
 
 interface Entry {
   doc: GraphDoc;
+  overlay: EditsOverlay;
   /** What was done to leave this document, so a button can name it. */
   label: string;
 }
@@ -24,15 +33,20 @@ interface Entry {
 interface State {
   past: Entry[];
   present: GraphDoc | null;
+  overlay: EditsOverlay;
   future: Entry[];
 }
 
+export type EditMode = "record" | "keep";
+
 export interface DocHistory {
   doc: GraphDoc | null;
+  /** The user's table work so far, for saving and for update-data merges. */
+  overlay: EditsOverlay;
   /** Apply a change, recording the document it replaced. */
-  edit: (label: string, update: (doc: GraphDoc) => GraphDoc) => void;
+  edit: (label: string, update: (doc: GraphDoc) => GraphDoc, mode?: EditMode) => void;
   /** Adopt a document as a fresh start; the history goes with the old one. */
-  reset: (doc: GraphDoc | null) => void;
+  reset: (doc: GraphDoc | null, overlay?: EditsOverlay) => void;
   undo: () => void;
   redo: () => void;
   /** What undo would take back, or null when there is nothing to take back. */
@@ -41,24 +55,35 @@ export interface DocHistory {
 }
 
 export function useDocHistory(): DocHistory {
-  const [state, setState] = useState<State>({ past: [], present: null, future: [] });
+  const [state, setState] = useState<State>({
+    past: [],
+    present: null,
+    overlay: EMPTY_OVERLAY,
+    future: [],
+  });
 
-  const edit = useCallback((label: string, update: (doc: GraphDoc) => GraphDoc) => {
-    setState((s) => {
-      if (!s.present) return s;
-      const next = update(s.present);
-      // Edits that changed nothing leave no step to take back.
-      if (next === s.present) return s;
-      return {
-        past: [...s.past, { doc: s.present, label }].slice(-DEPTH),
-        present: next,
-        future: [],
-      };
-    });
-  }, []);
+  const edit = useCallback(
+    (label: string, update: (doc: GraphDoc) => GraphDoc, mode: EditMode = "record") => {
+      setState((s) => {
+        if (!s.present) return s;
+        const next = update(s.present);
+        // Edits that changed nothing leave no step to take back.
+        if (next === s.present) return s;
+        const overlay =
+          mode === "record" ? extendOverlay(s.overlay, diffDocs(s.present, next)) : s.overlay;
+        return {
+          past: [...s.past, { doc: s.present, overlay: s.overlay, label }].slice(-DEPTH),
+          present: next,
+          overlay,
+          future: [],
+        };
+      });
+    },
+    [],
+  );
 
-  const reset = useCallback((doc: GraphDoc | null) => {
-    setState({ past: [], present: doc, future: [] });
+  const reset = useCallback((doc: GraphDoc | null, overlay: EditsOverlay = EMPTY_OVERLAY) => {
+    setState({ past: [], present: doc, overlay, future: [] });
   }, []);
 
   const undo = useCallback(() => {
@@ -68,7 +93,8 @@ export function useDocHistory(): DocHistory {
       return {
         past: s.past.slice(0, -1),
         present: previous.doc,
-        future: [{ doc: s.present, label: previous.label }, ...s.future],
+        overlay: previous.overlay,
+        future: [{ doc: s.present, overlay: s.overlay, label: previous.label }, ...s.future],
       };
     });
   }, []);
@@ -78,8 +104,9 @@ export function useDocHistory(): DocHistory {
       const [next, ...rest] = s.future;
       if (!next || !s.present) return s;
       return {
-        past: [...s.past, { doc: s.present, label: next.label }],
+        past: [...s.past, { doc: s.present, overlay: s.overlay, label: next.label }],
         present: next.doc,
+        overlay: next.overlay,
         future: rest,
       };
     });
@@ -87,6 +114,7 @@ export function useDocHistory(): DocHistory {
 
   return {
     doc: state.present,
+    overlay: state.overlay,
     edit,
     reset,
     undo,

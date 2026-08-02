@@ -1,4 +1,13 @@
-import type { BaseGraph, Graph, GraphDoc, GraphLink, GraphNode, GraphStyle, Row } from "../types";
+import type {
+  BaseGraph,
+  Graph,
+  GraphDoc,
+  GraphLink,
+  GraphNode,
+  GraphStyle,
+  Row,
+  StyleCurve,
+} from "../types";
 import { isCellStyle, styleColumn } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
 import { findColumn, hasColumn } from "./doc";
@@ -130,6 +139,23 @@ export function buildBaseGraph(doc: GraphDoc, options: BuildOptions = {}): BaseG
 export const CELL_RADIUS = { min: 1, max: 100 };
 export const CELL_WIDTH = { min: 0.2, max: 24 };
 
+/**
+ * The log curve's steepness: t is stretched over one decade before the log,
+ * so the bottom tenth of the range takes about a third of the channel.
+ */
+const LOG_CURVE_SPAN = 9;
+
+/**
+ * Interpolators over the normalized 0-1 value of a numeric mapping. All three
+ * take 0 to 0 and 1 to 1 and rise monotonically in between; `log` goes through
+ * `log1p`, so a zero maps to zero rather than off the bottom of the scale.
+ */
+export function curveFn(curve: StyleCurve): (t: number) => number {
+  if (curve === "sqrt") return Math.sqrt;
+  if (curve === "log") return (t) => Math.log1p(LOG_CURVE_SPAN * t) / Math.log1p(LOG_CURVE_SPAN);
+  return (t) => t;
+}
+
 const clamp = (v: number, { min, max }: { min: number; max: number }) =>
   Math.max(min, Math.min(max, v));
 
@@ -238,8 +264,9 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
     const maxMetric = maxOf(metrics, 1e-9);
     const floor = sized?.floor ?? 4.5;
     const span = sized?.span ?? 17;
+    const sizeCurve = curveFn(style.nodeSizeCurve ?? "sqrt");
     nodes.forEach((node, i) => {
-      node.radius = floor + span * Math.sqrt(metrics[i] / maxMetric);
+      node.radius = floor + span * sizeCurve(metrics[i] / maxMetric);
     });
   }
 
@@ -300,7 +327,16 @@ export function applyStyle(base: BaseGraph, doc: GraphDoc, style: GraphStyle): G
   const groups = ranking ? [] : countValues(nodes.map((n) => n.group));
   const edgeGroups = countValues(links.map((l) => l.colorValue));
 
-  const rankRange: Graph["ranking"] = ranking ? extentOf(nodes.map((n) => n.value ?? 0)) : null;
+  // The chosen curve travels with the range, so everyone asking `markColor`
+  // reads the ramp the same way. Left off entirely when unset, which is the
+  // linear read the ramp has always had.
+  const extent = ranking ? extentOf(nodes.map((n) => n.value ?? 0)) : null;
+  const rankRange: Graph["ranking"] =
+    extent === null
+      ? null
+      : style.nodeColorCurve === undefined
+        ? extent
+        : { ...extent, curve: style.nodeColorCurve };
 
   return {
     nodes,
@@ -411,7 +447,8 @@ export function markColor(
   if (node.color !== null) return node.color;
   if (ranking) {
     const span = ranking.max - ranking.min || 1;
-    return sequentialColor(((node.value ?? ranking.min) - ranking.min) / span, palette.sequential);
+    const t = ((node.value ?? ranking.min) - ranking.min) / span;
+    return sequentialColor(curveFn(ranking.curve ?? "linear")(t), palette.sequential);
   }
   return nodeColor(node.group, colors, palette.categorical);
 }
@@ -420,16 +457,21 @@ export function markColor(
  * Scale for edge stroke width when a width column is mapped. Widths taken
  * straight from a column are already in pixels, so they only get clamped.
  */
-export function weightScale(links: GraphLink[], asPixels = false): (l: GraphLink) => number {
+export function weightScale(
+  links: GraphLink[],
+  asPixels = false,
+  curve: StyleCurve = "sqrt",
+): (l: GraphLink) => number {
   if (asPixels) return (l) => (l.weight === null ? 1.4 : clamp(l.weight, CELL_WIDTH));
   const weights = links.map((l) => l.weight).filter((w): w is number => w !== null);
   const extent = extentOf(weights);
   if (extent === null) return () => 1.4;
   const { min, max } = extent;
   if (min === max) return () => 2;
+  const shape = curveFn(curve);
   return (l) => {
     if (l.weight === null) return 1;
-    const t = Math.sqrt((l.weight - min) / (max - min));
+    const t = shape((l.weight - min) / (max - min));
     return 1 + t * 5;
   };
 }

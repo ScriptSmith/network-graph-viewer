@@ -1,9 +1,17 @@
 import { expect, test } from "vitest";
 import { centrality, hits, pagerank } from "./centrality";
-import { louvain } from "./community";
+import { louvain, louvainStability } from "./community";
 import { disparity, embeddedness, simmelian } from "./edges";
 import { components, coreness, triangles } from "./structure";
-import { SAMPLE_LIMIT, undirected, type MetricGraph } from "./model";
+import {
+  SAMPLE_LIMIT,
+  shortestPath,
+  shortestPathInfo,
+  shortestRoutes,
+  undirected,
+  type MetricGraph,
+} from "./model";
+import { hopsColumn } from "./index";
 
 /** Build a metric graph from an explicit edge list, with optional weights. */
 function graphOf(edges: [string, string, number?][], extraNodes: string[] = []): MetricGraph {
@@ -282,4 +290,164 @@ test("closeness past the sampling limit stays finite and keeps the hub on top", 
   expect([...scores].every((s) => isFinite(s) && s > 0)).toBe(true);
   // The hub is index 0: it reaches everyone in one step and must outrank them.
   expect([...scores].slice(1).every((s) => s < scores[0])).toBe(true);
+});
+
+test("shortestPath walks hops, ignores direction, and reports the dead ends", () => {
+  const graph = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "D"],
+    ["A", "E"],
+    ["E", "D"],
+    ["X", "Y"],
+  ]);
+  // The two-hop route through E beats the three-hop one through B and C.
+  expect(shortestPath(graph, "A", "D")).toEqual(["A", "E", "D"]);
+
+  // Direction does not gate the walk: every edge above points one way.
+  expect(shortestPath(graph, "D", "A")).toEqual(["D", "E", "A"]);
+
+  // A node reaches itself in zero hops, a stranger not at all.
+  expect(shortestPath(graph, "A", "A")).toEqual(["A"]);
+  expect(shortestPath(graph, "A", "X")).toBeNull();
+  expect(shortestPath(graph, "A", "nobody")).toBeNull();
+});
+
+test("shortestPath is unmoved by parallel edges", () => {
+  const graph = graphOf([
+    ["A", "B"],
+    ["A", "B"],
+    ["B", "A"],
+    ["B", "C"],
+  ]);
+  expect(shortestPath(graph, "A", "C")).toEqual(["A", "B", "C"]);
+});
+
+test("hopsColumn writes distances and leaves the unreachable blank", () => {
+  const graph = graphOf(
+    [
+      ["A", "B"],
+      ["B", "C"],
+    ],
+    ["lonely"],
+  );
+  const column = hopsColumn(graph, "A", "Hops from A");
+  expect(column).not.toBeNull();
+  const values = (column as NonNullable<typeof column>).values;
+  expect(values.A).toBe(0);
+  expect(values.B).toBe(1);
+  expect(values.C).toBe(2);
+  expect(values.lonely).toBeNull();
+  expect(hopsColumn(graph, "nobody", "x")).toBeNull();
+});
+
+test("stability is 1 in the cores and lower on the node both sides can claim", () => {
+  // Two triangles, and a bridge node tied equally to one corner of each: the
+  // cores belong where they belong, the bridge can land either way.
+  const edges: [string, string][] = [
+    ...clique(["a1", "a2", "a3"]),
+    ...clique(["b1", "b2", "b3"]),
+    ["a1", "m"],
+    ["m", "b1"],
+  ];
+  const g = graphOf(edges);
+  const canonical = louvain(g);
+  const stability = louvainStability(g, 1, canonical.communities);
+  const byId = scoresById(g, stability);
+  expect(byId.a1).toBe(1);
+  expect(byId.a2).toBe(1);
+  expect(byId.b1).toBe(1);
+  expect(byId.b3).toBe(1);
+  expect(byId.m).toBeLessThan(1);
+});
+
+test("stability is deterministic across invocations", () => {
+  const edges: [string, string][] = [
+    ...clique(["a1", "a2", "a3", "a4"]),
+    ...clique(["b1", "b2", "b3", "b4"]),
+    ["a1", "b1"],
+  ];
+  const g = graphOf(edges);
+  const canonical = louvain(g).communities;
+  const first = louvainStability(g, 1, canonical);
+  const second = louvainStability(g, 1, canonical);
+  expect([...first]).toEqual([...second]);
+});
+
+test("a permuted visit order still finds the same clean split", () => {
+  const edges: [string, string][] = [
+    ...clique(["a1", "a2", "a3", "a4"]),
+    ...clique(["b1", "b2", "b3", "b4"]),
+    ["a1", "b1"],
+  ];
+  const g = graphOf(edges);
+  const n = g.ids.length;
+  const reversed = Int32Array.from({ length: n }, (_, i) => n - 1 - i);
+  const plain = louvain(g);
+  const shuffled = louvain(g, 1, reversed);
+  expect(shuffled.communityCount).toBe(plain.communityCount);
+  // Same partition up to labels: nodes grouped together stay together.
+  const key = (r: { communities: Int32Array }) =>
+    g.ids.map((_, i) => r.communities[i] === r.communities[0]);
+  expect(key(shuffled)).toEqual(key(plain));
+});
+
+test("shortestPathInfo counts the equally short routes", () => {
+  // Two two-hop routes from A to D, via B or via C.
+  const g = graphOf([
+    ["A", "B"],
+    ["A", "C"],
+    ["B", "D"],
+    ["C", "D"],
+  ]);
+  const info = shortestPathInfo(g, "A", "D");
+  expect(info?.path).toHaveLength(3);
+  expect(info?.count).toBe(2);
+  // A single chain is the only route this short.
+  expect(shortestPathInfo(g, "A", "B")?.count).toBe(1);
+});
+
+test("a directed walk follows the arrows and can fail where undirected succeeds", () => {
+  const g = graphOf([
+    ["A", "B"],
+    ["C", "B"],
+    ["C", "D"],
+  ]);
+  // Undirected, A reaches D in three hops through B and C.
+  expect(shortestPathInfo(g, "A", "D")?.path).toEqual(["A", "B", "C", "D"]);
+  // Along the arrows, B has no way out, so there is no route at all.
+  expect(shortestPathInfo(g, "A", "D", { directed: true })).toBeNull();
+
+  const ring = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "A"],
+  ]);
+  // The arrows force the long way round.
+  expect(shortestPathInfo(ring, "A", "C", { directed: true })?.path).toEqual(["A", "B", "C"]);
+  expect(shortestPathInfo(ring, "A", "C")?.path).toEqual(["A", "C"]);
+});
+
+test("shortestRoutes lists the alternatives, capped and deterministic", () => {
+  // Two two-hop routes from A to D, via B or via C, in adjacency order.
+  const g = graphOf([
+    ["A", "B"],
+    ["A", "C"],
+    ["B", "D"],
+    ["C", "D"],
+  ]);
+  const info = shortestRoutes(g, "A", "D", { limit: 10 });
+  expect(info?.count).toBe(2);
+  expect(info?.routes).toEqual([
+    ["A", "B", "D"],
+    ["A", "C", "D"],
+  ]);
+
+  // The cap holds while the count stays honest.
+  const capped = shortestRoutes(g, "A", "D", { limit: 1 });
+  expect(capped?.routes).toHaveLength(1);
+  expect(capped?.count).toBe(2);
+
+  // Same call, same answer.
+  expect(shortestRoutes(g, "A", "D", { limit: 10 })).toEqual(info);
 });

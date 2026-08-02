@@ -1,4 +1,5 @@
 import type { CellValue, Dataset, GraphStyle, Row, Table } from "../types";
+import type { LayoutId, LayoutParams } from "../lib/layouts";
 import { guessMapping, inferColumns } from "../lib/parse";
 import { cellKey } from "../lib/cells";
 
@@ -26,6 +27,9 @@ export interface SampleNetwork {
   nodeTable?: number;
   /** Appearance worth starting from, merged over the guessed defaults. */
   style?: Partial<GraphStyle>;
+  /** The layout the network is meant to be seen in, when force is not it. */
+  layout?: LayoutId;
+  layoutParams?: LayoutParams;
   /** Node columns worth showing on hover, when the full set would be noise. */
   nodeAttrs?: string[];
   nodeCount: number;

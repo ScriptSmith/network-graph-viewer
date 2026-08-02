@@ -3,6 +3,8 @@ import type { GraphDoc, Row, Table } from "../types";
 import { buildDoc } from "./doc";
 import {
   applyChain,
+  chainInputBefore,
+  describeStep,
   isFilterStep,
   retargetChain,
   type FilterSpec,
@@ -10,7 +12,7 @@ import {
 } from "./filter";
 
 let counter = 0;
-const step = (spec: FilterSpec & { enabled?: boolean }): FilterStep => ({
+const step = (spec: FilterSpec & { enabled?: boolean; invert?: boolean }): FilterStep => ({
   id: `s${++counter}`,
   enabled: true,
   ...spec,
@@ -261,6 +263,94 @@ test("an empty chain leaves the graph alone", () => {
   expect(idsOf(doc, [])).toEqual(["A", "B", "C", "D", "E", "X", "Y"]);
 });
 
+test("an inverted degree step keeps exactly the nodes the plain one drops", () => {
+  const doc = branchy();
+  const plain = step({ kind: "degree", mode: "all", min: 2, max: null });
+  const kept = idsOf(doc, [plain]);
+  const dropped = idsOf(doc, [{ ...plain, invert: true }]);
+  expect(kept).toEqual(["B", "C", "D"]);
+  expect(dropped).toEqual(["A", "E", "X", "Y"]);
+  expect([...kept, ...dropped].sort()).toEqual(idsOf(doc, []));
+});
+
+test("an inverted ego step is everything outside the neighbourhood", () => {
+  const doc = branchy();
+  const ego = step({ kind: "ego", centers: ["B"], depth: 1, direction: "any" });
+  expect(idsOf(doc, [{ ...ego, invert: true }])).toEqual(["D", "E", "Y"]);
+});
+
+test("an inverted component step keeps the small islands", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["X", "Y"],
+  ]);
+  expect(idsOf(doc, [step({ kind: "component", count: 1, invert: true })])).toEqual(["X", "Y"]);
+});
+
+test("an inverted edge step keeps the rows the plain one would drop", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "A"],
+    ["B", "C"],
+  ]);
+  const { graph } = run(doc, [step({ kind: "mutual", invert: true })], false);
+  expect(graph.links).toHaveLength(1);
+  expect(graph.nodes.map((n) => n.id).sort()).toEqual(["B", "C"]);
+});
+
+test("inversion complements within what enters the step, not the whole document", () => {
+  const doc = branchy();
+  const ego = step({ kind: "ego", centers: ["B"], depth: 1, direction: "any" });
+  const degree = step({ kind: "degree", mode: "all", min: 2, max: null, invert: true });
+  // Inside B's neighbourhood only B has degree >= 2, so "not" keeps the rest
+  // of the neighbourhood rather than the rest of the document.
+  expect(idsOf(doc, [ego, degree])).toEqual(["A", "C", "X"]);
+});
+
+test("inverting twice is a round trip", () => {
+  const doc = branchy();
+  const plain = step({ kind: "degree", mode: "all", min: 2, max: null });
+  const once = idsOf(doc, [{ ...plain, invert: true }]);
+  const twiceDoc = idsOf(doc, [
+    { ...plain, invert: true },
+    { ...step({ kind: "degree", mode: "all", min: 2, max: null }), invert: true },
+  ]);
+  // The second inversion complements within the first's survivors: everyone
+  // there has degree below 2 inside that subgraph, so nothing survives twice
+  // inverting the same condition only if some of them regained degree.
+  expect(once).toEqual(["A", "E", "X", "Y"]);
+  expect(twiceDoc.every((id) => once.includes(id))).toBe(true);
+});
+
+test("isolated-node rules still apply after an inversion", () => {
+  const doc = branchy();
+  const plain = step({ kind: "degree", mode: "all", min: 2, max: null });
+  // A, E, X and Y survive the inversion but share no edges; hidden isolated
+  // nodes take them all out.
+  expect(idsOf(doc, [{ ...plain, invert: true }], false)).toEqual([]);
+});
+
+test("invert is tolerated by the validator and read back honestly", () => {
+  const plain = step({ kind: "kcore", k: 2 });
+  expect(isFilterStep({ ...plain, invert: true })).toBe(true);
+  expect(isFilterStep({ ...plain, invert: "yes" })).toBe(false);
+  expect(describeStep({ ...plain, invert: true })).toBe("not: 2-core");
+  expect(describeStep(plain)).toBe("2-core");
+});
+
+test("chainInputBefore hands a step what the chain above it produced", () => {
+  const doc = branchy();
+  const degree = step({ kind: "degree", mode: "all", min: 2, max: null });
+  const ego = step({ kind: "ego", centers: ["B"], depth: 1, direction: "any" });
+  const chain = [degree, ego];
+  const before = chainInputBefore(doc, chain, ego.id, { showIsolated: true });
+  expect(before.graph.nodes.map((n) => n.id).sort()).toEqual(["B", "C", "D"]);
+  // The first step sees the untouched document.
+  const first = chainInputBefore(doc, chain, degree.id, { showIsolated: true });
+  expect(first.graph.nodes).toHaveLength(7);
+});
+
 /**
  * A fresh column step is seeded with every distinct value, so that adding one
  * never blanks the canvas. That makes the selection as long as the column, and
@@ -293,3 +383,119 @@ test("a values condition over a high-cardinality column does not walk its list p
   const { graph } = applyChain(doc, [everyValue], { showIsolated: true });
   expect(graph.links).toHaveLength(N);
 }, 5000);
+
+test("a time window keeps rows inside inclusive bounds, dates included", () => {
+  const rows: Row[] = [
+    { Source: "A", Target: "B", When: "2024-01-01" },
+    { Source: "B", Target: "C", When: "2024-02-01" },
+    { Source: "C", Target: "D", When: "2024-03-01" },
+    { Source: "D", Target: "E", When: "not a date" },
+  ];
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "Source", type: "text" },
+      { name: "Target", type: "text" },
+      { name: "When", type: "text" },
+    ],
+    rows,
+  };
+  const doc = buildDoc("dated", edges, {
+    mapping: { source: "Source", target: "Target", attrs: ["When"] },
+  });
+  const from = Date.parse("2024-02-01");
+  const { graph } = run(
+    doc,
+    [step({ kind: "timewindow", table: "edges", column: "When", min: from, max: from })],
+    false,
+  );
+  // Inclusive at both ends: exactly the February row survives.
+  expect(graph.links).toHaveLength(1);
+  expect(graph.nodes.map((n) => n.id).sort()).toEqual(["B", "C"]);
+});
+
+test("a node-table time window narrows nodes, and order in the chain matters", () => {
+  const nodes: Table = {
+    name: "Nodes",
+    columns: [
+      { name: "Id", type: "text" },
+      { name: "Joined", type: "number" },
+    ],
+    rows: [
+      { Id: "A", Joined: 2001 },
+      { Id: "B", Joined: 2005 },
+      { Id: "C", Joined: 2010 },
+    ],
+  };
+  const doc = docOf(
+    [
+      ["A", "B"],
+      ["B", "C"],
+    ],
+    nodes,
+  );
+  const window = step({
+    kind: "timewindow",
+    table: "nodes",
+    column: "Joined",
+    min: 2000,
+    max: 2006,
+  });
+  expect(idsOf(doc, [window])).toEqual(["A", "B"]);
+
+  // After a degree step the window sees the narrowed graph, not the document.
+  const degree = step({ kind: "degree", mode: "all", min: 2, max: null });
+  expect(idsOf(doc, [degree, window], false)).toEqual([]);
+});
+
+test("an unbounded window lets everything through, and null bounds are half-open", () => {
+  const doc = branchy();
+  const open = step({ kind: "timewindow", table: "edges", column: "Source", min: null, max: null });
+  // "Source" holds no numbers, so an unbounded window still requires a
+  // readable time; every row drops. That is the honest reading: the window
+  // asks when, and these rows never say.
+  expect(run(doc, [open], false).graph.links).toHaveLength(0);
+});
+
+test("timewindow validates, describes, inverts and follows renames", () => {
+  const window = step({
+    kind: "timewindow",
+    table: "edges",
+    column: "When",
+    min: 1,
+    max: null,
+  });
+  expect(isFilterStep(window)).toBe(true);
+  expect(isFilterStep({ ...window, min: "early" })).toBe(false);
+  expect(describeStep(window)).toBe("When window");
+
+  const renamed = retargetChain([window], "edges", "When", "At");
+  expect(renamed[0].kind === "timewindow" && renamed[0].column).toBe("At");
+  expect(retargetChain([window], "edges", "When", null)).toHaveLength(0);
+  expect(retargetChain([window], "nodes", "When", null)).toHaveLength(1);
+
+  // Inversion complements: rows outside the window survive instead.
+  const rows: Row[] = [
+    { Source: "A", Target: "B", T: 1 },
+    { Source: "B", Target: "C", T: 9 },
+  ];
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "Source", type: "text" },
+      { name: "Target", type: "text" },
+      { name: "T", type: "number" },
+    ],
+    rows,
+  };
+  const timed = buildDoc("t", edges, {
+    mapping: { source: "Source", target: "Target", attrs: [] },
+  });
+  const inside = step({ kind: "timewindow", table: "edges", column: "T", min: 0, max: 5 });
+  expect(run(timed, [inside], false).graph.links).toHaveLength(1);
+  expect(
+    run(timed, [{ ...inside, invert: true }], false)
+      .graph.nodes.map((n) => n.id)
+      .sort(),
+  ).toEqual(["B", "C"]);
+});

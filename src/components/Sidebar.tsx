@@ -9,6 +9,7 @@ import {
 } from "../lib/layouts";
 import type { ChainStepResult, FilterStep } from "../lib/filter";
 import type { EditTarget } from "../lib/edit";
+import type { ProjectionSide } from "../lib/project";
 import { ACCEPTED_EXTENSIONS } from "../lib/parse";
 import { edgeStyleColumns } from "../lib/doc";
 import type { MetricOptions } from "../lib/metrics";
@@ -42,11 +43,19 @@ interface SidebarProps {
   layoutParams: LayoutParams;
   preventOverlap: boolean;
   labelMode: LabelMode;
+  /** The Style step's "apply to" scopes, held by the app (see StyleSection). */
+  nodeStyleScope: string | null;
+  edgeStyleScope: string | null;
+  onNodeStyleScopeChange: (scope: string | null) => void;
+  onEdgeStyleScopeChange: (scope: string | null) => void;
   onFile: (file: File) => void;
+  /** New rows under the same setup: the update-data flow. */
+  onUpdateFile: (file: File) => void;
   onSample: (network: SampleNetwork) => void;
   onClear: () => void;
   onTableChange: (edgeIndex: number, nodeIndex: number | null) => void;
   onMappingChange: (patch: Partial<Mapping>) => void;
+  onProject: (keep: ProjectionSide) => void;
   onStyleChange: (patch: Partial<GraphStyle>) => void;
   onChainChange: (chain: FilterStep[]) => void;
   onShowIsolatedChange: (show: boolean) => void;
@@ -58,6 +67,7 @@ interface SidebarProps {
   onLayoutParamChange: (key: string, value: ParamValue) => void;
   onPreventOverlapChange: (value: boolean) => void;
   onSeparate: () => void;
+  onTidyLabels: () => void;
   onLabelModeChange: (mode: LabelMode) => void;
   onExport: (format: "svg" | "png") => void;
   onExportData: (format: ExportFormat) => void;
@@ -80,6 +90,8 @@ const ACCEPT = Array.from(new Set([...ACCEPTED_EXTENSIONS, ...TEXT_EXTENSIONS]))
 /** In the order they appear. Embedded, "data" is dropped and the rest shuffle up. */
 const STEPS = ["data", "columns", "filter", "style", "layout", "compute", "export"] as const;
 
+// The update path has its own input so picking a file cannot be mistaken for
+// replacing one: same accept list, different meaning on arrival.
 export function Sidebar({
   dataset,
   edgeTableIndex,
@@ -97,11 +109,17 @@ export function Sidebar({
   layoutParams,
   preventOverlap,
   labelMode,
+  nodeStyleScope,
+  edgeStyleScope,
+  onNodeStyleScopeChange,
+  onEdgeStyleScopeChange,
   onFile,
+  onUpdateFile,
   onSample,
   onClear,
   onTableChange,
   onMappingChange,
+  onProject,
   onStyleChange,
   onChainChange,
   onShowIsolatedChange,
@@ -113,6 +131,7 @@ export function Sidebar({
   onLayoutParamChange,
   onPreventOverlapChange,
   onSeparate,
+  onTidyLabels,
   onLabelModeChange,
   onExport,
   onExportData,
@@ -126,6 +145,7 @@ export function Sidebar({
   exportInput,
 }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const updateInputRef = useRef<HTMLInputElement>(null);
 
   // These two lists survive here for the Layout step's column parameters; the
   // Style step's own lists live with the style sections now.
@@ -171,6 +191,18 @@ export function Sidebar({
         accept={ACCEPT}
         onChange={(e) => handleFiles(e.target.files)}
         aria-label="Upload a spreadsheet"
+      />
+      <input
+        ref={updateInputRef}
+        className="visually-hidden"
+        type="file"
+        accept={ACCEPT}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onUpdateFile(file);
+          if (updateInputRef.current) updateInputRef.current.value = "";
+        }}
+        aria-label="Update the data from a file"
       />
 
       {!embedded && (
@@ -228,7 +260,20 @@ export function Sidebar({
                   </>
                 )}
                 <div className="btn-row">
-                  <button type="button" className="btn" onClick={pickFile}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => updateInputRef.current?.click()}
+                    title="New rows under this setup: filters, style, layout, computed columns and your table edits all stay"
+                  >
+                    Update data
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={pickFile}
+                    title="Start over with this file: the setup goes with the old one"
+                  >
                     Replace file
                   </button>
                   <button type="button" className="btn btn-quiet" onClick={onClear}>
@@ -340,6 +385,28 @@ export function Sidebar({
                   endpoint or self-loop).
                 </p>
               )}
+              {/* For two-mode edge lists (dishes-ingredients, people-events):
+                  fold one side away and link the survivors by what they
+                  shared. Tucked behind a disclosure because on a one-mode
+                  graph it is a way to make a mess. */}
+              <details className="load-other">
+                <summary>Bipartite projection</summary>
+                <div className="load-other-body">
+                  <p className="note">
+                    For an edge list whose two columns are different kinds of thing. Keeps one side,
+                    links two of its nodes wherever they share a counterpart, and weights the link
+                    by the shared count. Replaces both tables; undo brings the original back.
+                  </p>
+                  <div className="btn-row">
+                    <button type="button" className="btn" onClick={() => onProject("source")}>
+                      Keep sources
+                    </button>
+                    <button type="button" className="btn" onClick={() => onProject("target")}>
+                      Keep targets
+                    </button>
+                  </div>
+                </div>
+              </details>
             </>
           ) : (
             <p className="note">Load data first.</p>
@@ -359,6 +426,7 @@ export function Sidebar({
               chain={chain}
               results={chainResults}
               selectedId={selectedId}
+              showIsolated={showIsolated}
               onChange={onChainChange}
             />
           ) : (
@@ -379,6 +447,8 @@ export function Sidebar({
                 style={style}
                 colors={colors}
                 labelMode={labelMode}
+                chosenScope={nodeStyleScope}
+                onScopeChange={onNodeStyleScopeChange}
                 onStyleChange={onStyleChange}
                 onMappingChange={onMappingChange}
                 onLabelModeChange={onLabelModeChange}
@@ -387,6 +457,8 @@ export function Sidebar({
                 doc={doc}
                 style={style}
                 edgeColors={edgeColors}
+                chosenScope={edgeStyleScope}
+                onScopeChange={onEdgeStyleScopeChange}
                 onStyleChange={onStyleChange}
                 onMappingChange={onMappingChange}
               />
@@ -458,10 +530,13 @@ export function Sidebar({
               }
               // Node params read the node table directly, so only real node
               // columns can appear; the empty option falls back to the colour.
-              const choices =
+              const fromScope =
                 param.scope === "nodes"
                   ? nodeTableColumns
                   : edgeColumns.filter((c) => c.type === "number");
+              const choices = param.numeric
+                ? fromScope.filter((c) => c.type === "number")
+                : fromScope;
               return (
                 <label key={param.key} className="field">
                   <span className="field-label">{param.name}</span>
@@ -471,7 +546,9 @@ export function Sidebar({
                     onChange={(e) => onLayoutParamChange(param.key, e.target.value)}
                   >
                     <option value="">
-                      {param.scope === "nodes" ? "Whatever colours the nodes" : "None"}
+                      {param.scope === "nodes" && !param.numeric
+                        ? "Whatever colours the nodes"
+                        : "None"}
                     </option>
                     {choices.map((c) => (
                       <option key={c.name}>{c.name}</option>
@@ -503,9 +580,20 @@ export function Sidebar({
             />
             <span className="check-name">Keep nodes from overlapping</span>
           </label>
-          <button type="button" className="btn" disabled={!graph} onClick={onSeparate}>
-            Fix overlaps now
-          </button>
+          <div className="btn-row">
+            <button type="button" className="btn" disabled={!graph} onClick={onSeparate}>
+              Fix overlaps now
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!graph || labelMode === "none"}
+              onClick={onTidyLabels}
+              title="Nudge nodes apart until the visible labels stop overlapping"
+            >
+              Tidy labels
+            </button>
+          </div>
         </div>
       </section>
 

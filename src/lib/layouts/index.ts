@@ -1,6 +1,7 @@
 import type { BaseGraph } from "../../types";
 import { circlePackLayout } from "./circlepack";
 import { FORCE_ATLAS_2_DEFAULTS } from "./forceatlas2";
+import { projectGeo } from "./geo";
 import { circleLayout, gridLayout, hierarchyLayout, radialLayout } from "./static";
 
 export interface Point {
@@ -16,6 +17,7 @@ export type LayoutId =
   | "circle"
   | "grid"
   | "circlepack"
+  | "geo"
   | "script";
 
 export type ParamValue = number | boolean | string;
@@ -33,7 +35,15 @@ export type LayoutParam =
     }
   | { key: string; name: string; kind: "boolean"; default: boolean; blurb?: string }
   /** Picks a column from one of the tables; "" means none. */
-  | { key: string; name: string; kind: "column"; scope: "nodes" | "edges"; default: string };
+  | {
+      key: string;
+      name: string;
+      kind: "column";
+      scope: "nodes" | "edges";
+      default: string;
+      /** Offer number columns only; a latitude is not a name. */
+      numeric?: boolean;
+    };
 
 export interface LayoutDefinition {
   id: LayoutId;
@@ -125,6 +135,30 @@ export const LAYOUTS: LayoutDefinition[] = [
     blurb: "Rows and columns by connections",
     positions: "computed",
     params: [],
+  },
+  {
+    id: "geo",
+    name: "Geographic",
+    blurb: "Nodes at their real coordinates, no basemap",
+    positions: "computed",
+    params: [
+      {
+        key: "latColumn",
+        name: "Latitude",
+        kind: "column",
+        scope: "nodes",
+        default: "",
+        numeric: true,
+      },
+      {
+        key: "lonColumn",
+        name: "Longitude",
+        kind: "column",
+        scope: "nodes",
+        default: "",
+        numeric: true,
+      },
+    ],
   },
   {
     id: "script",
@@ -228,9 +262,12 @@ export function computeTargets(
         groupBy: str(params, "groupBy", ""),
         padding: num(params, "padding", 4),
       });
+    case "geo":
+      return projectGeo(graph, str(params, "latColumn", ""), str(params, "lonColumn", "")).targets;
   }
 }
 
 export { forceAtlas2, type ForceAtlas2Params } from "./forceatlas2";
-export { noverlap, NOVERLAP_DEFAULTS, type NoverlapOptions } from "./noverlap";
+export { mercator, projectGeo, MERCATOR_LAT_LIMIT } from "./geo";
+export { labelNoverlap, noverlap, NOVERLAP_DEFAULTS, type NoverlapOptions } from "./noverlap";
 export { nodeDepths } from "./static";

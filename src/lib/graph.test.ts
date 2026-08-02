@@ -2,10 +2,19 @@ import { describe, expect, test } from "vitest";
 import { SAMPLE_DATASET } from "../samples";
 import { guessStyle } from "./parse";
 import { buildDoc } from "./doc";
-import { applyStyle, buildBaseGraph, CELL_RADIUS, CELL_WIDTH, weightScale } from "./graph";
+import {
+  applyStyle,
+  buildBaseGraph,
+  CELL_RADIUS,
+  CELL_WIDTH,
+  curveFn,
+  markColor,
+  weightScale,
+} from "./graph";
 import { applyChain, type FilterStep } from "./filter";
 import { DEFAULT_STYLE, type GraphDoc, type GraphStyle } from "../types";
 import { NEUTRAL } from "../theme";
+import { maxOf } from "./numbers";
 
 /**
  * Golden output for the sample dataset across the styling and filtering paths.
@@ -293,6 +302,84 @@ test("edge type overrides paint and widen only their own kind", () => {
       expect(link.width).toBeNull();
     }
   }
+});
+
+describe("curve functions", () => {
+  test("every curve pins the endpoints and rises monotonically between them", () => {
+    for (const curve of ["linear", "sqrt", "log"] as const) {
+      const f = curveFn(curve);
+      expect(f(0)).toBe(0);
+      expect(f(1)).toBeCloseTo(1, 12);
+      let last = 0;
+      for (let i = 1; i <= 20; i++) {
+        const v = f(i / 20);
+        expect(v).toBeGreaterThan(last);
+        last = v;
+      }
+    }
+  });
+
+  test("log lifts small values without blowing up at zero", () => {
+    const log = curveFn("log");
+    expect(log(0)).toBe(0);
+    expect(isFinite(log(0.001))).toBe(true);
+    expect(log(0.1)).toBeGreaterThan(0.1);
+  });
+
+  test("curves left unset reproduce the old sizing and widths exactly", () => {
+    const base = buildBaseGraph(doc);
+    const plain = applyStyle(base, doc, DEFAULT_STYLE);
+    const spelled = applyStyle(base, doc, { ...DEFAULT_STYLE, nodeSizeCurve: "sqrt" });
+    expect(spelled.nodes.map((n) => n.radius)).toEqual(plain.nodes.map((n) => n.radius));
+
+    const weighted = applyStyle(base, doc, {
+      ...DEFAULT_STYLE,
+      edgeWidth: "column:Meetings per month",
+    });
+    const defaultWidth = weightScale(weighted.links);
+    const sqrtWidth = weightScale(weighted.links, false, "sqrt");
+    expect(weighted.links.map(defaultWidth)).toEqual(weighted.links.map(sqrtWidth));
+  });
+
+  test("a log size curve reshapes the middle and leaves the largest alone", () => {
+    const base = buildBaseGraph(doc);
+    const sqrtSized = applyStyle(base, doc, DEFAULT_STYLE);
+    const logSized = applyStyle(base, doc, { ...DEFAULT_STYLE, nodeSizeCurve: "log" });
+    const before = new Map(sqrtSized.nodes.map((n) => [n.id, n.radius]));
+    const maxRadius = maxOf(sqrtSized.nodes.map((n) => n.radius));
+    let changed = 0;
+    for (const node of logSized.nodes) {
+      const was = before.get(node.id) as number;
+      if (was === maxRadius) expect(node.radius).toBeCloseTo(was, 9);
+      else if (Math.abs(node.radius - was) > 1e-9) changed++;
+    }
+    expect(changed).toBeGreaterThan(0);
+  });
+
+  test("the color curve rides the ranking into markColor", () => {
+    const base = buildBaseGraph(doc);
+    const linear = applyStyle(base, doc, { ...DEFAULT_STYLE, nodeColor: "metric:degree" });
+    expect(linear.ranking?.curve).toBeUndefined();
+    const curved = applyStyle(base, doc, {
+      ...DEFAULT_STYLE,
+      nodeColor: "metric:degree",
+      nodeColorCurve: "log",
+    });
+    expect(curved.ranking?.curve).toBe("log");
+    // A mid-range node reads further up the ramp through the log curve.
+    const mid = curved.nodes.find(
+      (n) =>
+        n.value !== null &&
+        n.value > (curved.ranking?.min ?? 0) &&
+        n.value < (curved.ranking?.max ?? 0),
+    );
+    expect(mid).toBeDefined();
+    const colors = new Map<string, string>();
+    const palette = { categorical: ["#111111"], sequential: ["#000001", "#000002", "#000003"] };
+    const lin = markColor(mid as (typeof curved.nodes)[number], linear.ranking, colors, palette);
+    const log = markColor(mid as (typeof curved.nodes)[number], curved.ranking, colors, palette);
+    expect(log >= lin).toBe(true);
+  });
 });
 
 test("node table attributes take precedence over projected edge columns", () => {

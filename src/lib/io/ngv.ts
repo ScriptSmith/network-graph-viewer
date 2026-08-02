@@ -7,9 +7,11 @@ import type {
   Table,
   TypeStyles,
 } from "../../types";
-import { DEFAULT_STYLE, isColumnRole } from "../../types";
+import { DEFAULT_STYLE, isColumnRole, isStyleCurve } from "../../types";
 import { isFilterStep, type FilterStep } from "../filter";
 import { isLayoutId, type LayoutId, type LayoutParams } from "../layouts";
+import { DEFAULT_METRIC_OPTIONS, METRIC_IDS, type ComputedRecipe } from "../metrics";
+import { overlayFromJson, overlayIsEmpty, overlayToJson, type EditsOverlay } from "../overlay";
 import type { ImportedGraph, Position } from "./types";
 
 /**
@@ -36,6 +38,13 @@ export interface Workspace {
   /** Nodes held where they were put, layout after layout. */
   pinned?: string[];
   scripts?: Record<string, string>;
+  /**
+   * The compute runs the user made, as instructions: "update data" re-runs
+   * them against the new file rather than trusting the snapshotted values.
+   */
+  computed?: ComputedRecipe[];
+  /** The user's table edits, so a future reload can lay them back on top. */
+  edits?: ReturnType<typeof overlayToJson>;
 }
 
 export interface WorkspaceInput {
@@ -49,6 +58,8 @@ export interface WorkspaceInput {
   preventOverlap: boolean;
   pinned?: string[];
   scripts?: Record<string, string>;
+  computed?: ComputedRecipe[];
+  edits?: EditsOverlay;
 }
 
 export interface WriteWorkspaceOptions {
@@ -76,6 +87,8 @@ export function writeWorkspace(input: WorkspaceInput, options: WriteWorkspaceOpt
     positions,
     ...(input.pinned && input.pinned.length > 0 ? { pinned: input.pinned } : {}),
     scripts: input.scripts,
+    ...(input.computed && input.computed.length > 0 ? { computed: input.computed } : {}),
+    ...(input.edits && !overlayIsEmpty(input.edits) ? { edits: overlayToJson(input.edits) } : {}),
   };
   return JSON.stringify(workspace, null, options.pretty === false ? undefined : 2);
 }
@@ -193,9 +206,20 @@ function validStyle(value: unknown): GraphStyle {
   const raw = isRecord(value) ? value : {};
   const token = (key: keyof GraphStyle & string): string =>
     typeof raw[key] === "string" ? raw[key] : (DEFAULT_STYLE[key] as string);
+  // The curves come off an enum; anything else written in their place is
+  // dropped so the channel falls back to its unset behaviour.
+  const {
+    nodeSizeCurve: rawSizeCurve,
+    nodeColorCurve: rawColorCurve,
+    edgeWidthCurve: rawWidthCurve,
+    ...rest
+  } = raw;
   return {
     ...DEFAULT_STYLE,
-    ...raw,
+    ...rest,
+    ...(isStyleCurve(rawSizeCurve) ? { nodeSizeCurve: rawSizeCurve } : {}),
+    ...(isStyleCurve(rawColorCurve) ? { nodeColorCurve: rawColorCurve } : {}),
+    ...(isStyleCurve(rawWidthCurve) ? { edgeWidthCurve: rawWidthCurve } : {}),
     nodeColor: token("nodeColor"),
     nodeSize: token("nodeSize"),
     nodeImage: token("nodeImage"),
@@ -210,6 +234,35 @@ function validStyle(value: unknown): GraphStyle {
     typeStyles: validNodeTypeStyles(raw.typeStyles),
     edgeTypeStyles: validEdgeTypeStyles(raw.edgeTypeStyles),
   };
+}
+
+/**
+ * Compute recipes arrive naming metric ids; unknown ids drop, and an entry
+ * with nothing left is not a run. Options are rebuilt field by field.
+ */
+function validComputed(value: unknown): ComputedRecipe[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: ComputedRecipe[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || !Array.isArray(entry.metrics)) continue;
+    const metrics = entry.metrics.filter(
+      (m): m is string => typeof m === "string" && METRIC_IDS.includes(m),
+    );
+    if (metrics.length === 0) continue;
+    const raw = isRecord(entry.options) ? entry.options : {};
+    out.push({
+      metrics,
+      options: {
+        weightColumn: typeof raw.weightColumn === "string" ? raw.weightColumn : null,
+        resolution:
+          typeof raw.resolution === "number" && isFinite(raw.resolution)
+            ? raw.resolution
+            : DEFAULT_METRIC_OPTIONS.resolution,
+        ...(raw.louvainStability === true ? { louvainStability: true } : {}),
+      },
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Positions that are not two finite numbers would place a node at NaN. */
@@ -278,6 +331,8 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
   const chain = Array.isArray(workspace.chain) ? workspace.chain.filter(isFilterStep) : [];
   const positionRecord = validPositions(workspace.positions);
   const positions = new Map<string, Position>(Object.entries(positionRecord));
+  const computed = validComputed(workspace.computed);
+  const edits = overlayFromJson(workspace.edits);
   return {
     doc,
     positions: positions.size > 0 ? positions : undefined,
@@ -302,6 +357,8 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
       scripts: isRecord(workspace.scripts)
         ? (workspace.scripts as Record<string, string>)
         : undefined,
+      ...(computed !== undefined ? { computed } : {}),
+      ...(overlayIsEmpty(edits) ? {} : { edits: overlayToJson(edits) }),
     },
   };
 }

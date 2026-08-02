@@ -25,12 +25,13 @@ const MOTION_HINTS: Record<MotionPreference, string> = {
 const OVERLAY_ITEMS: { key: Overlay; name: string; hint: string }[] = [
   { key: "legend", name: "Legend", hint: "The color key in the bottom left" },
   { key: "toolbar", name: "These controls", hint: "The buttons in the top left" },
+  { key: "timeline", name: "Timeline", hint: "The time strip along the bottom" },
 ];
 
 const PANEL_ITEMS: Record<Panel, { name: string; hint: string }> = {
   sidebar: { name: "Graph", hint: "The steps down the left" },
   table: { name: "Data", hint: "The pane along the bottom" },
-  stats: { name: "Stats", hint: "The panel on the right" },
+  stats: { name: "Info", hint: "The panel on the right" },
 };
 
 type Props = {
@@ -38,6 +39,8 @@ type Props = {
   collapsed: ReadonlySet<Panel>;
   /** False when the current styling produces nothing to put in a legend. */
   legendAvailable: boolean;
+  /** False when no column reads as a time axis, so there is nothing to strip. */
+  timelineAvailable: boolean;
   /** Where the controls are parked, so the menu opens into the stage, not out of it. */
   corner: Corner;
   theme: ThemePreference;
@@ -63,6 +66,7 @@ export function ViewMenu({
   hidden,
   collapsed,
   legendAvailable,
+  timelineAvailable,
   corner,
   theme,
   onThemeChange,
@@ -119,13 +123,15 @@ export function ViewMenu({
         <div className={`view-menu from-${corner}`} id="view-menu" data-no-drag="">
           <p className="view-menu-title">Over the graph</p>
           {OVERLAY_ITEMS.map((item) => {
-            const unavailable = item.key === "legend" && !legendAvailable;
+            const unavailable =
+              (item.key === "legend" && !legendAvailable) ||
+              (item.key === "timeline" && !timelineAvailable);
+            const why =
+              item.key === "legend"
+                ? "The current styling has no legend"
+                : "No time or number column to run a timeline along";
             return (
-              <label
-                key={item.key}
-                className="check-item"
-                title={unavailable ? "The current styling has no legend" : item.hint}
-              >
+              <label key={item.key} className="check-item" title={unavailable ? why : item.hint}>
                 <input
                   type="checkbox"
                   checked={!hidden.has(item.key)}

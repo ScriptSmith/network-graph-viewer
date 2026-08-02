@@ -37,6 +37,7 @@ LAYOUTS = (
     "circle",
     "grid",
     "circlepack",
+    "geo",
     "script",
 )
 
@@ -154,7 +155,7 @@ def infer_column_type(values: Iterable[Cell]) -> str:
     return "number" if numeric / seen >= 0.8 else "text"
 
 
-COLUMN_ROLES = ("color", "size", "image", "url")
+COLUMN_ROLES = ("color", "size", "image", "url", "time")
 
 _COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|rgba|hsl|hsla)\(.*\))$")
 _URL = re.compile(r"^https?://", re.IGNORECASE)
@@ -451,6 +452,10 @@ def build_workspace(
     ``edges`` may be a DataFrame, a sequence of mappings, a sequence of
     ``(source, target)`` pairs, or a networkx graph, in which case the node
     attributes come along with it.
+
+    The style's optional curve fields (``nodeSizeCurve``, ``nodeColorCurve``,
+    ``edgeWidthCurve``) are not emitted here; they can be chosen in the app,
+    and a workspace without them keeps each channel's default scale.
     """
     if layout not in LAYOUTS:
         raise ValueError(f"Unknown layout {layout!r}; expected one of {', '.join(LAYOUTS)}.")

@@ -160,6 +160,112 @@ export function bfsDistances(neighbors: number[][], source: number, dist: Int32A
   }
 }
 
+export interface RouteInfo {
+  /** Equally short routes, endpoints included, up to the asked-for limit. */
+  routes: string[][];
+  /** How many such routes exist in all, which can exceed what was listed. */
+  count: number;
+}
+
+/**
+ * The shortest routes by hops between two named nodes, or null when the two
+ * cannot reach each other. Undirected by default, matching the rest of the
+ * path measures; `directed` walks only along the arrows. Counting every
+ * route is the sigma accumulation betweenness uses; listing them is a walk
+ * back through the shortest-path DAG, cut off at `limit` because the count
+ * can be astronomical while a person only ever wants a handful. Parallel
+ * edges collapse into one neighbour and change nothing; a node's route to
+ * itself is itself alone.
+ */
+export function shortestRoutes(
+  graph: MetricGraph,
+  from: string,
+  to: string,
+  options: { directed?: boolean; limit?: number } = {},
+): RouteInfo | null {
+  const limit = Math.max(1, options.limit ?? 1);
+  const source = graph.ids.indexOf(from);
+  const target = graph.ids.indexOf(to);
+  if (source === -1 || target === -1) return null;
+  if (source === target) return { routes: [[from]], count: 1 };
+
+  let neighbors: number[][];
+  if (options.directed === true) {
+    const n = graph.ids.length;
+    const out: number[][] = Array.from({ length: n }, () => []);
+    for (let e = 0; e < graph.source.length; e++) {
+      if (graph.source[e] !== graph.target[e]) out[graph.source[e]].push(graph.target[e]);
+    }
+    neighbors = out;
+  } else {
+    neighbors = undirected(graph).neighbors;
+  }
+
+  const n = graph.ids.length;
+  const dist = new Int32Array(n).fill(-1);
+  const sigma = new Float64Array(n);
+  const preds: number[][] = Array.from({ length: n }, () => []);
+  dist[source] = 0;
+  sigma[source] = 1;
+  const queue = [source];
+  let head = 0;
+  let targetDist = -1;
+  while (head < queue.length) {
+    const v = queue[head++];
+    // Nothing past the target's depth can sit on a shortest route to it.
+    if (targetDist !== -1 && dist[v] >= targetDist) continue;
+    for (const w of neighbors[v]) {
+      if (dist[w] === -1) {
+        dist[w] = dist[v] + 1;
+        queue.push(w);
+        if (w === target) targetDist = dist[w];
+      }
+      if (dist[w] === dist[v] + 1) {
+        sigma[w] += sigma[v];
+        preds[w].push(v);
+      }
+    }
+  }
+  if (dist[target] === -1) return null;
+
+  // Depth-first back through the predecessors, in the deterministic order
+  // the adjacency gave them, until enough routes are in hand.
+  const routes: string[][] = [];
+  const trail: number[] = [target];
+  const walk = (v: number): boolean => {
+    if (v === source) {
+      routes.push([...trail].reverse().map((i) => graph.ids[i]));
+      return routes.length >= limit;
+    }
+    for (const p of preds[v]) {
+      trail.push(p);
+      const done = walk(p);
+      trail.pop();
+      if (done) return true;
+    }
+    return false;
+  };
+  walk(target);
+
+  return { routes, count: sigma[target] };
+}
+
+/** One route plus the count: the shape the tests pin. */
+export function shortestPathInfo(
+  graph: MetricGraph,
+  from: string,
+  to: string,
+  options: { directed?: boolean } = {},
+): { path: string[]; count: number } | null {
+  const info = shortestRoutes(graph, from, to, { ...options, limit: 1 });
+  return info === null ? null : { path: info.routes[0], count: info.count };
+}
+
+/** Just the route, undirected: the shape most callers and tests want. */
+export function shortestPath(graph: MetricGraph, from: string, to: string): string[] | null {
+  return shortestPathInfo(graph, from, to)?.path ?? null;
+}
+
 /** Path measures sample their sources above this many nodes. */
 export const SAMPLE_LIMIT = 600;
 

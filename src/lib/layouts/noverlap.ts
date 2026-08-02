@@ -78,3 +78,115 @@ export function noverlap(
   }
   return maxPasses;
 }
+
+/*
+ * The label-aware version: the same finishing pass, but a node's footprint is
+ * the box around its disc plus the label drawn above it, so nodes are nudged
+ * until the visible names stop sitting on each other. Label bounds are
+ * estimated from character count at the label font size; in-graph text is
+ * system fonts, so a rough constant beats measuring the DOM per node per pass.
+ */
+
+/** Average glyph advance at the canvas's 11px label size, halo included. */
+const GLYPH_WIDTH = 6.4;
+/** Line box of a label, and the gap the canvas leaves above the disc. */
+const LABEL_HEIGHT = 14;
+const LABEL_GAP = 6;
+
+interface Box {
+  node: GraphNode;
+  /** Box centre, offset above the disc centre when a label rides along. */
+  cy: number;
+  hw: number;
+  hh: number;
+  held: boolean;
+}
+
+function boxOf(node: GraphNode, label: string | undefined, held: boolean): Box {
+  const r = node.radius;
+  // The label hangs above the disc: from the top of the disc plus the gap up
+  // one line box. Bottom of the footprint is the disc's own bottom.
+  const top = label === undefined ? r : r + LABEL_GAP + LABEL_HEIGHT;
+  const hw = label === undefined ? r : Math.max(r, (label.length * GLYPH_WIDTH) / 2);
+  return { node, cy: (top - r) / 2, hw, hh: (top + r) / 2, held };
+}
+
+/** One separation pass over the label boxes. Returns true if anything moved. */
+export function labelNoverlapPass(
+  boxes: Box[],
+  options: NoverlapOptions = NOVERLAP_DEFAULTS,
+): boolean {
+  if (boxes.length < 2) return false;
+
+  let cell = 1;
+  for (const box of boxes) cell = Math.max(cell, (box.hw + options.margin) * 2, box.hh * 2);
+
+  const grid = new Map<string, Box[]>();
+  const keyOf = (x: number, y: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+  for (const box of boxes) {
+    const key = keyOf(box.node.x ?? 0, (box.node.y ?? 0) - box.cy);
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(box);
+    else grid.set(key, [box]);
+  }
+
+  let moved = false;
+  for (const box of boxes) {
+    const bx = box.node.x ?? 0;
+    const by = (box.node.y ?? 0) - box.cy;
+    const cx = Math.floor(bx / cell);
+    const cyCell = Math.floor(by / cell);
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cyCell - 1; gy <= cyCell + 1; gy++) {
+        for (const other of grid.get(`${gx},${gy}`) ?? []) {
+          // Each unordered pair is handled once, by the node that sorts first.
+          if (other === box || other.node.id <= box.node.id) continue;
+          if (box.held && other.held) continue;
+          const ox = other.node.x ?? 0;
+          const oy = (other.node.y ?? 0) - other.cy;
+          const gapX = box.hw + other.hw + options.margin - Math.abs(ox - bx);
+          const gapY = box.hh + other.hh + options.margin - Math.abs(oy - by);
+          if (gapX <= 0 || gapY <= 0) continue;
+
+          // Push along the axis of least penetration, half each, or all onto
+          // the free node when the other is pinned where it stands.
+          const alongX = gapX < gapY;
+          const amount = (alongX ? gapX : gapY) * options.speed;
+          let sign = alongX ? Math.sign(ox - bx) : Math.sign(oy - by);
+          if (sign === 0) sign = 1;
+          const boxShare = other.held ? 1 : box.held ? 0 : 0.5;
+          const otherShare = 1 - boxShare;
+          if (alongX) {
+            box.node.x = bx - sign * amount * boxShare;
+            other.node.x = ox + sign * amount * otherShare;
+          } else {
+            box.node.y = (box.node.y ?? 0) - sign * amount * boxShare;
+            other.node.y = (other.node.y ?? 0) + sign * amount * otherShare;
+          }
+          moved = true;
+        }
+      }
+    }
+  }
+  return moved;
+}
+
+/**
+ * Nudge nodes until their visible labels stop overlapping. `labels` maps node
+ * id to the text actually drawn for it; nodes without one still take part as
+ * plain discs, so a label never lands on an unlabelled neighbour instead.
+ * Nodes in `held` do not move, the way pinned nodes hold their spot.
+ */
+export function labelNoverlap(
+  nodes: GraphNode[],
+  labels: ReadonlyMap<string, string>,
+  held: ReadonlySet<string> = new Set(),
+  options: NoverlapOptions = NOVERLAP_DEFAULTS,
+  maxPasses = 60,
+): number {
+  const boxes = nodes.map((n) => boxOf(n, labels.get(n.id), held.has(n.id)));
+  for (let pass = 0; pass < maxPasses; pass++) {
+    if (!labelNoverlapPass(boxes, options)) return pass;
+  }
+  return maxPasses;
+}

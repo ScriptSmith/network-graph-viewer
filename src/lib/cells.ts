@@ -41,3 +41,13 @@ const SEP = String.fromCharCode(31);
 export function edgeKey(source: string, target: string): string {
   return `${source}${SEP}${target}`;
 }
+
+/** A compound key over any parts, joined the same collision-proof way. */
+export function compoundKey(...parts: (string | number)[]): string {
+  return parts.join(SEP);
+}
+
+/** A compound key back into its parts. */
+export function splitKey(key: string): string[] {
+  return key.split(SEP);
+}

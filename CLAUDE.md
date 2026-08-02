@@ -49,7 +49,12 @@ way to change data is the data table, which edits the underlying rows.
   `cell:<name>`; `styleColumn()` extracts the column and `isCellStyle()` says
   which of the two column forms it is. `column:` maps the values onto a palette
   or a scale, `cell:` means the column already holds the answer, a color or a
-  pixel size, so it lands on the mark untouched. `nodeLabel` names a node-table
+  pixel size, so it lands on the mark untouched. The optional curves
+  (`nodeSizeCurve` / `nodeColorCurve` / `edgeWidthCurve`, linear | sqrt | log
+  through `curveFn` in graph.ts) shape the numeric channels; absent means
+  what each channel has always done, which is what keeps the golden snapshot
+  still, and the color curve rides `Graph.ranking` so `markColor` answers it
+  everywhere at once. `nodeLabel` names a node-table
   column of display names (ids stay the keys). `typeStyles` and
   `edgeTypeStyles` are the type system: one column whose values are the kinds
   of node (or edge), and per kind a color, a size (or stroke width), an image,
@@ -76,9 +81,24 @@ way to change data is the data table, which edits the underlying rows.
 - `src/lib/metrics/` - every algorithm, hand-written. `model.ts` holds the
   compact `MetricGraph` the rest operate on; `index.ts` is the registry that
   drives the compute panel and writes results as ordinary columns.
+  `shortestPathInfo` and `hopsColumn` back the node tools: the lit route
+  goes to the canvas as the `highlightPath` prop through `refreshStyles`
+  (muting everything off it, the way selections mute), the route count and
+  the arrows-followed tally land in the info panel's path card, and
+  distances land as a computed column so ramps and filters compose with
+  them for free. Louvain's optional stability estimate re-runs it under seeded
+  permutations (a fixed-seed LCG, deterministic forever) and scores how often
+  each node stays with its community's best match; the canonical run stays
+  index order.
 - `src/lib/layouts/` - `positions: "physics" | "computed" | "external"` says
   where a layout's coordinates come from. ForceAtlas2 is a custom d3 force with
-  Barnes-Hut repulsion via `d3-quadtree`.
+  Barnes-Hut repulsion via `d3-quadtree`. `geo.ts` is the map: two node
+  columns through Web Mercator, north up (y negated, the way GEXF negates
+  it), and rows with no usable coordinates parked in a strip below the
+  extent, counted in a notice, never dropped. `noverlap.ts` also has the
+  label-aware pass behind "Tidy labels": label boxes estimated from character
+  count, since in-graph text is system fonts and measuring the DOM per node
+  per pass would not earn its cost.
 - `src/lib/images.ts` - node image cells (`https` links, data URIs, bare
   base64, raw SVG markup) into something an `<image>` can draw, or null.
   Nothing else is let through: a cell is untrusted text. `isRemoteSource` marks
@@ -108,6 +128,45 @@ way to change data is the data table, which edits the underlying rows.
   filter steps name columns by string and live outside it, so `retargetStyle`
   (doc.ts) and `retargetChain` (filter.ts) do the rest, called together from
   `App.tsx` so one act moves all three.
+- `src/lib/overlay.ts` - the edits overlay: the user's table work held apart
+  from the tables, so "Update data" can pour a fresh file underneath and lay
+  the same work back on top. `useDocHistory` records it by diffing each
+  edit's before and after documents (`diffDocs`), which cannot miss an edit
+  and makes undo rewind the overlay with the snapshot it rode in on; node
+  renames are read off the change's shape (same row count, same index, fresh
+  id; or a shrunken node table over untouched edge rows) rather than reported
+  by call sites, which hand up opaque transforms. `mergeWithOverlay` is the
+  policy: edited cells win, unedited cells track the new file, deletions
+  hold, added and edited rows outlive their source. Edge rows are identified
+  by source, target and occurrence index, so edge edits are best-effort when
+  a new file changes how many parallel rows a pair has. The update itself is
+  a `keep`-mode history step, because it must not extend the overlay it
+  exists to replay; the workspace carries the overlay as `edits` and the
+  compute runs as `computed`, instructions re-run against whatever arrives.
+- `src/lib/project.ts` - bipartite projection: keep one side, link two of its
+  nodes per shared counterpart, weight by the shared count. Work is the sum
+  of counterpart degrees squared, so it stops at a counterpart boundary past
+  `PROJECTION_PAIR_LIMIT` and reports how far it got.
+- `src/lib/histogram.ts` + `components/Histogram.tsx` - binning and the
+  draggable min/max brackets, drawn behind range filter steps and the
+  timeline. Bins are computed when an editor opens over what actually enters
+  that step (`chainInputBefore` in filter.ts), never inside `applyChain`'s
+  render path. Brackets are sliders to the keyboard; a bracket parked on its
+  own end of the range means no bound at all.
+- `src/lib/timeline.ts` + `components/Timeline.tsx` - the time strip: an
+  editor for one ordinary `timewindow` chain step (bounds inclusive, cells
+  read through `asTime`). It only appears for columns that read as a time
+  axis: dated text always, number columns only when every sampled value
+  looks like a year or an epoch, or every count and weight would sprout a
+  timeline. The strip parks in a corner and drags between them like the
+  legend. While the brush is dragging or playing the window reaches the
+  canvas as dimming only (the `dimmed` prop, painted by `refreshStyles`);
+  the step is committed on release or pause, which is when structure, stats
+  and downstream steps see it. That split exists because a true step change
+  rebuilds the scene.
+- `src/lib/expand.ts` - what one more hop from a node would bring in, counted
+  by node type and edge type for the expansion preview in `NodeDetails`; its
+  line checkboxes write the same ego `where` the Filter step's editor writes.
 - `src/lib/parse.ts` - the tabular readers. `FILE_PARSERS` is the extension
   point: each entry claims extensions and may claim leading bytes, so an
   unlabelled file is still recognised. SheetJS is the fallback because it reads
@@ -215,7 +274,9 @@ way to change data is the data table, which edits the underlying rows.
   its node table holds Simple Icons URLs, whose CDN serves them cross-origin.
   The transit sample is the one styled by `cell:` columns; `samples.test.ts`
   holds every shipped cell colour to reading as a colour, since one that didn't
-  would come out neutral rather than failing.
+  would come out neutral rather than failing. The voyages sample carries
+  coordinates and dates and declares `layout: "geo"`, which `handleSample`
+  honours; it is what the Geographic layout and the timeline are shown on.
 
 ## Constraints
 

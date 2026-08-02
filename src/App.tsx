@@ -52,17 +52,36 @@ import {
   buildDoc,
   clearComputedColumns,
   edgeDetailColumnsFor,
+  hasColumn,
   nodeDetailColumnsFor,
   reconcileNodes,
   retargetStyle,
 } from "./lib/doc";
+import { mergeWithOverlay, overlayFromJson, overlayIsEmpty, type MergeReport } from "./lib/overlay";
 import { deleteColumn, renameColumn } from "./lib/bulk";
 import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
 import { isRemoteSource } from "./lib/images";
 import { applyChain, findValueStep, newStepId, retargetChain, type FilterStep } from "./lib/filter";
-import { defaultParams, type LayoutId, type LayoutParams, type ParamValue } from "./lib/layouts";
+import {
+  defaultParams,
+  projectGeo,
+  type LayoutId,
+  type LayoutParams,
+  type ParamValue,
+} from "./lib/layouts";
 import { addRow, deleteRows, setCell, type EditTarget } from "./lib/edit";
-import { toMetricGraph, type MetricOptions } from "./lib/metrics";
+import {
+  hopsColumn,
+  shortestRoutes,
+  toMetricGraph,
+  type ComputedRecipe,
+  type MetricOptions,
+} from "./lib/metrics";
+import { edgeKey } from "./lib/cells";
+import { projectBipartite, type ProjectionSide } from "./lib/project";
+import { timeColumns, type TimeColumnOption } from "./lib/timeline";
+import { asTime } from "./lib/parse";
+import { endpointId } from "./lib/graph";
 import { computeMetrics, runScriptInWorker } from "./lib/metrics/runner";
 import { interpretResult, normalizeEdgeKeys, toScriptGraph } from "./lib/script/payload";
 import type { ScriptRunRequest } from "./components/ScriptPanel";
@@ -82,7 +101,13 @@ import { usePreference } from "./usePreference";
 import { useCornerDrag } from "./useCornerDrag";
 import { isNarrow } from "./narrow";
 import { useDocHistory } from "./useDocHistory";
-import { GraphCanvas, type GraphCanvasHandle } from "./components/GraphCanvas";
+import {
+  GraphCanvas,
+  type GraphCanvasHandle,
+  type MarkSet,
+  type PathHighlight,
+} from "./components/GraphCanvas";
+import { Timeline, type TimeWindow } from "./components/Timeline";
 import { NodeSearch } from "./components/NodeSearch";
 import { Sidebar } from "./components/Sidebar";
 import { SampleList } from "./components/SampleList";
@@ -181,10 +206,24 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const [edgeTableIndex, setEdgeTableIndex] = useState(0);
   const [nodeTableIndex, setNodeTableIndex] = useState<number | null>(null);
   // Every change to the document goes through the history, so an undo can
-  // never quietly discard one that was recorded nowhere.
-  const { doc, edit: editDoc, reset: resetDoc, undo, redo, undoLabel, redoLabel } = useDocHistory();
+  // never quietly discard one that was recorded nowhere. The edits overlay
+  // rides with it: the user's table work, kept apart from the tables, for
+  // saving and for laying back over updated data.
+  const {
+    doc,
+    overlay,
+    edit: editDoc,
+    reset: resetDoc,
+    undo,
+    redo,
+    undoLabel,
+    redoLabel,
+  } = useDocHistory();
   const [style, setStyle] = useState<GraphStyle>(DEFAULT_STYLE);
   const [chain, setChain] = useState<FilterStep[]>([]);
+  // The compute runs made so far, as instructions rather than values, so
+  // "update data" can run the same metrics against whatever arrives next.
+  const [computedRuns, setComputedRuns] = useState<ComputedRecipe[]>([]);
   const [showIsolated, setShowIsolated] = useState(false);
   const [layout, setLayout] = useState<LayoutId>("force");
   // Parameters are kept per layout so switching away and back is lossless.
@@ -198,6 +237,30 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // Nodes held where they were put, whatever the layout does around them.
   const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
   const selectedId = selectedNode(selection);
+  // Path tracing: armed with an origin, resolved by the next node picked.
+  // The result is kept as a fact beside the paint, so the info panel can say
+  // what the route is and the reader can walk it.
+  const [pathFrom, setPathFrom] = useState<string | null>(null);
+  const [pathDirected, setPathDirected] = useState(false);
+  const [pathHighlight, setPathHighlight] = useState<PathHighlight | null>(null);
+  const [pathResult, setPathResult] = useState<{
+    from: string;
+    to: string;
+    /** The equally short routes, capped; empty when there is no path. */
+    routes: string[][];
+    /** How many exist in all, which can exceed what was enumerated. */
+    count: number;
+    /** Which route is lit. */
+    routeIndex: number;
+    /** Hops of the lit route that run along the arrows. */
+    forward: number;
+  } | null>(null);
+  // Spoken updates for the tools that answer without moving focus.
+  const [liveMessage, setLiveMessage] = useState("");
+  // The Style step's "apply to" scopes. Held here rather than in the section
+  // so the schema view's pencil can point the editor at a kind from outside.
+  const [nodeStyleScope, setNodeStyleScope] = useState<string | null>(null);
+  const [edgeStyleScope, setEdgeStyleScope] = useState<string | null>(null);
   const [tableTab, setTableTab] = useState<EditTarget>("edges");
   // Seeded, not set in an effect: a host whose workspace would not read has
   // nothing to draw, so the reason is the first thing the cell should say.
@@ -223,6 +286,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // off whatever part of the graph it happens to be sitting on.
   const [toolbarCorner, setToolbarCorner] = useState<Corner>("top-left");
   const [legendCorner, setLegendCorner] = useState<Corner>("bottom-left");
+  const [timelineCorner, setTimelineCorner] = useState<Corner>("bottom-right");
   // Panels are only ever hidden with CSS, never unmounted, so a collapse does
   // not throw away a half-written script, an unsaved gist token, or the search
   // and grouping set up over the table.
@@ -383,6 +447,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       resetDoc(next);
       setStyle(nextStyle);
       setChain([]);
+      setComputedRuns([]);
       setShowIsolated(next.nodesDeclared);
       setSelection(null);
       setPinned(new Set());
@@ -400,9 +465,10 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setEdgeTableIndex(0);
       setNodeTableIndex(null);
       seedPositionsRef.current = positions ?? null;
-      resetDoc(next);
+      resetDoc(next, workspace?.edits ? overlayFromJson(workspace.edits) : undefined);
       setStyle(workspace?.style ?? guessStyle(next.edges, next.mapping, next.nodes));
       setChain(workspace?.chain ?? []);
+      setComputedRuns(workspace?.computed ?? []);
       setShowIsolated(workspace?.showIsolated ?? next.nodesDeclared);
       if (workspace) {
         setLayout(workspace.layout);
@@ -467,6 +533,147 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       }
     },
     [adoptDataset, adoptImported, forgetUrlSource],
+  );
+
+  /**
+   * "Update data": fresh rows under the same setup. The incoming file
+   * becomes the new tables while the chain, the style, the layout, the
+   * scripts and the panels all stay put; the edits overlay lays the user's
+   * table work back on top, and the compute recipe re-runs against what
+   * arrived. Anything that no longer applies is counted and said, and the
+   * whole update is one undo step.
+   */
+  const handleUpdateFile = useCallback(
+    async (file: File) => {
+      if (!doc) return;
+      try {
+        // Parse the way a fresh load would, but keep everything around it.
+        let incomingDataset: Dataset | null = null;
+        let incoming: GraphDoc;
+        const lowered = file.name.toLowerCase();
+        if (TEXT_EXTENSIONS.some((ext) => lowered.endsWith(ext))) {
+          const imported = await parseText(await file.text(), file.name);
+          incomingDataset = imported.dataset ?? null;
+          incoming = imported.doc;
+        } else {
+          incomingDataset = await parseFile(file);
+          incoming = doc;
+        }
+        if (incomingDataset !== null) {
+          const edges = incomingDataset.tables[0];
+          const nodes =
+            nodeTableIndex !== null ? incomingDataset.tables[nodeTableIndex] : undefined;
+          // The recipe keeps the mapping wherever the new file still answers
+          // to it; otherwise the columns are guessed the way a fresh load
+          // guesses them.
+          const mapping =
+            hasColumn(edges, doc.mapping.source) && hasColumn(edges, doc.mapping.target)
+              ? {
+                  ...doc.mapping,
+                  attrs: doc.mapping.attrs.filter((a) => hasColumn(edges, a)),
+                }
+              : undefined;
+          incoming = buildDoc(file.name, edges, { nodes, mapping });
+        }
+
+        // The user's table work rides on top of whatever arrived.
+        let report: MergeReport | null = null;
+        let merged = incoming;
+        if (!overlayIsEmpty(overlay)) {
+          const result = mergeWithOverlay(doc, overlay, incoming);
+          merged = result.doc;
+          report = result.report;
+        }
+
+        // The compute recipe re-runs against the new data, over the whole
+        // graph: the chain may name the very columns being recomputed.
+        let final = merged;
+        for (const run of computedRuns) {
+          const graphNow = buildBaseGraph(final, { showIsolated: true });
+          const computed = await computeMetrics(
+            toMetricGraph(graphNow, run.options.weightColumn),
+            run.metrics,
+            run.options,
+          );
+          final = applyComputedColumns(final, computed.result);
+        }
+
+        // Steps and tokens naming columns the new data lacks degrade exactly
+        // like a deleted column does, and the shortfall is counted.
+        const missingEdgeCols = doc.edges.columns
+          .map((c) => c.name)
+          .filter((name) => !hasColumn(final.edges, name));
+        const missingNodeCols = doc.nodes.columns
+          .map((c) => c.name)
+          .filter((name) => !hasColumn(final.nodes, name));
+        let nextStyle = style;
+        for (const name of [...new Set([...missingEdgeCols, ...missingNodeCols])]) {
+          nextStyle = retargetStyle(nextStyle, final, name, null);
+        }
+        let nextChain = chain;
+        for (const name of missingEdgeCols)
+          nextChain = retargetChain(nextChain, "edges", name, null);
+        for (const name of missingNodeCols)
+          nextChain = retargetChain(nextChain, "nodes", name, null);
+        const droppedSteps = chain.length - nextChain.length;
+        const styleKeys = [
+          "nodeColor",
+          "nodeSize",
+          "nodeImage",
+          "nodeLabel",
+          "edgeWidth",
+          "edgeColor",
+        ] as const;
+        const changedChannels =
+          styleKeys.filter((k) => nextStyle[k] !== style[k]).length +
+          (style.typeStyles !== undefined && nextStyle.typeStyles === undefined ? 1 : 0) +
+          (style.edgeTypeStyles !== undefined && nextStyle.edgeTypeStyles === undefined ? 1 : 0);
+
+        forgetUrlSource();
+        // "keep": the update swaps the data under the edits; the overlay is
+        // exactly what must survive it.
+        editDoc("updating the data", () => final, "keep");
+        setStyle(nextStyle);
+        setChain(nextChain);
+        setSelection(null);
+        setDataset(incomingDataset ?? { fileName: file.name, tables: [final.edges, final.nodes] });
+        setEdgeTableIndex(0);
+        if (incomingDataset === null) setNodeTableIndex(1);
+
+        const parts = [
+          `Updated the data from "${file.name}": ${final.edges.rows.length.toLocaleString()} edge rows, ${final.nodes.rows.length.toLocaleString()} nodes.`,
+        ];
+        if (report) {
+          const kept: string[] = [
+            `${report.updated.toLocaleString()} rows updated`,
+            `${report.added.toLocaleString()} new`,
+          ];
+          if (report.editsKept > 0) kept.push(`your ${report.editsKept} edits kept`);
+          if (report.deletionsHeld > 0) kept.push(`${report.deletionsHeld} deletions held`);
+          if (report.keptExtras > 0) {
+            kept.push(
+              `${report.keptExtras} edited ${report.keptExtras === 1 ? "row" : "rows"} no longer in the file (kept)`,
+            );
+          }
+          parts.push(`${kept.join(", ")}.`);
+        }
+        if (droppedSteps > 0 || changedChannels > 0) {
+          const what: string[] = [];
+          if (droppedSteps > 0) {
+            what.push(`${droppedSteps} filter ${droppedSteps === 1 ? "step" : "steps"}`);
+          }
+          if (changedChannels > 0) {
+            what.push(`${changedChannels} style ${changedChannels === 1 ? "channel" : "channels"}`);
+          }
+          parts.push(`${what.join(" and ")} referenced columns not in this file.`);
+        }
+        setNotice(parts.join(" "));
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not read that file.");
+      }
+    },
+    [doc, overlay, computedRuns, style, chain, nodeTableIndex, editDoc, forgetUrlSource],
   );
 
   // Cells copied in Excel or Google Sheets arrive as tab-separated text, so
@@ -554,17 +761,150 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     });
   }, []);
 
+  /** What a node is called on screen right now, for messages about it. */
+  const labelFor = useCallback(
+    (id: string) => graph?.nodes.find((n) => n.id === id)?.label ?? id,
+    [graph],
+  );
+
   /**
-   * A selection is answered in the statistics panel, so picking a node or an
-   * edge brings that panel out from wherever it was put away.
+   * Light one route and count how much of it runs along the arrows. Shared
+   * by the first trace and the card's route pager.
+   */
+  const lightRoute = useCallback(
+    (path: string[], directed: boolean): number => {
+      const present = new Set(
+        (base?.links ?? []).map((l) => edgeKey(endpointId(l.source), endpointId(l.target))),
+      );
+      const nodes = new Set(path);
+      const links = new Set<string>();
+      let forward = 0;
+      for (let i = 1; i < path.length; i++) {
+        links.add(edgeKey(path[i - 1], path[i]));
+        // An undirected walk can ride an edge stored the other way round.
+        if (!directed) links.add(edgeKey(path[i], path[i - 1]));
+        if (present.has(edgeKey(path[i - 1], path[i]))) forward++;
+      }
+      setPathHighlight({ nodes, links });
+      return forward;
+    },
+    [base],
+  );
+
+  /** How many equally short routes are worth listing for the pager. */
+  const ROUTE_LIMIT = 12;
+
+  /**
+   * Trace the routes and light the first. The result carries its facts: how
+   * many equally short routes exist, which one is lit, and how much of it
+   * runs along the arrows, since the default walk ignores them.
+   */
+  const tracePath = useCallback(
+    (from: string, to: string, directed: boolean) => {
+      if (base === null) return;
+      const info = shortestRoutes(toMetricGraph(base), from, to, {
+        directed,
+        limit: ROUTE_LIMIT,
+      });
+      if (info === null) {
+        setPathHighlight(null);
+        setPathResult({ from, to, routes: [], count: 0, routeIndex: 0, forward: 0 });
+        setLiveMessage(
+          `No path between ${labelFor(from)} and ${labelFor(to)}${directed ? " along the arrows" : ""}.`,
+        );
+        return;
+      }
+      const forward = lightRoute(info.routes[0], directed);
+      setPathResult({ from, to, routes: info.routes, count: info.count, routeIndex: 0, forward });
+      const hops = info.routes[0].length - 1;
+      setLiveMessage(
+        `Path of ${hops} hop${hops === 1 ? "" : "s"} from ${labelFor(from)} to ${labelFor(to)}${
+          info.count > 1 ? `, one of ${info.count} equally short routes` : ""
+        }.`,
+      );
+    },
+    [base, labelFor, lightRoute],
+  );
+
+  /** The card's pager: light another of the equally short routes. */
+  const handlePickRoute = useCallback(
+    (index: number) => {
+      if (pathResult === null || index < 0 || index >= pathResult.routes.length) return;
+      const forward = lightRoute(pathResult.routes[index], pathDirected);
+      setPathResult({ ...pathResult, routeIndex: index, forward });
+    },
+    [pathResult, lightRoute, pathDirected],
+  );
+
+  /**
+   * A selection is answered in the info panel, so picking a node or an edge
+   * brings that panel out from wherever it was put away. With path mode
+   * armed, picking a node is the second half of that question instead: the
+   * route lights up on the filtered graph, and the far end is the answer's
+   * other endpoint, not a new selection.
    */
   const handleSelect = useCallback(
     (next: GraphSelection | null) => {
+      if (pathFrom !== null && next?.kind === "node" && next.id !== pathFrom && base !== null) {
+        tracePath(pathFrom, next.id, pathDirected);
+        setPathFrom(null);
+        setSelection(null);
+        setPanelOpen("stats", true);
+        return;
+      }
+      // Clicking the background lets go of the route the way it lets go of a
+      // selection; picking a node or an edge keeps the card in reach, since
+      // walking the route's stops is itself a selection change.
+      if (next === null) {
+        setPathHighlight(null);
+        setPathResult(null);
+      }
       setSelection(next);
       if (next !== null) setPanelOpen("stats", true);
     },
-    [setPanelOpen],
+    [setPanelOpen, pathFrom, pathDirected, base, tracePath],
   );
+
+  /** Flipping direction re-answers the question already on screen. */
+  const handlePathDirectedChange = useCallback(
+    (directed: boolean) => {
+      setPathDirected(directed);
+      if (pathResult !== null) tracePath(pathResult.from, pathResult.to, directed);
+    },
+    [pathResult, tracePath],
+  );
+
+  // Filters or edits that change the structure take the route with them: the
+  // path was an answer about a graph that is no longer on screen. A stale
+  // timeline preview is the same kind of leftover, so it goes too.
+  useEffect(() => {
+    setPathFrom(null);
+    setPathHighlight(null);
+    setPathResult(null);
+    timeDraftRef.current = null;
+    setTimeDraftState(null);
+  }, [base]);
+
+  const handlePathFrom = useCallback(
+    (id: string) => {
+      setPathFrom(id);
+      setLiveMessage(
+        `Tracing a path from ${labelFor(id)}: select the far end. Press Escape to cancel.`,
+      );
+    },
+    [labelFor],
+  );
+
+  const cancelPath = useCallback(() => {
+    setPathFrom(null);
+    setLiveMessage("Path tracing cancelled.");
+  }, []);
+
+  const clearPath = useCallback(() => {
+    setPathHighlight(null);
+    setPathResult(null);
+    setLiveMessage("Path cleared.");
+  }, []);
 
   /** The node-only form, for the panels that never point at an edge. */
   const handleSelectNode = useCallback(
@@ -647,7 +987,11 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           searchRef.current.focus();
         }
       } else if (e.key === "Escape") {
-        showEverything();
+        // An armed path tool is the most immediate thing to let go of, then
+        // a route still lit from the last trace.
+        if (pathFrom !== null) cancelPath();
+        else if (pathHighlight !== null || pathResult !== null) clearPath();
+        else showEverything();
       }
     };
     return listen(root, "keydown", onKeyDown);
@@ -661,6 +1005,11 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     showPanels,
     undo,
     redo,
+    pathFrom,
+    cancelPath,
+    pathHighlight,
+    pathResult,
+    clearPath,
   ]);
 
   const handleSample = useCallback(
@@ -671,6 +1020,18 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         style: network.style,
         nodeAttrs: network.nodeAttrs,
       });
+      // A sample that names its layout opens in it; one that does not still
+      // steps off the map, which would otherwise park all of its nodes.
+      const wanted = network.layout;
+      if (wanted !== undefined) {
+        setLayout(wanted);
+        setParamsByLayout((current) => ({
+          ...current,
+          [wanted]: { ...defaultParams(wanted), ...network.layoutParams },
+        }));
+      } else {
+        setLayout((current) => (current === "geo" ? "force" : current));
+      }
       // A shipped sample is ours. Its images are a known list on a known CDN,
       // not somebody else's choice of who this machine should talk to.
       setAllowRemoteImages(true);
@@ -800,6 +1161,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     resetDoc(null);
     setStyle(DEFAULT_STYLE);
     setChain([]);
+    setComputedRuns([]);
     setShowIsolated(false);
     setSelection(null);
     setPinned(new Set());
@@ -855,6 +1217,32 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     setStyle((s) => ({ ...s, ...patch }));
   }, []);
 
+  /**
+   * One-mode projection: the bipartite tables are replaced wholesale, as one
+   * undo step, so the original edge list is one Ctrl+Z away. Anything the cap
+   * left out is said out loud rather than passed off as the whole answer.
+   */
+  const handleProject = useCallback(
+    (keep: ProjectionSide) => {
+      if (!doc) return;
+      const { doc: next, report } = projectBipartite(doc, keep);
+      editDoc(`the projection onto ${keep}s`, () => next);
+      // The old columns are gone wholesale, so steps naming them go the way
+      // they do when a named column is deleted; the shared count is what a
+      // projection is for, so it drives the edge width from the start.
+      setChain([]);
+      setSelection(null);
+      setStyle((s) => ({ ...s, edgeWidth: "column:Shared count" }));
+      const summary = `Projected ${report.nodes} nodes into ${report.edges} shared-counterpart links.`;
+      const capped =
+        report.counterparts.used < report.counterparts.total
+          ? ` Stopped at the pair cap: folded in ${report.counterparts.used} of ${report.counterparts.total} counterpart nodes.`
+          : "";
+      setNotice(summary + capped);
+    },
+    [doc, editDoc],
+  );
+
   const layoutParams = useMemo(
     () => ({ ...defaultParams(layout), ...paramsByLayout[layout] }),
     [layout, paramsByLayout],
@@ -870,6 +1258,43 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     [layout],
   );
 
+  // Switching to the geographic layout with nothing chosen yet: number
+  // columns named like coordinates are what was meant, so they are filled in
+  // rather than asked for. Anything already chosen is left alone.
+  useEffect(() => {
+    if (layout !== "geo" || !doc) return;
+    setParamsByLayout((current) => {
+      const existing = current.geo;
+      if (existing?.latColumn || existing?.lonColumn) return current;
+      const numbers = doc.nodes.columns.filter((c) => c.type === "number");
+      const lat = numbers.find((c) => /lat/i.test(c.name));
+      const lon = numbers.find((c) => /^(lon|lng|long)/i.test(c.name) || /longitude/i.test(c.name));
+      if (!lat || !lon) return current;
+      return {
+        ...current,
+        geo: { ...defaultParams("geo"), ...existing, latColumn: lat.name, lonColumn: lon.name },
+      };
+    });
+  }, [layout, doc]);
+
+  // What the map could not place is said, never silently parked: the strip
+  // below the extent holds the nodes, this holds the explanation.
+  useEffect(() => {
+    if (layout !== "geo" || !base) return;
+    const latColumn = typeof layoutParams.latColumn === "string" ? layoutParams.latColumn : "";
+    const lonColumn = typeof layoutParams.lonColumn === "string" ? layoutParams.lonColumn : "";
+    if (latColumn === "" || lonColumn === "") {
+      setNotice("Choose the latitude and longitude columns for the geographic layout.");
+      return;
+    }
+    const { parked } = projectGeo(base, latColumn, lonColumn);
+    if (parked.length > 0) {
+      setNotice(
+        `${parked.length} ${parked.length === 1 ? "node has" : "nodes have"} no usable coordinates and sit in the strip below the map.`,
+      );
+    }
+  }, [layout, layoutParams, base]);
+
   /**
    * Metrics run over the graph as currently filtered, matching what the user
    * can see, and land in the document as computed columns.
@@ -879,6 +1304,13 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       if (!base) throw new Error("Load data before computing metrics.");
       const run = await computeMetrics(toMetricGraph(base, options.weightColumn), metrics, options);
       editDoc("computing metrics", (current) => applyComputedColumns(current, run.result));
+      // Remember the instruction, not just the values: the recipe half of
+      // the workspace, replayed by "update data". Identical runs fold.
+      setComputedRuns((current) => {
+        const entry: ComputedRecipe = { metrics, options };
+        const key = JSON.stringify(entry);
+        return [...current.filter((r) => JSON.stringify(r) !== key), entry];
+      });
       return run;
     },
     [base, editDoc],
@@ -985,6 +1417,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
   const handleClearComputed = useCallback(() => {
     editDoc("clearing the computed columns", clearComputedColumns);
+    setComputedRuns([]);
   }, [editDoc]);
 
   /** Open the data table on whichever tab holds the columns just written. */
@@ -994,6 +1427,26 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setPanelOpen("table", true);
     },
     [setPanelOpen],
+  );
+
+  /**
+   * Hop distances from the selected node, written as an ordinary computed
+   * column: the heat-map tool done the columns way, so color ramps, sizes and
+   * range filters all compose with the answer without knowing it is special.
+   */
+  const handleDistancesFrom = useCallback(
+    (id: string) => {
+      if (!base || !doc) return;
+      const name = `Hops from ${labelFor(id)}`;
+      const column = hopsColumn(toMetricGraph(base), id, name);
+      if (!column) return;
+      editDoc(`writing "${name}"`, (current) =>
+        applyComputedColumns(current, { nodeColumns: [column], edgeColumns: [], summary: {} }),
+      );
+      handleShowColumns("nodes");
+      setLiveMessage(`Wrote "${name}" onto the node table.`);
+    },
+    [base, doc, labelFor, editDoc, handleShowColumns],
   );
 
   /**
@@ -1029,6 +1482,30 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     });
   }, []);
 
+  /** The way back out of an exploration: the ego step comes off the chain. */
+  const handleClearExpand = useCallback(() => {
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "ego" && step.enabled) {
+          return current.filter((s) => s.id !== step.id);
+        }
+      }
+      return current;
+    });
+  }, []);
+
+  /**
+   * Whether the selected node already has its distances written, so the
+   * button can offer the way back: deleting the column it wrote.
+   */
+  const distancesColumn = useMemo(() => {
+    if (!doc || selectedId === null) return null;
+    const name = `Hops from ${labelFor(selectedId)}`;
+    const column = doc.nodes.columns.find((c) => c.computed && c.name === name);
+    return column?.name ?? null;
+  }, [doc, selectedId, labelFor]);
+
   const handleEgoDepthChange = useCallback((depth: number) => {
     const clamped = Math.max(1, Math.min(6, depth));
     setChain((current) => {
@@ -1041,6 +1518,156 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       return current;
     });
   }, []);
+
+  /**
+   * The timeline. Its strip is an editor for one ordinary chain step, kind
+   * "timewindow", bound the way the exploration binds its ego step: the last
+   * enabled one. While a brush or playback is in flight the window lives in
+   * `timeDraft` and reaches the canvas as dimming only; committing it writes
+   * the step, which is when the structure, the counts and everything
+   * downstream actually change.
+   */
+  const lastTimewindow = useMemo(() => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const step = chain[i];
+      if (step.kind === "timewindow" && step.enabled) return step;
+    }
+    return null;
+  }, [chain]);
+
+  const [timeDraft, setTimeDraftState] = useState<TimeWindow | null>(null);
+  const timeDraftRef = useRef<TimeWindow | null>(null);
+
+  const handleTimePreview = useCallback((window: TimeWindow) => {
+    timeDraftRef.current = window;
+    setTimeDraftState(window);
+  }, []);
+
+  const handleTimeCommit = useCallback(() => {
+    const draft = timeDraftRef.current;
+    timeDraftRef.current = null;
+    setTimeDraftState(null);
+    if (draft === null) return;
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "timewindow" && step.enabled) {
+          return current.map((s) =>
+            s.id === step.id ? { ...s, min: draft.min, max: draft.max } : s,
+          );
+        }
+      }
+      return current;
+    });
+  }, []);
+
+  const handleTimeColumn = useCallback((option: TimeColumnOption | null) => {
+    timeDraftRef.current = null;
+    setTimeDraftState(null);
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "timewindow" && step.enabled) {
+          if (option === null) return current.filter((s) => s.id !== step.id);
+          return current.map((s) =>
+            s.id === step.id
+              ? { ...s, table: option.table, column: option.column, min: null, max: null }
+              : s,
+          );
+        }
+      }
+      if (option === null) return current;
+      return [
+        ...current,
+        {
+          id: newStepId(),
+          enabled: true,
+          kind: "timewindow",
+          table: option.table,
+          column: option.column,
+          min: null,
+          max: null,
+        },
+      ];
+    });
+  }, []);
+
+  const timeOptions = useMemo(() => (doc ? timeColumns(doc) : []), [doc]);
+
+  /** The in-flight window as dimming, computed over the visible subgraph. */
+  const timelineDim = useMemo<MarkSet | null>(() => {
+    if (timeDraft === null || lastTimewindow === null || base === null) return null;
+    const { column, table } = lastTimewindow;
+    const { min, max } = timeDraft;
+    if (min === null && max === null) return null;
+    const inside = (v: CellValue): boolean => {
+      const t = asTime(v);
+      if (t === null) return false;
+      if (min !== null && t < min) return false;
+      if (max !== null && t > max) return false;
+      return true;
+    };
+    const nodes = new Set<string>();
+    const links = new Set<string>();
+    if (table === "edges") {
+      const lit = new Set<string>();
+      const touched = new Set<string>();
+      for (const link of base.links) {
+        const s = endpointId(link.source);
+        const t = endpointId(link.target);
+        touched.add(s);
+        touched.add(t);
+        if (link.rows.some((r) => inside(r[column]))) {
+          lit.add(s);
+          lit.add(t);
+        } else {
+          links.add(edgeKey(s, t));
+        }
+      }
+      // A node fades when every edge it had fades; one that never had any is
+      // the isolated case, which the committed filter would leave alone too.
+      for (const node of base.nodes) {
+        if (touched.has(node.id) && !lit.has(node.id)) nodes.add(node.id);
+      }
+    } else {
+      for (const node of base.nodes) {
+        if (!inside(node.row[column])) nodes.add(node.id);
+      }
+      for (const link of base.links) {
+        const s = endpointId(link.source);
+        const t = endpointId(link.target);
+        if (nodes.has(s) || nodes.has(t)) links.add(edgeKey(s, t));
+      }
+    }
+    return { nodes, links };
+  }, [timeDraft, lastTimewindow, base]);
+
+  /**
+   * The expansion preview's line checkboxes write the same `where` the Filter
+   * step's own editor writes, on the same ego step, so the two views of the
+   * exploration cannot disagree about which edges are walked.
+   */
+  const handleEgoWhereChange = useCallback(
+    (where: { column: string; values: string[] } | undefined) => {
+      setChain((current) => {
+        for (let i = current.length - 1; i >= 0; i--) {
+          const step = current[i];
+          if (step.kind === "ego" && step.enabled) {
+            return current.map((s) => {
+              if (s.id !== step.id || s.kind !== "ego") return s;
+              if (where === undefined) {
+                const { where: _dropped, ...rest } = s;
+                return rest;
+              }
+              return { ...s, where };
+            });
+          }
+        }
+        return current;
+      });
+    },
+    [],
+  );
 
   /**
    * Clicking a legend entry or a breakdown bar drops a one-value column step
@@ -1081,6 +1708,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       showIsolated,
       preventOverlap,
       pinned: [...pinned],
+      computed: computedRuns,
+      edits: overlay,
     };
   }, [
     doc,
@@ -1094,6 +1723,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     showIsolated,
     preventOverlap,
     pinned,
+    computedRuns,
+    overlay,
   ]);
 
   /** The current session as a link, built on demand because packing costs. */
@@ -1267,11 +1898,17 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         layoutParams={layoutParams}
         preventOverlap={preventOverlap}
         labelMode={labelMode}
+        nodeStyleScope={nodeStyleScope}
+        edgeStyleScope={edgeStyleScope}
+        onNodeStyleScopeChange={setNodeStyleScope}
+        onEdgeStyleScopeChange={setEdgeStyleScope}
         onFile={(f) => void handleFile(f)}
+        onUpdateFile={(f) => void handleUpdateFile(f)}
         onSample={handleSample}
         onClear={handleClear}
         onTableChange={handleTableChange}
         onMappingChange={handleMappingChange}
+        onProject={handleProject}
         onStyleChange={handleStyleChange}
         onChainChange={setChain}
         onShowIsolatedChange={setShowIsolated}
@@ -1283,6 +1920,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         onLayoutParamChange={handleLayoutParamChange}
         onPreventOverlapChange={setPreventOverlap}
         onSeparate={() => canvasRef.current?.separate()}
+        onTidyLabels={() => canvasRef.current?.tidyLabels()}
         onLabelModeChange={setLabelMode}
         onExport={(f) => void handleExport(f)}
         onExportData={handleExportData}
@@ -1338,13 +1976,13 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           className="panel-toggle stats-toggle"
           onClick={() => togglePanel("stats")}
           aria-expanded={!statsCollapsed}
-          title={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
-          aria-label={statsCollapsed ? "Show the statistics panel" : "Hide the statistics panel"}
+          title={statsCollapsed ? "Show the info panel" : "Hide the info panel"}
+          aria-label={statsCollapsed ? "Show the info panel" : "Hide the info panel"}
         >
           <span className="panel-toggle-arrow" aria-hidden="true">
             {statsCollapsed ? "‹" : "›"}
           </span>
-          {statsCollapsed && <span className="panel-toggle-label">Stats</span>}
+          {statsCollapsed && <span className="panel-toggle-label">Info</span>}
         </button>
       )}
 
@@ -1370,6 +2008,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 nodeAttrsFor={nodeAttrsFor}
                 selection={selection}
                 onSelect={handleSelect}
+                highlightPath={pathHighlight}
+                dimmed={timelineDim}
                 seedPositions={seedPositionsRef}
                 allowRemoteImages={allowRemoteImages}
                 pinned={pinned}
@@ -1423,6 +2063,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                     hidden={hiddenOverlays}
                     collapsed={collapsed}
                     legendAvailable={showLegend}
+                    timelineAvailable={timeOptions.length > 0}
                     theme={themePref}
                     onThemeChange={setThemePref}
                     motion={motionPref}
@@ -1460,6 +2101,20 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   onCornerChange={setLegendCorner}
                   onToggleValueFilter={handleToggleValueFilter}
                   onHide={() => setOverlayVisible("legend", false)}
+                />
+              )}
+              {timeOptions.length > 0 && !hiddenOverlays.has("timeline") && (
+                <Timeline
+                  doc={doc}
+                  options={timeOptions}
+                  step={lastTimewindow}
+                  draft={timeDraft}
+                  corner={timelineCorner}
+                  onCornerChange={setTimelineCorner}
+                  onPickColumn={handleTimeColumn}
+                  onPreview={handleTimePreview}
+                  onCommit={handleTimeCommit}
+                  onHide={() => setOverlayVisible("timeline", false)}
                 />
               )}
               {graph.nodes.length === 0 && (
@@ -1606,6 +2261,11 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             </div>
           )}
           {dragOver && <div className="drop-veil">Drop to load</div>}
+          {/* Announcements from the path and distance tools, which answer
+              without moving focus anywhere a screen reader would follow. */}
+          <div className="visually-hidden" role="status" aria-live="polite">
+            {liveMessage}
+          </div>
         </main>
 
         {doc && (
@@ -1642,7 +2302,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         <>
           <div
             className="resizer resizer-stats"
-            aria-label="Statistics width"
+            aria-label="Info panel width"
             {...stats.handleProps}
           />
           <StatsPanel
@@ -1664,6 +2324,20 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
             egoDepth={lastEgo?.depth ?? null}
             onExpandFrom={handleExpandFrom}
             onEgoDepthChange={handleEgoDepthChange}
+            onClearExpand={handleClearExpand}
+            egoWhere={lastEgo?.where}
+            onEgoWhereChange={handleEgoWhereChange}
+            pathArmed={pathFrom !== null}
+            onPathFrom={handlePathFrom}
+            onCancelPath={cancelPath}
+            onDistancesFrom={handleDistancesFrom}
+            distancesColumn={distancesColumn}
+            onRemoveDistances={(column) => handleDeleteColumn("nodes", column)}
+            pathResult={pathResult}
+            pathDirected={pathDirected}
+            onPathDirectedChange={handlePathDirectedChange}
+            onPickRoute={handlePickRoute}
+            onClearPath={clearPath}
             onToggleValueFilter={handleToggleValueFilter}
             onSelectNode={handleSelectNode}
             onClose={() => setPanelOpen("stats", false)}

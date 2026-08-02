@@ -1,11 +1,19 @@
 import { useMemo } from "react";
 import type { Column, ColumnFilter, Row } from "../types";
 import { columnRange, distinctValues } from "../lib/graph";
+import { computeBins, numericValues } from "../lib/histogram";
+import { Histogram } from "./Histogram";
 
 interface ColumnConditionProps {
   rows: Row[];
   column: Column;
   value: ColumnFilter;
+  /**
+   * Rows to draw the range histogram over, when the caller can say what the
+   * condition will actually be tested against: a chain step passes the rows
+   * entering it. Left out, there is no histogram, just the inputs.
+   */
+  binRows?: Row[];
   onChange: (filter: ColumnFilter) => void;
 }
 
@@ -16,9 +24,17 @@ const MAX_VALUE_ROWS = 40;
  * for numbers. Shared by the filter chain and anything else that needs to
  * express "this column, these values".
  */
-export function ColumnCondition({ rows, column, value, onChange }: ColumnConditionProps) {
+export function ColumnCondition({ rows, column, value, binRows, onChange }: ColumnConditionProps) {
   if (column.type === "number") {
-    return <RangeCondition rows={rows} column={column} value={value} onChange={onChange} />;
+    return (
+      <RangeCondition
+        rows={rows}
+        column={column}
+        value={value}
+        binRows={binRows}
+        onChange={onChange}
+      />
+    );
   }
   return <ValueCondition rows={rows} column={column} value={value} onChange={onChange} />;
 }
@@ -63,9 +79,14 @@ function ValueCondition({ rows, column, value, onChange }: ColumnConditionProps)
   );
 }
 
-function RangeCondition({ rows, column, value, onChange }: ColumnConditionProps) {
+function RangeCondition({ rows, column, value, binRows, onChange }: ColumnConditionProps) {
   const range = useMemo(() => columnRange(rows, column.name), [rows, column]);
   const current = value.kind === "range" ? value : { kind: "range" as const, min: null, max: null };
+
+  const bins = useMemo(
+    () => (binRows === undefined ? null : computeBins(numericValues(binRows, column.name))),
+    [binRows, column.name],
+  );
 
   const update = (part: "min" | "max", raw: string) => {
     const parsed = raw.trim() === "" ? null : Number(raw);
@@ -73,22 +94,33 @@ function RangeCondition({ rows, column, value, onChange }: ColumnConditionProps)
   };
 
   return (
-    <div className="filter-range">
-      <input
-        type="number"
-        placeholder={range ? String(range.min) : "min"}
-        value={current.min ?? ""}
-        onChange={(e) => update("min", e.target.value)}
-        aria-label={`Minimum ${column.name}`}
-      />
-      <span>to</span>
-      <input
-        type="number"
-        placeholder={range ? String(range.max) : "max"}
-        value={current.max ?? ""}
-        onChange={(e) => update("max", e.target.value)}
-        aria-label={`Maximum ${column.name}`}
-      />
-    </div>
+    <>
+      {bins && (
+        <Histogram
+          bins={bins}
+          min={current.min}
+          max={current.max}
+          label={column.name}
+          onChange={(min, max) => onChange({ ...current, min, max })}
+        />
+      )}
+      <div className="filter-range">
+        <input
+          type="number"
+          placeholder={range ? String(range.min) : "min"}
+          value={current.min ?? ""}
+          onChange={(e) => update("min", e.target.value)}
+          aria-label={`Minimum ${column.name}`}
+        />
+        <span>to</span>
+        <input
+          type="number"
+          placeholder={range ? String(range.max) : "max"}
+          value={current.max ?? ""}
+          onChange={(e) => update("max", e.target.value)}
+          aria-label={`Maximum ${column.name}`}
+        />
+      </div>
+    </>
   );
 }

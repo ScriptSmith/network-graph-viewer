@@ -11,6 +11,7 @@ import { buildDoc } from "../doc";
 import { applyStyle, buildBaseGraph } from "../graph";
 import { groupColorMap } from "../../theme";
 import { guessStyle } from "../parse";
+import { parseDot, writeDot } from "./dot";
 import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
 import { parseWorkspace, writeWorkspace } from "./ngv";
@@ -80,6 +81,154 @@ test("GraphML survives a round trip", () => {
   expect(summarize(back)).toEqual(summarize(doc));
   expect(back.edges.rows[0].Department).toBe(doc.edges.rows[0].Department);
   expect(back.edges.columns.find((c: Column) => c.name === "Years together")?.type).toBe("number");
+});
+
+test("DOT survives a round trip, positions and all", () => {
+  const graph = styled(doc);
+  const text = writeDot({ doc, graph, style, colors: groupColorMap(graph.groups) });
+  const { doc: back, positions } = parseDot(text, "round-trip");
+
+  expect(text.startsWith("digraph ")).toBe(true);
+  expect(summarize(back)).toEqual(summarize(doc));
+
+  const original = doc.edges.rows[0];
+  const roundTripped = back.edges.rows.find(
+    (r: Row) =>
+      r.Source === original[doc.mapping.source] && r.Target === original[doc.mapping.target],
+  );
+  expect(roundTripped?.Department).toBe(original.Department);
+  expect(roundTripped?.["Meetings per month"]).toBe(original["Meetings per month"]);
+
+  const alex = graph.nodes.find((n) => n.id === "Alex Rivera");
+  expect(positions?.get("Alex Rivera")?.x).toBeCloseTo(alex?.x ?? 0, 1);
+  expect(positions?.get("Alex Rivera")?.y).toBeCloseTo(alex?.y ?? 0, 1);
+});
+
+/**
+ * `pos` defaults to the origin, and every node pinned to the origin is one
+ * pile, so a graph that has not been laid out has to leave both the pins and
+ * the engine that honours them out and let Graphviz place it.
+ */
+test("DOT leaves out the pins when the graph has no positions", () => {
+  const graph = applyStyle(buildBaseGraph(doc), doc, style);
+  const text = writeDot({ doc, graph, style, colors: groupColorMap(graph.groups) });
+  expect(text).not.toContain("pos=");
+  expect(text).not.toContain("neato");
+  expect(parseDot(text, "x").positions).toBeUndefined();
+});
+
+/**
+ * Everything the language does that two tables cannot hold: defaults standing
+ * in front of the rows they apply to, a chain that is really its pairs, an
+ * endpoint that is really a set of them, a cluster, a port, and the three
+ * kinds of comment.
+ */
+const DOT_SOURCE = `
+/* A team, drawn. */
+digraph teams {
+  node [type="person"];
+  edge [via="email"];
+  a [label="Alex", pos="10,20!"];
+  b;
+  a -> b -> c [weight=2];   // the chain is its pairs
+  subgraph cluster_ops {
+    label = "Operations";
+    d; e;
+  }
+  { d e } -> f;
+  a:port:se -> f;
+# a line the preprocessor left behind
+  g;
+}
+`;
+
+test("DOT flattens what the two tables cannot hold", () => {
+  const { doc: back, positions, style: stated } = parseDot(DOT_SOURCE, "teams.dot");
+
+  expect(back.nodes.rows.map((r: Row) => r.Id)).toEqual(["a", "b", "c", "d", "e", "f", "g"]);
+  expect(back.edges.rows.map((r: Row) => `${r.Source}->${r.Target}`)).toEqual([
+    "a->b",
+    "b->c",
+    "d->f",
+    "e->f",
+    "a->f",
+  ]);
+  // The id a DOT file writes is a name already, so it stays the id and the
+  // label becomes what the nodes are called on screen.
+  expect(stated).toEqual({ nodeLabel: "column:label" });
+  expect(back.nodes.rows[0].label).toBe("Alex");
+
+  // A default block reaches every row declared after it.
+  expect(back.nodes.rows.every((r: Row) => r.type === "person")).toBe(true);
+  expect(back.edges.rows.every((r: Row) => r.via === "email")).toBe(true);
+  // One attribute list at the end of a chain applies to every pair in it.
+  expect(back.edges.rows.slice(0, 2).map((r: Row) => r.weight)).toEqual([2, 2]);
+  expect(back.edges.columns.find((c: Column) => c.name === "weight")?.type).toBe("number");
+
+  // A cluster is a grouping rather than a shared setting, so it lands as one.
+  const cluster = (id: string) => back.nodes.rows.find((r: Row) => r.Id === id)?.Cluster;
+  expect([cluster("d"), cluster("e"), cluster("a")]).toEqual(["Operations", "Operations", null]);
+
+  // `pos` is geometry, not data: it becomes a position and not a column.
+  expect(positions?.get("a")).toEqual({ x: 10, y: -20 });
+  expect(back.nodes.columns.map((c: Column) => c.name)).not.toContain("pos");
+});
+
+test("an undirected DOT graph arrives without arrowheads", () => {
+  const { doc: back, style: stated } = parseDot("strict graph { a -- b -- c }", "x");
+  expect(stated).toEqual({ arrows: false });
+  expect(back.edges.rows).toHaveLength(2);
+});
+
+test("DOT names survive quoting, escapes, joining and HTML", () => {
+  const { doc: back } = parseDot(
+    'digraph { "a \\"quoted\\" name" -> "one " + "long name"; c [label=<<b>Bold</b> &amp; plain>]; }',
+    "x",
+  );
+  const ids = back.nodes.rows.map((r: Row) => r.Id);
+  expect(ids).toEqual(['a "quoted" name', "one long name", "c"]);
+  // Markup has nowhere to go in a table, so an HTML label arrives as its text.
+  expect(back.nodes.rows[2].label).toBe("Bold & plain");
+});
+
+/**
+ * A record's label is its field layout rather than its name, which is why the
+ * ids here are left alone: promoting labels to ids the way the GEXF and
+ * GraphML readers do would name every node after a pile of pipes and braces.
+ */
+test("DOT keeps the ids a record label would have replaced", () => {
+  const { doc: back } = parseDot(
+    'digraph structs { node [shape=record]; s1 [label="<f0> left|<f1> right"]; ' +
+      's2 [label="<f0> one|<f1> two"]; s1:f1 -> s2:f0; }',
+    "x",
+  );
+  expect(back.nodes.rows.map((r: Row) => r.Id)).toEqual(["s1", "s2"]);
+  expect(back.edges.rows).toEqual([{ Source: "s1", Target: "s2" }]);
+});
+
+/**
+ * DOT arrives from a dropped file, a gist and a shared link alike, so a
+ * truncated or nonsense one has to reach a sentence the reader can act on
+ * rather than a missing property, and it has to get there at all: a parser
+ * that stops consuming tokens without stopping is a hung tab.
+ */
+test("malformed DOT says so instead of spinning or throwing at random", () => {
+  const bad = [
+    "",
+    "digraph",
+    "digraph {",
+    "digraph { a -> ",
+    "digraph { a [",
+    "digraph { a [x=",
+    "digraph { , }",
+    'digraph { "unclosed }',
+    "digraph { <unclosed }",
+    "graph { subgraph cluster_a { b }",
+    "not a graph at all",
+  ];
+  for (const text of bad) {
+    expect(() => parseDot(text, "x"), text).toThrow(/^That DOT file/);
+  }
 });
 
 test("a workspace round trip restores the whole session", () => {
@@ -308,11 +457,16 @@ test("unrecognised chain steps, layouts, styles and positions are dropped, not o
 test("formats are detected from the name or, failing that, the content", () => {
   expect(detectFormat("x.gexf", "")).toBe("gexf");
   expect(detectFormat("x.graphml", "")).toBe("graphml");
+  expect(detectFormat("x.dot", "")).toBe("dot");
+  expect(detectFormat("x.gv", "")).toBe("dot");
   expect(detectFormat("x.ngv.json", "")).toBe("workspace");
   expect(detectFormat("mystery", '<?xml version="1.0"?><gexf version="1.3">')).toBe("gexf");
   expect(detectFormat("mystery", '<graphml xmlns="x">')).toBe("graphml");
   expect(detectFormat("mystery", '{"format":"network-graph-viewer"}')).toBe("workspace");
+  expect(detectFormat("mystery", "// a graph\nstrict digraph G {\n  a -> b\n}")).toBe("dot");
   expect(detectFormat("mystery", "a,b\n1,2")).toBe("delimited");
+  // A header that opens with the word is still a spreadsheet, not a drawing.
+  expect(detectFormat("mystery", "graph,nodes\n1,2")).toBe("delimited");
 });
 
 test("gist ids are recovered from every URL shape GitHub hands out", () => {

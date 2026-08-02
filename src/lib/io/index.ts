@@ -2,6 +2,7 @@ import type { Dataset, Graph, GraphDoc, GraphStyle } from "../../types";
 import type { Palette } from "../../theme";
 import { buildDoc } from "../doc";
 import { parsePastedText } from "../parse";
+import { parseDot, writeDot } from "./dot";
 import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
 import { looksLikeWorkspace, parseWorkspace, writeWorkspace, type WorkspaceInput } from "./ngv";
@@ -14,6 +15,7 @@ export { NGV_EXTENSION, writeWorkspace } from "./ngv";
 export { parseWorkspace, looksLikeWorkspace } from "./ngv";
 export { writeGexf } from "./gexf";
 export { writeGraphml } from "./graphml";
+export { writeDot } from "./dot";
 export { exportHtml } from "./html";
 export * from "./gist";
 export * from "./url";
@@ -26,21 +28,41 @@ export async function writeDataLink(input: WorkspaceInput, href?: string): Promi
   return dataLink(await encodePayload(writeWorkspace(input, { pretty: false })), href);
 }
 
-export const TEXT_EXTENSIONS = [".gexf", ".graphml", ".xml", ".json", ".csv", ".tsv", ".txt"];
+export const TEXT_EXTENSIONS = [
+  ".gexf",
+  ".graphml",
+  ".dot",
+  ".gv",
+  ".xml",
+  ".json",
+  ".csv",
+  ".tsv",
+  ".txt",
+];
 
-export type TextFormat = "gexf" | "graphml" | "workspace" | "delimited";
+export type TextFormat = "gexf" | "graphml" | "dot" | "workspace" | "delimited";
+
+/** A DOT header, once the comments a file can open with are out of the way. */
+const DOT_HEADER = /^\s*(?:strict\s+)?(?:di)?graph\b[^,]*\{/i;
+
+function looksLikeDot(head: string): boolean {
+  const bare = head.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*(\/\/|#).*$/gm, "");
+  return DOT_HEADER.test(bare);
+}
 
 /** Work out a format from the file name, falling back to sniffing the text. */
 export function detectFormat(name: string, text: string): TextFormat {
   const lowered = name.toLowerCase();
   if (lowered.endsWith(".gexf")) return "gexf";
   if (lowered.endsWith(".graphml")) return "graphml";
+  if (lowered.endsWith(".dot") || lowered.endsWith(".gv")) return "dot";
   if (lowered.endsWith(".ngv.json")) return "workspace";
 
   const head = text.slice(0, 2000);
   if (/<gexf[\s>]/i.test(head)) return "gexf";
   if (/<graphml[\s>]/i.test(head)) return "graphml";
   if (looksLikeWorkspace(head)) return "workspace";
+  if (looksLikeDot(head)) return "dot";
   return "delimited";
 }
 
@@ -57,6 +79,8 @@ export async function parseText(
       return parseGexf(text, name);
     case "graphml":
       return parseGraphml(text, name);
+    case "dot":
+      return parseDot(text, name);
     case "workspace":
       return parseWorkspace(text, name);
     case "delimited": {
@@ -66,7 +90,7 @@ export async function parseText(
   }
 }
 
-export type ExportFormat = "gexf" | "graphml" | "workspace" | "csv";
+export type ExportFormat = "gexf" | "graphml" | "dot" | "workspace" | "csv";
 
 export interface ExportInput extends WorkspaceInput {
   doc: GraphDoc;
@@ -141,6 +165,20 @@ export function exportAs(format: ExportFormat, input: ExportInput): ExportedFile
         name: `${base}.graphml`,
         mime: "application/xml",
         content: writeGraphml(input.doc),
+      };
+    case "dot":
+      return {
+        name: `${base}.dot`,
+        mime: "text/vnd.graphviz",
+        content: input.graph
+          ? writeDot({
+              doc: input.doc,
+              graph: input.graph,
+              style: input.style,
+              palette: input.palette,
+              colors: input.colors,
+            })
+          : "",
       };
     case "workspace":
       return {

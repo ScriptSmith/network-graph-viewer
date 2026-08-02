@@ -658,6 +658,15 @@ export function Sidebar({
             >
               GraphML
             </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!graph}
+              onClick={() => onExportData("dot")}
+              title="Graphviz's format, carrying the colours and sizes on screen"
+            >
+              DOT
+            </button>
           </div>
           <div className="btn-row">
             <button

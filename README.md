@@ -19,6 +19,7 @@ Turn a spreadsheet edge list into an interactive network graph, in your browser 
 - Parquet is read column-typed straight from its own schema, so a zero-padded id column stays text instead of being guessed into a number, and only the byte ranges the file actually needs are read
 - Paste cells straight from Excel or Google Sheets
 - Import GEXF and GraphML, including node and edge attributes and Gephi's saved positions
+- Import Graphviz DOT (`.dot`, `.gv`): defaults, subgraphs and edge chains are flattened onto the tables, clusters arrive as a node column, and a file Graphviz has already laid out keeps its positions
 - Open a `#data=…` link and the graph it carries is already there; nothing is fetched
 - Load from a public GitHub gist by URL or id, or share a `?gist=…` link that opens straight into the graph
 - A workbook with several sheets can use one as the edges and another as node attributes
@@ -89,6 +90,7 @@ access.
 - SVG and PNG of the current view
 - GEXF including positions and colours, so Gephi opens it looking like it did here
 - GraphML with typed attribute keys
+- Graphviz DOT carrying the colours and sizes on screen, and, for a graph that has been laid out, every node pinned where it sits so `neato` draws the same picture
 - A `.ngv.json` workspace holding everything: both tables, the filter chain, styling, layout and node positions
 - CSV of the edge table
 - A link with the whole workspace deflated into its fragment, so sharing the graph is sharing a URL and the data still never reaches a server
@@ -154,5 +156,5 @@ uv run pytest --nbmake examples/demo.ipynb
 - [anywidget](https://anywidget.dev/) for the Jupyter widget
 - [TanStack Table](https://tanstack.com/table) and [TanStack Virtual](https://tanstack.com/virtual) for the data grid
 - [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten) for the script sandbox
-- GEXF and GraphML are read and written with the platform's own `DOMParser`
+- GEXF and GraphML are read and written with the platform's own `DOMParser`; DOT has a hand-written lexer and parser, since it is neither XML nor a table
 - Deployed with GitHub Pages

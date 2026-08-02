@@ -1,7 +1,7 @@
 # Network Graph Viewer
 
 A client-only Vite + React 19 + TypeScript SPA that turns edge lists
-(CSV/Excel/Parquet/GEXF/GraphML) into interactive network graphs. No backend;
+(CSV/Excel/Parquet/GEXF/GraphML/DOT) into interactive network graphs. No backend;
 files are parsed in memory. Deployed to GitHub Pages by
 `.github/workflows/deploy.yml` on push to `main`. The same app is also a
 Jupyter widget, packaged from `python/`.
@@ -103,7 +103,7 @@ way to change data is the data table, which edits the underlying rows.
   base64, raw SVG markup) into something an `<image>` can draw, or null.
   Nothing else is let through: a cell is untrusted text. `isRemoteSource` marks
   the `https` ones, which the canvas holds back until the reader allows them.
-- `src/lib/io/` - GEXF, GraphML, the native `.ngv.json` workspace, gists, and
+- `src/lib/io/` - GEXF, GraphML, DOT, the native `.ngv.json` workspace, gists, and
   `url.ts`, which packs a workspace into a link's fragment and reads one back.
   Data goes in the fragment and is read back from the fragment only: fragments
   are not sent with the request, so a shared graph stays as private as a dropped
@@ -114,6 +114,20 @@ way to change data is the data table, which edits the underlying rows.
   the shell's ids), shipped as a plain page asset and fetched at export time;
   the workspace JSON spells `<` as the JSON escape `\u003c` so a cell holding
   `</script>` cannot close the tag, and `html.test.ts` holds that promise.
+  `dot.ts` is Graphviz's language, and the one format here that is neither XML
+  nor a table, so it carries its own lexer and recursive-descent parser.
+  Everything the language does that two tables cannot hold is flattened: an
+  edge chain becomes its pairs, an endpoint that is a subgraph becomes the
+  product of its nodes, and a `node` or `edge` default block folds into the
+  rows declared after it. Clusters survive that as a node column, since a
+  cluster is a grouping rather than a shared setting. Nothing declares a type,
+  so columns are inferred from the values the way a CSV's are, and `pos`
+  becomes positions rather than a column. A DOT id is written to be read, so
+  unlike the GEXF and GraphML readers this one never promotes a label to an
+  id: a record's label is its field layout, not its name. Where a file states
+  something the columns cannot, it comes back as `ImportedGraph.style`, which
+  `App.tsx` lays over `guessStyle`: an undirected `graph` means no arrowheads,
+  and a label column means the display name is pointed at it.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
   table's cell edits, row adds and row deletes. `coalesceById` is what makes a
   rename onto an existing id a merge rather than a ghost row the graph ignores.

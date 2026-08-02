@@ -4,7 +4,8 @@ import { asNumber } from "../parse";
 /**
  * Shared plumbing for the two XML graph formats. Both are read with the
  * platform's own DOMParser and written with XMLSerializer, which is why
- * neither needs a library.
+ * neither needs a library. The parts that are about tables rather than about
+ * XML (`coerce`, `cellToText`, `tableFrom`, `uniqueName`) are DOT's too.
  */
 
 export const SVG_NS = "http://www.w3.org/2000/svg";
@@ -42,11 +43,18 @@ export function declaredTypeFor(type: ColumnType): string {
   return "string";
 }
 
-/** Coerce a raw XML attribute string into the column's type. */
+/**
+ * Coerce a raw attribute string into the column's type. "yes" counts as true
+ * because the type inference behind a DOT column counts it as a boolean; the
+ * two XML formats spell their booleans out.
+ */
 export function coerce(raw: string, type: ColumnType): CellValue {
   if (raw === "") return null;
   if (type === "number") return asNumber(raw);
-  if (type === "bool") return raw.toLowerCase() === "true";
+  if (type === "bool") {
+    const word = raw.trim().toLowerCase();
+    return word === "true" || word === "yes";
+  }
   return raw;
 }
 

@@ -493,13 +493,15 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
   const adoptImported = useCallback(
     (imported: ImportedGraph & { workspace?: import("./lib/io").Workspace }) => {
-      const { doc: next, positions, workspace } = imported;
+      const { doc: next, positions, style: stated, workspace } = imported;
       setDataset(null);
       setEdgeTableIndex(0);
       setNodeTableIndex(null);
       seedPositionsRef.current = positions ?? null;
       resetDoc(next, workspace?.edits ? overlayFromJson(workspace.edits) : undefined);
-      setStyle(workspace?.style ?? guessStyle(next.edges, next.mapping, next.nodes));
+      setStyle(
+        workspace?.style ?? { ...guessStyle(next.edges, next.mapping, next.nodes), ...stated },
+      );
       setChain(workspace?.chain ?? []);
       setComputedRuns(workspace?.computed ?? []);
       setShowIsolated(workspace?.showIsolated ?? next.nodesDeclared);
@@ -2320,7 +2322,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   </p>
                   <button type="button" className="dropzone" onClick={pickAnyFile}>
                     <strong>Drop a file here or click to browse</strong>
-                    <span className="hint">.csv · .xlsx · .parquet · .gexf · .graphml</span>
+                    <span className="hint">.csv · .xlsx · .parquet · .gexf · .graphml · .dot</span>
                   </button>
                   <p className="example-caption">
                     Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).

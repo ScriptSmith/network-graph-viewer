@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   clearToken,
   gistLink,
@@ -9,6 +9,10 @@ import {
   writeToken,
   type ExportedFile,
 } from "../lib/io";
+
+/** How long the button holds its answer. Long enough to be seen, short
+ *  enough that it is gone before the next click. */
+const COPIED_MS = 1800;
 
 interface SharePanelProps {
   /** False with no data loaded: nothing to share, but a typed token is kept. */
@@ -42,6 +46,7 @@ export function SharePanel({
 }: SharePanelProps) {
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const [building, setBuilding] = useState(false);
   const [token, setToken] = useState(() => readToken() ?? "");
   const [remember, setRemember] = useState(isTokenRemembered);
@@ -61,10 +66,19 @@ export function SharePanel({
     setGistId(loadedGistId ?? "");
   }
 
+  // The clipboard takes the link silently, so the button is the only place the
+  // click can show for anything: it fills in and says so for a moment. The
+  // state is dropped first, so a second copy replays the flash rather than
+  // sitting through the tail of the first one.
+  const held = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(held.current), []);
+
   const share = async () => {
     setCopied(false);
+    setBlocked(false);
     setError(null);
     setBuilding(true);
+    window.clearTimeout(held.current);
     try {
       const url = await buildLink();
       if (!url) return;
@@ -72,9 +86,11 @@ export function SharePanel({
       try {
         await navigator.clipboard.writeText(url);
         setCopied(true);
+        held.current = window.setTimeout(() => setCopied(false), COPIED_MS);
       } catch {
         // Clipboards are refused outside a secure context and behind some
         // permission prompts; the field below still holds the link.
+        setBlocked(true);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not build a link.");
@@ -114,13 +130,29 @@ export function SharePanel({
     <div className="share">
       <button
         type="button"
-        className="btn"
+        className={copied ? "btn share-copy is-copied" : "btn share-copy"}
         disabled={building || !ready}
         onClick={() => void share()}
         title="A link with the whole graph packed into it"
       >
-        {building ? "Building…" : "Copy link"}
+        {copied && (
+          <svg className="share-tick" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M3 8.5 6.5 12 13 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+        {building ? "Building…" : copied ? "Copied" : "Copy link"}
       </button>
+      {/* The button's own label changes too fast to be read out reliably. */}
+      <span className="visually-hidden" role="status">
+        {copied ? "Link copied to the clipboard." : ""}
+      </span>
       {link && (
         <>
           <input
@@ -131,6 +163,12 @@ export function SharePanel({
             onFocus={(e) => e.currentTarget.select()}
             aria-label="Link to this graph"
           />
+          {blocked && (
+            <p className="warn">
+              This browser would not let the page reach the clipboard. The link is in the field
+              above; copy it from there.
+            </p>
+          )}
           {tooLong ? (
             <p className="warn">
               {link.length.toLocaleString()} characters. Some mail and chat clients cut links
@@ -138,8 +176,8 @@ export function SharePanel({
             </p>
           ) : (
             <p className="note">
-              {copied ? "Copied. " : ""}The whole graph rides in the # part of the link, which
-              browsers never send to a server.
+              The whole graph rides in the # part of the link, which browsers never send to a
+              server.
             </p>
           )}
         </>

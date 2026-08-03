@@ -2717,6 +2717,62 @@ input.swatch::-moz-color-swatch {
   font-size: 10.5px;
 }
 
+/* Copying is a click that leaves nothing behind, so the button answers for
+   it: filled, ticked and reading "Copied" for a moment, then fading back.
+   The fill and the tick are the state and stand without either animation, so
+   reduced motion loses the pop and the fade and keeps the answer. */
+.share-copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition:
+    background-color 260ms ease,
+    border-color 260ms ease,
+    color 260ms ease;
+}
+
+.share-copy.is-copied,
+.share-copy.is-copied:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  /* Arriving is instant, leaving is the fade above. */
+  transition-duration: 0s;
+  animation: copy-pop 320ms ease-out;
+}
+
+.share-tick {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+/* Drawn on, from the dash offset that hides it to the 0 it rests at. */
+.share-tick path {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 0;
+  animation: copy-tick 280ms ease-out;
+}
+
+@keyframes copy-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes copy-tick {
+  from {
+    stroke-dashoffset: 16;
+  }
+}
+
 /* The link is long by nature, so it gets a field of its own to sit in and
    select from rather than being wrapped into the note beside it. */
 .share-url {
@@ -4258,10 +4314,14 @@ input.swatch::-moz-color-swatch {
 
 /* Movement, resolved by the app into `data-motion` on the root that owns it,
    the way the theme is: the system preference is the default and the View menu
-   can override it either way. `:host` as well, for the shadow-rooted embed. */
+   can override it either way. `:host` as well, for the shadow-rooted embed.
+   Animations go the same way as transitions, so anything an animation says
+   has to hold on its own at the end of it: what these rules leave is the
+   final frame, arrived at instantly. */
 :root[data-motion="reduced"] *,
 :host([data-motion="reduced"]) * {
   transition: none !important;
+  animation: none !important;
 }
 
 /* Until the app has stamped an answer, the system preference stands. */
@@ -4269,5 +4329,6 @@ input.swatch::-moz-color-swatch {
   :root:not([data-motion]) *,
   :host(:not([data-motion])) * {
     transition: none !important;
+    animation: none !important;
   }
 }

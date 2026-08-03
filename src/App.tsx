@@ -2322,7 +2322,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   </p>
                   <button type="button" className="dropzone" onClick={pickAnyFile}>
                     <strong>Drop a file here or click to browse</strong>
-                    <span className="hint">.csv · .xlsx · .parquet · .gexf · .graphml · .dot</span>
+                    <span className="hint">
+                      .csv · .xlsx · .parquet · .json · .gexf · .graphml · .dot
+                    </span>
                   </button>
                   <p className="example-caption">
                     Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).

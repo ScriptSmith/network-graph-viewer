@@ -5,6 +5,7 @@ import { parsePastedText } from "../parse";
 import { parseDot, writeDot } from "./dot";
 import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
+import { JSON_EXTENSIONS, looksLikeJson, parseJson } from "./json";
 import { looksLikeWorkspace, parseWorkspace, writeWorkspace, type WorkspaceInput } from "./ngv";
 import type { ImportedGraph } from "./types";
 import { dataLink, encodePayload } from "./url";
@@ -34,13 +35,13 @@ export const TEXT_EXTENSIONS = [
   ".dot",
   ".gv",
   ".xml",
-  ".json",
+  ...JSON_EXTENSIONS,
   ".csv",
   ".tsv",
   ".txt",
 ];
 
-export type TextFormat = "gexf" | "graphml" | "dot" | "workspace" | "delimited";
+export type TextFormat = "gexf" | "graphml" | "dot" | "workspace" | "json" | "delimited";
 
 /** A DOT header, once the comments a file can open with are out of the way. */
 const DOT_HEADER = /^\s*(?:strict\s+)?(?:di)?graph\b[^,]*\{/i;
@@ -61,8 +62,13 @@ export function detectFormat(name: string, text: string): TextFormat {
   const head = text.slice(0, 2000);
   if (/<gexf[\s>]/i.test(head)) return "gexf";
   if (/<graphml[\s>]/i.test(head)) return "graphml";
+  // A workspace is JSON too, and the one JSON this app wrote itself, so it is
+  // recognised before the name gets a say and before anything else opens a
+  // brace.
   if (looksLikeWorkspace(head)) return "workspace";
+  if (JSON_EXTENSIONS.some((ext) => lowered.endsWith(ext))) return "json";
   if (looksLikeDot(head)) return "dot";
+  if (looksLikeJson(head)) return "json";
   return "delimited";
 }
 
@@ -81,6 +87,8 @@ export async function parseText(
       return parseGraphml(text, name);
     case "dot":
       return parseDot(text, name);
+    case "json":
+      return parseJson(text, name);
     case "workspace":
       return parseWorkspace(text, name);
     case "delimited": {

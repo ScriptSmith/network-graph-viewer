@@ -158,8 +158,11 @@ const IMAGE_URL = /\.(png|jpe?g|gif|webp|svg|avif)([?#]|$)/i;
  * What a text column's values are for, when they say so almost unanimously.
  * Deliberately strict: a wrong role hangs the wrong affordance on every cell,
  * where no role costs one trip to the column menu.
+ *
+ * Exported for the readers whose files declare the type but not the role: JSON
+ * says whether a value is a string, never whether that string is a colour.
  */
-function inferColumnRole(
+export function inferColumnRole(
   rows: Row[],
   column: string,
   type: Column["type"],

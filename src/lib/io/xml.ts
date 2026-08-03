@@ -5,7 +5,8 @@ import { asNumber } from "../parse";
  * Shared plumbing for the two XML graph formats. Both are read with the
  * platform's own DOMParser and written with XMLSerializer, which is why
  * neither needs a library. The parts that are about tables rather than about
- * XML (`coerce`, `cellToText`, `tableFrom`, `uniqueName`) are DOT's too.
+ * XML (`coerce`, `cellToText`, `tableFrom`, `uniqueName`) are DOT's and JSON's
+ * too.
  */
 
 export const SVG_NS = "http://www.w3.org/2000/svg";

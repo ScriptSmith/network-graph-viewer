@@ -18,6 +18,7 @@ Turn a spreadsheet edge list into an interactive network graph, in your browser 
 - Upload Excel (`.xlsx`, `.xls`, `.ods`), CSV or Parquet files; everything is parsed in memory and never leaves the browser
 - Parquet is read column-typed straight from its own schema, so a zero-padded id column stays text instead of being guessed into a number, and only the byte ranges the file actually needs are read
 - Paste cells straight from Excel or Google Sheets
+- Import JSON and line-delimited JSON (`.json`, `.jsonl`, `.ndjson`): an array of records reads as an edge table, and node-link, the shape d3 and NetworkX write, arrives as nodes and edges at once with the attributes already on the nodes. JSON states its own types, so a zero-padded id stays text here too
 - Import GEXF and GraphML, including node and edge attributes and Gephi's saved positions
 - Import Graphviz DOT (`.dot`, `.gv`): defaults, subgraphs and edge chains are flattened onto the tables, clusters arrive as a node column, and a file Graphviz has already laid out keeps its positions
 - Open a `#data=…` link and the graph it carries is already there; nothing is fetched

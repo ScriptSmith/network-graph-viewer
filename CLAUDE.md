@@ -1,7 +1,8 @@
 # Network Graph Viewer
 
 A client-only Vite + React 19 + TypeScript SPA that turns edge lists
-(CSV/Excel/Parquet/GEXF/GraphML/DOT) into interactive network graphs. No backend;
+(CSV/Excel/Parquet/JSON/GEXF/GraphML/DOT) into interactive network graphs. No
+backend;
 files are parsed in memory. Deployed to GitHub Pages by
 `.github/workflows/deploy.yml` on push to `main`. The same app is also a
 Jupyter widget, packaged from `python/`.
@@ -103,8 +104,9 @@ way to change data is the data table, which edits the underlying rows.
   base64, raw SVG markup) into something an `<image>` can draw, or null.
   Nothing else is let through: a cell is untrusted text. `isRemoteSource` marks
   the `https` ones, which the canvas holds back until the reader allows them.
-- `src/lib/io/` - GEXF, GraphML, DOT, the native `.ngv.json` workspace, gists, and
-  `url.ts`, which packs a workspace into a link's fragment and reads one back.
+- `src/lib/io/` - GEXF, GraphML, DOT, JSON, the native `.ngv.json` workspace,
+  gists, and `url.ts`, which packs a workspace into a link's fragment and reads
+  one back.
   Data goes in the fragment and is read back from the fragment only: fragments
   are not sent with the request, so a shared graph stays as private as a dropped
   file, and honouring `?data=` too would undo that. `html.ts` is the standalone
@@ -128,6 +130,22 @@ way to change data is the data table, which edits the underlying rows.
   something the columns cannot, it comes back as `ImportedGraph.style`, which
   `App.tsx` lays over `guessStyle`: an undirected `graph` means no arrowheads,
   and a label column means the display name is pointed at it.
+  `json.ts` is JSON and its line-delimited form, in the two shapes a network
+  arrives in. An array of records, or one record per line, is a table and is
+  read the way a CSV is; an object carrying a `nodes` array beside a `links`
+  one is node-link, which is the document's two tables already, so it comes
+  back as a document the way GEXF does rather than as a dataset. An object
+  holding neither is a workbook, one table per array of records in it. Unlike
+  delimited text there is nothing to guess about a value, so types are counted
+  off the values the way parquet reads them off its schema and a zero-padded
+  id written as a string stays text; only the column _role_ is still inferred,
+  which is why `inferColumnRole` is exported. Anything deeper than a scalar
+  becomes its own JSON text rather than going missing. Endpoints get two
+  repairs the format needs and the tables cannot express: a node-link file
+  older than d3 v4 indexes into the `nodes` array instead of naming ids, read
+  that way only when every endpoint is an index and none is a declared id, and
+  a graph serialized after a simulation ran carries whole node records as
+  endpoints, which come back as their ids.
 - `src/lib/edit.ts` - pure `GraphDoc -> GraphDoc` transforms behind the data
   table's cell edits, row adds and row deletes. `coalesceById` is what makes a
   rename onto an existing id a merge rather than a ghost row the graph ignores.

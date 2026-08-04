@@ -8,6 +8,7 @@ import {
   type ParamValue,
 } from "../lib/layouts";
 import type { ChainStepResult, FilterStep } from "../lib/filter";
+import type { RendererId } from "../render";
 import type { EditTarget } from "../lib/edit";
 import type { ProjectionSide } from "../lib/project";
 import { ACCEPTED_EXTENSIONS } from "../lib/parse";
@@ -68,10 +69,17 @@ interface SidebarProps {
   onLayoutChange: (layout: LayoutId) => void;
   onLayoutParamChange: (key: string, value: ParamValue) => void;
   onPreventOverlapChange: (value: boolean) => void;
+  /** Whether the layout simulation is moving, held, or done. */
+  layoutActivity: "idle" | "running" | "paused";
+  onLayoutPause: () => void;
   onSeparate: () => void;
   onTidyLabels: () => void;
   onLabelModeChange: (mode: LabelMode) => void;
   onExport: (format: "svg" | "png") => void;
+  /** Which painter is live, for the offers that depend on it. */
+  renderer: RendererId;
+  /** Whether the live renderer can serialize the scene as SVG at all. */
+  svgExport: boolean;
   onExportData: (format: ExportFormat) => void;
   onExportHtml: () => void;
   onGist: (reference: string) => void;
@@ -133,10 +141,14 @@ export function Sidebar({
   onLayoutChange,
   onLayoutParamChange,
   onPreventOverlapChange,
+  layoutActivity,
+  onLayoutPause,
   onSeparate,
   onTidyLabels,
   onLabelModeChange,
   onExport,
+  renderer,
+  svgExport,
   onExportData,
   onExportHtml,
   onGist,
@@ -483,7 +495,12 @@ export function Sidebar({
         </h2>
         <div className="step-body">
           <div className="radio-list" role="radiogroup" aria-label="Layout algorithm">
-            {LAYOUTS.map((l) => (
+            {/* A renderer-owned layout is only on offer where its renderer is
+                the one drawing, but one already chosen stays listed so the
+                selection is never pointing at an option that is not there. */}
+            {LAYOUTS.filter(
+              (l) => l.positions !== "renderer" || renderer === "webgl" || layout === l.id,
+            ).map((l) => (
               <label key={l.id} className="radio-item">
                 <input
                   type="radio"
@@ -498,6 +515,25 @@ export function Sidebar({
               </label>
             ))}
           </div>
+
+          {/* Here while a simulation is moving or held, gone once it settles:
+              a control for a run, not a setting of the layout. */}
+          {layoutActivity !== "idle" && (
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn"
+                onClick={onLayoutPause}
+                title={
+                  layoutActivity === "paused"
+                    ? "Set the layout moving again"
+                    : "Hold the layout where it stands"
+                }
+              >
+                {layoutActivity === "paused" ? "Resume" : "Pause"}
+              </button>
+            </div>
+          )}
 
           {graph &&
             layoutDefinition(layout).params.map((param) => {
@@ -633,9 +669,18 @@ export function Sidebar({
         </h2>
         <div className="step-body">
           <div className="btn-row">
-            <button type="button" className="btn" disabled={!graph} onClick={() => onExport("svg")}>
-              SVG
-            </button>
+            {/* A vector export is a serialization of the SVG scene, so it is
+                only on offer while the SVG renderer is the one drawing. */}
+            {svgExport && (
+              <button
+                type="button"
+                className="btn"
+                disabled={!graph}
+                onClick={() => onExport("svg")}
+              >
+                SVG
+              </button>
+            )}
             <button type="button" className="btn" disabled={!graph} onClick={() => onExport("png")}>
               PNG
             </button>

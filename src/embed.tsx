@@ -21,6 +21,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RootContext } from "./RootContext";
 import { parseWorkspace, type Workspace } from "./lib/io";
 import { isThemePreference, type ThemePreference } from "./lib/hostTheme";
+import { isRendererId, type RendererId } from "./render";
 import { PANELS, type GraphDoc, type Panel } from "./types";
 
 export interface EmbedOptions {
@@ -39,6 +40,11 @@ export interface EmbedOptions {
    * the default: a dark widget in a light notebook reads as a bug.
    */
   theme?: ThemePreference;
+  /**
+   * Which painter draws the marks: "svg", "canvas" or "webgl". The host knows
+   * how big a graph it is handing over; the View menu can still change it.
+   */
+  renderer?: RendererId;
   /**
    * Where the app is served from, so a link copied out of the host points at
    * the app rather than at whatever page it was running in.
@@ -95,6 +101,7 @@ export function mount(el: HTMLElement, options: EmbedOptions = {}): EmbedHandle 
     // the words it is supposed to be.
     panels: (options.panels ?? []).filter((p): p is Panel => PANELS.includes(p)),
     theme: isThemePreference(options.theme) ? options.theme : "auto",
+    renderer: isRendererId(options.renderer) ? options.renderer : undefined,
     onSelect: options.onSelect,
     onDocChange: options.onDocChange,
   };

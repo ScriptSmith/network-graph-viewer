@@ -71,12 +71,18 @@ def test_a_cell_opens_with_the_graph_and_nothing_else():
     # Not a window: the panels are behind labelled tabs on the stage's edges.
     assert widget.panels == []
     assert widget.theme == "auto"
+    assert widget.renderer == "svg"
 
 
 def test_panels_and_theme_can_be_asked_for():
     widget = ngv.show(EDGES, source="from", target="to", panels=["table", "stats"], theme="dark")
     assert widget.panels == ["table", "stats"]
     assert widget.theme == "dark"
+
+
+def test_a_renderer_can_be_named_for_a_graph_the_notebook_knows_is_big():
+    widget = ngv.show(EDGES, source="from", target="to", renderer="webgl")
+    assert widget.renderer == "webgl"
 
 
 def test_a_panel_or_theme_that_does_not_exist_is_refused_here_rather_than_ignored_there():
@@ -86,3 +92,5 @@ def test_a_panel_or_theme_that_does_not_exist_is_refused_here_rather_than_ignore
         ngv.show(EDGES, source="from", target="to", panels=["nonsense"])
     with pytest.raises(traitlets.TraitError):
         ngv.show(EDGES, source="from", target="to", theme="dusk")
+    with pytest.raises(traitlets.TraitError):
+        ngv.show(EDGES, source="from", target="to", renderer="vulkan")

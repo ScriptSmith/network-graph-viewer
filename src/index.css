@@ -137,6 +137,12 @@ button {
   outline: none;
 }
 
+/* The raster renderers are one focusable surface and draw the focused node's
+   ring themselves, so the element's own rectangle would only shout over it. */
+.graph-raster:focus {
+  outline: none;
+}
+
 /* ---- Shell ---- */
 
 /* Three panels around a stage, each in a column of its own. A collapsed panel

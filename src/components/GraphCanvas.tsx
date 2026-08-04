@@ -17,10 +17,6 @@ import {
   forceY,
   type Simulation,
 } from "d3-force";
-import { select, type Selection } from "d3-selection";
-import { zoom, zoomIdentity, zoomTransform, type ZoomBehavior } from "d3-zoom";
-import { drag } from "d3-drag";
-import "d3-transition";
 import type {
   BaseGraph,
   Column,
@@ -43,18 +39,26 @@ import {
   type LayoutId,
   type LayoutParams,
 } from "../lib/layouts";
-import { endpointId as endpoint, markColor, weightScale } from "../lib/graph";
-import { edgeKey } from "../lib/cells";
+import { endpointId as endpoint, weightScale } from "../lib/graph";
 import { isRemoteSource } from "../lib/images";
-import { buildSvgDocument, contentBounds, type ExportBox } from "../lib/export";
+import { contentBounds, type ExportBox } from "../lib/export";
 import { displayCell, formatMetric } from "../lib/format";
 import { DEFAULT_COLORS, type GraphTheme, type Palette } from "../theme";
+import type {
+  MarkSet,
+  RendererCallbacks,
+  RendererHandle,
+  RendererId,
+  SharedScene,
+  ViewState,
+} from "../render";
+import { paintScene } from "../render";
+import { linkKeyOf } from "../render/appearance";
+import { SvgScene } from "../render/SvgScene";
+import { CanvasScene } from "../render/CanvasScene";
+import { WebglScene } from "../render/WebglScene";
 
-/** A set of marks named together: nodes by id, links by `edgeKey`. */
-export interface MarkSet {
-  nodes: ReadonlySet<string>;
-  links: ReadonlySet<string>;
-}
+export type { MarkSet } from "../render";
 
 /** A route to light up: its nodes, and its links by `edgeKey` in both directions. */
 export type PathHighlight = MarkSet;
@@ -68,7 +72,14 @@ export interface GraphCanvasHandle {
   tidyLabels: () => void;
   /** Travel to one node and put it in the middle at a readable scale. */
   center: (id: string) => void;
+  /** The scene as a standalone SVG, or null under a renderer that cannot say. */
   buildExport: () => { svgText: string; box: ExportBox } | null;
+  /** The scene painted afresh at export scale, under any renderer. */
+  exportPng: () => Promise<Blob | null>;
+  /** Hold the layout simulation where it stands, whoever is running it. */
+  pauseLayout: () => void;
+  /** Set it moving again from where it stopped. */
+  resumeLayout: () => void;
 }
 
 interface GraphCanvasProps {
@@ -88,6 +99,12 @@ interface GraphCanvasProps {
    * visibly flew apart to arrive at the same layout in different colours.
    */
   base: BaseGraph;
+  /**
+   * Which painter draws the marks. The scene, the simulation and the keyboard
+   * live here whichever is chosen; switching repaints the same layout through
+   * a different renderer without reheating anything.
+   */
+  renderer?: RendererId;
   layout: LayoutId;
   layoutParams: LayoutParams;
   /** Targets for the "script" layout, produced by a user layout script. */
@@ -113,7 +130,7 @@ interface GraphCanvasProps {
   onSelect: (next: GraphSelection | null) => void;
   /**
    * A shortest path to light: painted like hover and selection are, through
-   * `refreshStyles`, attributes only, never a scene rebuild.
+   * the restyle path, attributes only, never a scene rebuild.
    */
   highlightPath?: PathHighlight | null;
   /**
@@ -136,17 +153,21 @@ interface GraphCanvasProps {
   pinned?: ReadonlySet<string>;
   /** Called when a shift-drag pins a node; plain drags never do. */
   onPinNode?: (id: string) => void;
-  /** Edit mode: adds the create, connect and delete affordances. */
-  editing?: boolean;
+  /**
+   * The chosen renderer could not start after all: WebGL2 probed fine but the
+   * device failed. The app answers by choosing something that works.
+   */
+  onRendererFailed?: () => void;
+  /**
+   * The layout simulation started or stopped, whichever engine is running it.
+   * The toolbar's pause control shows and hides on this.
+   */
+  onSimulationRunning?: (running: boolean) => void;
   /**
    * Positions to seed the next scene with, consumed once. Used when a node is
    * dropped on the canvas and when a file arrives carrying a layout.
    */
   seedPositions?: RefObject<Map<string, { x: number; y: number }> | null>;
-  onAddNode?: (x: number, y: number) => void;
-  onConnect?: (source: string, target: string) => void;
-  onDeleteNode?: (id: string) => void;
-  onRenameNode?: (id: string) => void;
   ambient?: boolean;
   /**
    * Whether to skip the movement that is decoration: layouts settle instead of
@@ -158,10 +179,6 @@ interface GraphCanvasProps {
   ref?: Ref<GraphCanvasHandle>;
 }
 
-type NodeSel = Selection<SVGCircleElement, GraphNode, SVGGElement, unknown>;
-type LinkSel = Selection<SVGPathElement, GraphLink, SVGGElement, unknown>;
-type LabelSel = Selection<SVGTextElement, GraphNode, SVGGElement, unknown>;
-
 function escapeHtml(v: unknown): string {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -171,14 +188,6 @@ function escapeHtml(v: unknown): string {
 }
 
 /**
- * Identity of a link across rebuilds and restyles: the pair of endpoints it
- * joins. Through `edgeKey`, so an id holding whatever a spreadsheet held cannot
- * collide with the pair beside it, and so the separator is spelled in exactly
- * one place.
- */
-const linkKeyOf = (l: GraphLink) => edgeKey(endpoint(l.source), endpoint(l.target));
-
-/**
  * How big a graph will still be settled in one go for a reader who asked for
  * less movement, and how many steps that takes. The tick count is roughly where
  * d3's default decay has the simulation cool anyway.
@@ -186,21 +195,17 @@ const linkKeyOf = (l: GraphLink) => edgeKey(endpoint(l.source), endpoint(l.targe
 const SETTLE_LIMIT = 2000;
 const SETTLE_TICKS = 200;
 
+/** The widest a PNG export will paint, whatever the scene's extent asks for. */
+const PNG_MAX_PIXELS = 8192;
+
 const EMPTY_PINNED: ReadonlySet<string> = new Set();
 const NO_EDGE_ATTRS = (): string[] => [];
 const NO_NODE_ATTRS = (): Column[] => [];
 
-/** Marker id matching an edge stroke color; markers are pre-defined per color. */
-function markerFor(stroke: string, arrowColors: string[], theme: GraphTheme): string {
-  if (stroke === theme.edgeLit) return "url(#arrow-lit)";
-  if (stroke === theme.neutral) return "url(#arrow-cn)";
-  const slot = arrowColors.indexOf(stroke);
-  return slot === -1 ? "url(#arrow-dim)" : `url(#arrow-c${slot})`;
-}
-
 export function GraphCanvas({
   graph,
   base,
+  renderer = "svg",
   layout,
   layoutParams,
   scriptedTargets,
@@ -221,25 +226,25 @@ export function GraphCanvas({
   allowRemoteImages = false,
   pinned = EMPTY_PINNED,
   onPinNode,
+  onRendererFailed,
+  onSimulationRunning,
   ambient = false,
   reducedMotion: reducedMotionProp = false,
   ref,
 }: GraphCanvasProps) {
   const selectedId = selection?.kind === "node" ? selection.id : null;
   const selectedEdge = selection?.kind === "edge" ? selection : null;
+  // The ambient backdrop is a handful of marks and no interaction, so the SVG
+  // renderer is always the right painter for it.
+  const activeRenderer: RendererId = ambient ? "svg" : renderer;
   const containerRef = useRef<HTMLDivElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const viewportRef = useRef<SVGGElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<RendererHandle>(null);
 
   const simRef = useRef<Simulation<GraphNode, GraphLink> | null>(null);
-  const nodesRef = useRef<GraphNode[]>([]);
-  const linksRef = useRef<GraphLink[]>([]);
-  const selsRef = useRef<{ node: NodeSel; link: LinkSel; hit: LinkSel; label: LabelSel } | null>(
-    null,
-  );
-  const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
+  /** The camera as the live renderer last reported it, so a swap keeps the view. */
+  const cameraRef = useRef<{ x: number; y: number; k: number } | null>(null);
   /**
    * The base whose scene was built from seed positions. Seeds are consumed on
    * first use, but StrictMode re-runs the build effect with the same base and
@@ -259,6 +264,9 @@ export function GraphCanvas({
   const justBuiltRef = useRef(false);
   const baseLabelsRef = useRef<Set<string>>(new Set());
   const hoverNodeRef = useRef<string | null>(null);
+  const hoverLinkRef = useRef<GraphLink | null>(null);
+  /** Whether the live renderer is the one running the physics right now. */
+  const rendererOwnedSimRef = useRef(false);
   /** Paint the marks at the positions the simulation currently holds. */
   const drawRef = useRef<() => void>(() => {});
 
@@ -266,8 +274,6 @@ export function GraphCanvas({
     () => weightScale(graph.links, isCellStyle(style.edgeWidth), style.edgeWidthCurve ?? "sqrt"),
     [graph, style.edgeWidth, style.edgeWidthCurve],
   );
-  // A typed edge can carry a width of its own, which skips the scale.
-  const strokeWidth = (d: GraphLink): number => d.width ?? edgeWidth(d);
 
   /**
    * One arrow marker per stroke color in play: the palette's slots, plus
@@ -285,6 +291,9 @@ export function GraphCanvas({
   // browser's broken-image glyph sitting inside the node.
   const [brokenImages, setBrokenImages] = useState<ReadonlySet<string>>(() => new Set());
   const probedImages = useRef<Set<string>>(new Set());
+  // The decoded pixels per source, for the painters that draw rather than
+  // reference: a canvas cannot name a URL the way an SVG pattern can.
+  const imageElsRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   /**
    * Whether a source is one this canvas will actually draw: not broken, and
@@ -323,6 +332,12 @@ export function GraphCanvas({
       probe.onerror = () => {
         setBrokenImages((current) => new Set(current).add(source));
       };
+      probe.onload = () => {
+        // The raster renderers draw the pixels themselves, so the arrival of
+        // a picture is a repaint.
+        imageElsRef.current.set(source, probe);
+        rendererRef.current?.restyle();
+      };
       probe.src = source;
     }
     // oxlint-disable-next-line react-hooks/exhaustive-deps
@@ -341,7 +356,6 @@ export function GraphCanvas({
     palette,
     colors,
     edgeColors,
-    arrowColors,
     edgeAttrsFor,
     nodeAttrsFor,
     ambient,
@@ -353,6 +367,9 @@ export function GraphCanvas({
     theme,
     highlightPath,
     dimmed,
+    edgeWidth,
+    imagePatterns,
+    onSimulationRunning,
   });
   liveRef.current = {
     layout,
@@ -366,7 +383,6 @@ export function GraphCanvas({
     palette,
     colors,
     edgeColors,
-    arrowColors,
     edgeAttrsFor,
     nodeAttrsFor,
     ambient,
@@ -378,160 +394,201 @@ export function GraphCanvas({
     theme,
     highlightPath,
     dimmed,
+    edgeWidth,
+    imagePatterns,
+    onSimulationRunning,
   };
 
-  /** What color the node stands for, image or no image. */
-  const nodeTint = (d: GraphNode): string =>
-    markColor(d, graph.ranking, liveRef.current.colors, liveRef.current.palette);
+  /* ---- Reaching the graph from the keyboard ---- */
 
-  const imageFill = (d: GraphNode): string | null => {
-    const id = d.image === null ? undefined : imagePatterns.get(d.image);
-    return id === undefined ? null : `url(#${id})`;
+  /**
+   * A graph is not a list, and tabbing through one node at a time would be a
+   * poor way to read even a small one. So there are two movements, and no mode
+   * to be in: left and right walk every node in turn, most connected first,
+   * which is a tour of the graph; up and down walk the neighbours of wherever
+   * you are, which is the structure itself. Enter selects, Escape lets go.
+   *
+   * Under the SVG renderer focus is a real DOM focus on a real circle, so the
+   * browser's own focus ring and a screen reader's own reporting both work.
+   * The raster renderers keep the same model on their one focusable surface
+   * and draw the ring themselves.
+   */
+  const orderRef = useRef<string[]>([]);
+  const neighborListRef = useRef<Map<string, string[]>>(new Map());
+  const focusedIdRef = useRef<string | null>(null);
+  const liveRegionRef = useRef<HTMLDivElement>(null);
+  // As a ref, the way the other live values are: handlers installed once read
+  // it when they run, and a re-render in between is neither needed nor wanted.
+  const reducedMotion = useRef(reducedMotionProp);
+  reducedMotion.current = reducedMotionProp;
+
+  /** Say something once, for whoever is listening rather than looking. */
+  const announce = (message: string): void => {
+    const region = liveRegionRef.current;
+    if (region) region.textContent = message;
   };
 
-  // A pictured node keeps its colour as a ring, so an image never costs the
-  // reader whatever the colours were encoding.
-  const nodeFill = (d: GraphNode): string => imageFill(d) ?? nodeTint(d);
-  const onPathNode = (d: GraphNode): boolean =>
-    liveRef.current.highlightPath?.nodes.has(d.id) ?? false;
-  const nodeStroke = (d: GraphNode): string => {
-    if (d.id === liveRef.current.selectedId || onPathNode(d)) {
-      return liveRef.current.theme.selectRing;
-    }
-    return imageFill(d) === null ? liveRef.current.theme.surface : nodeTint(d);
-  };
-  const nodeStrokeWidth = (d: GraphNode): number => {
-    if (d.id === liveRef.current.selectedId || onPathNode(d)) return 2.5;
-    return imageFill(d) === null ? 1.5 : 2;
+  const describeNode = (d: GraphNode): string => {
+    const neighbors = neighborListRef.current.get(d.id)?.length ?? 0;
+    const parts = [d.label];
+    if (d.label !== d.id) parts.push(d.id);
+    if (d.group !== null) parts.push(d.group);
+    if (graph.ranking && d.value !== null) parts.push(formatMetric(d.value));
+    if (liveRef.current.pinned.has(d.id)) parts.push("pinned");
+    parts.push(`${d.inDegree} in, ${d.outDegree} out`);
+    parts.push(neighbors === 1 ? "1 neighbour" : `${neighbors} neighbours`);
+    return parts.join(", ");
   };
 
-  const edgeBase = (d: GraphLink): string => {
-    if (d.color !== null) return d.color;
-    if (d.colorValue === null) return liveRef.current.theme.edge;
-    return liveRef.current.edgeColors.get(d.colorValue) ?? liveRef.current.theme.neutral;
+  // The stable shared object below reads through these refs, so the freshest
+  // closures win without the object itself ever changing identity.
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const drawableRef = useRef(drawable);
+  drawableRef.current = drawable;
+  const describeNodeRef = useRef(describeNode);
+  describeNodeRef.current = describeNode;
+
+  /**
+   * Everything the renderers share: the scene, the way to read the current
+   * appearance, and the callbacks that carry interaction back up. One object
+   * for the component's whole life, mutated rather than replaced, because a
+   * renderer holds it in handlers installed once.
+   */
+  /**
+   * One voice for "the layout is moving", whichever engine moves it: the d3
+   * simulation's restarts and end event, or the WebGL renderer's own
+   * lifecycle. The ambient backdrop never speaks; its drifting is decoration,
+   * not a layout anyone would pause.
+   */
+  const notifyRunning = (running: boolean) => {
+    if (liveRef.current.ambient) return;
+    liveRef.current.onSimulationRunning?.(running);
   };
 
-  const linkPath = (l: GraphLink): string => {
-    const s = l.source as GraphNode;
-    const t = l.target as GraphNode;
-    const sx = s.x ?? 0;
-    const sy = s.y ?? 0;
-    const tx = t.x ?? 0;
-    const ty = t.y ?? 0;
-    const dx = tx - sx;
-    const dy = ty - sy;
-    const dist = Math.hypot(dx, dy) || 1;
-    const ux = dx / dist;
-    const uy = dy / dist;
-    const x1 = sx + ux * s.radius;
-    const y1 = sy + uy * s.radius;
-    const x2 = tx - ux * (t.radius + 3);
-    const y2 = ty - uy * (t.radius + 3);
-    if (!l.curve) return `M${x1},${y1}L${x2},${y2}`;
-    const mx = (x1 + x2) / 2 - uy * dist * 0.14;
-    const my = (y1 + y2) / 2 + ux * dist * 0.14;
-    return `M${x1},${y1}Q${mx},${my} ${x2},${y2}`;
-  };
-
-  const refreshStyles = () => {
-    const sels = selsRef.current;
-    if (!sels) return;
-    const {
-      selectedId: sel,
-      selectedEdge: edge,
-      style: st,
-      highlightPath: path,
-      dimmed: dim,
-    } = liveRef.current;
-    const focus = hoverNodeRef.current ?? sel;
-    const neighbors = focus ? adjacencyRef.current.get(focus) : null;
-    const base = baseLabelsRef.current;
-    const picked = (d: GraphLink) =>
-      edge !== null && endpoint(d.source) === edge.source && endpoint(d.target) === edge.target;
-    // The lit route wins every dimming rule: a path that faded under the
-    // selection that created it would answer and then hide the answer.
-    const onPath = (d: GraphLink) => path !== null && path.links.has(linkKeyOf(d));
-    const outOfWindow = (d: GraphLink) => dim !== null && dim.links.has(linkKeyOf(d));
-
-    sels.node
-      .attr("opacity", (d) => {
-        // A lit route mutes everything off it, the way a selection mutes the
-        // rest of the graph: the answer is the route, so the route is what
-        // shows. A selected edge mutes everything but its two ends the same
-        // way.
-        if (path !== null) return path.nodes.has(d.id) ? 1 : 0.14;
-        if (dim?.nodes.has(d.id)) return 0.08;
-        if (neighbors) return neighbors.has(d.id) ? 1 : 0.14;
-        if (edge !== null) return d.id === edge.source || d.id === edge.target ? 1 : 0.14;
-        return 1;
-      })
-      .attr("stroke", nodeStroke)
-      .attr("stroke-width", nodeStrokeWidth)
-      // The pin is worn as a dashed ring: an attribute on the same circle, so
-      // it survives export and the node stays one mark to hit and drag.
-      .attr("stroke-dasharray", (d) => (liveRef.current.pinned.has(d.id) ? "3 3" : null));
-
-    // A selected edge is lit the way a hovered one is, and keeps that whatever
-    // the neighbourhood dimming would otherwise have said about it.
-    sels.link
-      .attr("stroke", (d) => {
-        const lit =
-          picked(d) ||
-          onPath(d) ||
-          (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return lit ? liveRef.current.theme.edgeLit : edgeBase(d);
-      })
-      .attr("stroke-width", (d) => strokeWidth(d) * (picked(d) || onPath(d) ? 2.2 : 1))
-      .attr("opacity", (d) => {
-        if (picked(d) || onPath(d)) return 1;
-        if (path !== null) return 0.06;
-        if (outOfWindow(d)) return 0.04;
-        if (neighbors) {
-          const touches = endpoint(d.source) === focus || endpoint(d.target) === focus;
-          return touches ? 0.95 : 0.06;
+  const [shared] = useState<SharedScene>(() => {
+    const view = (): ViewState => {
+      const live = liveRef.current;
+      const focus = hoverNodeRef.current ?? live.selectedId;
+      return {
+        theme: live.theme,
+        palette: live.palette,
+        colors: live.colors,
+        edgeColors: live.edgeColors,
+        ranking: graphRef.current.ranking,
+        arrows: live.style.arrows,
+        layout: live.layout,
+        selectedId: live.selectedId,
+        selectedEdge:
+          live.selectedEdge === null
+            ? null
+            : { source: live.selectedEdge.source, target: live.selectedEdge.target },
+        focusId: focus,
+        neighbors: focus ? (adjacencyRef.current.get(focus) ?? null) : null,
+        hoverLink: hoverLinkRef.current,
+        keyboardFocusId: focusedIdRef.current,
+        path: live.highlightPath,
+        dimmed: live.dimmed,
+        pinned: live.pinned,
+        baseLabels: baseLabelsRef.current,
+        strokeWidth: (l) => l.width ?? live.edgeWidth(l),
+        drawable: (source): source is string => drawableRef.current(source),
+        imagePatterns: live.imagePatterns,
+        images: imageElsRef.current,
+      };
+    };
+    const callbacks: RendererCallbacks = {
+      onSelect: (next) => liveRef.current.onSelect(next),
+      onHoverNode: (d, event) => {
+        const changed = hoverNodeRef.current !== (d?.id ?? null);
+        hoverNodeRef.current = d?.id ?? null;
+        if (changed) rendererRef.current?.restyle();
+        if (d && event) showTooltipRef.current(event, nodeTooltipRef.current(d));
+        if (!d && changed) hideTooltipRef.current();
+      },
+      onHoverLink: (l, event) => {
+        const changed = hoverLinkRef.current !== l;
+        hoverLinkRef.current = l;
+        if (changed) rendererRef.current?.restyle();
+        if (l && event) showTooltipRef.current(event, linkTooltipRef.current(l));
+        if (!l && changed) hideTooltipRef.current();
+      },
+      onNodeKeyDown: (event, d) => onNodeKeyDownRef.current(event, d),
+      onNodeFocus: (d) => focusNodeRef.current(d.id, { move: false }),
+      onNodeBlur: () => {
+        hoverNodeRef.current = null;
+        hideTooltipRef.current();
+        rendererRef.current?.restyle();
+      },
+      onDragStart: (d) => {
+        disarmSettleFit();
+        hideTooltipRef.current();
+        // Under a renderer-owned simulation the renderer moves the node; our
+        // stopped simulation must not be reheated to fight it.
+        if (rendererRef.current?.runsSimulation?.(liveRef.current.layout)) return;
+        simRef.current?.alphaTarget(0.25).restart();
+        notifyRunning(true);
+        d.fx = d.x;
+        d.fy = d.y;
+      },
+      onDragMove: (d, x, y) => {
+        if (rendererRef.current?.runsSimulation?.(liveRef.current.layout)) {
+          d.x = x;
+          d.y = y;
+          return;
         }
-        if (edge !== null) return 0.06;
-        return d.colorValue === null ? 0.85 : 0.9;
-      })
-      .attr("marker-end", (d) => {
-        if (!st.arrows) return null;
-        const lit =
-          picked(d) ||
-          onPath(d) ||
-          (neighbors && (endpoint(d.source) === focus || endpoint(d.target) === focus));
-        return markerFor(
-          lit ? liveRef.current.theme.edgeLit : edgeBase(d),
-          liveRef.current.arrowColors,
-          liveRef.current.theme,
-        );
-      });
+        d.fx = x;
+        d.fy = y;
+      },
+      onDragEnd: (d, x, y, pin) => {
+        if (rendererRef.current?.runsSimulation?.(liveRef.current.layout)) {
+          d.x = x;
+          d.y = y;
+          if (pin && !liveRef.current.pinned.has(d.id)) liveRef.current.onPinNode?.(d.id);
+          return;
+        }
+        simRef.current?.alphaTarget(0);
+        if (liveRef.current.pinned.has(d.id) || pin) {
+          // Pinned, or being pinned: the dropped spot is the point.
+          d.fx = x;
+          d.fy = y;
+          d.tx = x;
+          d.ty = y;
+          if (!liveRef.current.pinned.has(d.id)) liveRef.current.onPinNode?.(d.id);
+        } else if (liveRef.current.layout === "force" || liveRef.current.layout === "forceatlas2") {
+          d.fx = null;
+          d.fy = null;
+        } else {
+          // In static layouts a dragged node keeps its dropped spot.
+          d.tx = x;
+          d.ty = y;
+          d.fx = null;
+          d.fy = null;
+        }
+      },
+      onUserCamera: () => disarmSettleFit(),
+      onSimulationState: (running) => notifyRunning(running),
+      onCameraChange: (t) => {
+        cameraRef.current = { x: t.x, y: t.y, k: t.k };
+      },
+      onBackgroundClick: () => liveRef.current.onSelect(null),
+      onBackgroundDblClick: () => fitRef.current(600),
+    };
+    return {
+      scene: { nodes: [], links: [] },
+      view,
+      callbacks,
+      reducedMotion: () => reducedMotion.current,
+      describeNode: (d) => describeNodeRef.current(d),
+      entryNode: () => focusedIdRef.current ?? orderRef.current[0] ?? null,
+    };
+  });
 
-    // Colours as well as visibility: a theme change repaints through here,
-    // and the labels were given their fill once, when the scene was built.
-    sels.label
-      .attr("fill", liveRef.current.theme.label)
-      .attr("stroke", liveRef.current.theme.labelHalo);
-
-    sels.label.attr("display", (d) => {
-      if (path !== null) return path.nodes.has(d.id) ? null : "none";
-      if (dim?.nodes.has(d.id)) return "none";
-      if (neighbors) return neighbors.has(d.id) ? null : "none";
-      // Selecting an edge names both of its ends and nothing else, whatever
-      // the label mode: the rest of the graph is muted under it.
-      if (edge !== null) return d.id === edge.source || d.id === edge.target ? null : "none";
-      return base.has(d.id) || d.id === sel ? null : "none";
-    });
-  };
-
-  // Installed handlers outlive the render that created them, and after the
-  // split the scene is not rebuilt on every restyle, so reaching for the
-  // current one through a ref is what keeps a hover repaint up to date.
-  const refreshStylesRef = useRef(refreshStyles);
-  refreshStylesRef.current = refreshStyles;
+  const restyle = () => rendererRef.current?.restyle();
 
   const computeBaseLabels = () => {
     const { labelMode: mode, ambient: amb } = liveRef.current;
-    const nodes = nodesRef.current;
+    const nodes = shared.scene.nodes;
     const set = new Set<string>();
     if (!amb && mode !== "none") {
       if (mode === "all" || nodes.length <= 80) {
@@ -555,8 +612,7 @@ export function GraphCanvas({
   const applyLayoutForces = (kick: number, fitOnSettle = false) => {
     const sim = simRef.current;
     if (!sim) return;
-    const nodes = nodesRef.current;
-    const links = linksRef.current;
+    const { nodes, links } = shared.scene;
     const {
       layout: current,
       layoutParams: params,
@@ -566,6 +622,19 @@ export function GraphCanvas({
       style: st,
     } = liveRef.current;
     const spacing = amb ? 1 : st.spacing;
+
+    // A renderer-owned layout hands the physics over wholesale: cosmos runs
+    // its simulation on the GPU and our simulation stands down until the
+    // layout, or the renderer, changes back.
+    const owner = rendererRef.current;
+    if (!amb && owner?.runsSimulation?.(current)) {
+      sim.stop();
+      rendererOwnedSimRef.current = true;
+      owner.startSimulation?.(kick, fitOnSettle);
+      return;
+    }
+    owner?.stopSimulation?.();
+    rendererOwnedSimRef.current = false;
 
     // Start from a clean slate so a layout never inherits the last one's forces.
     for (const name of ["charge", "link", "x", "y", "collide", "fa2"]) sim.force(name, null);
@@ -587,7 +656,7 @@ export function GraphCanvas({
       ? null
       : current === "script"
         ? (scripted ?? null)
-        : computeTargets(current, params, graph);
+        : computeTargets(current, params, graphRef.current);
     if (targets) {
       for (const n of nodes) {
         const t = targets.get(n.id);
@@ -651,9 +720,11 @@ export function GraphCanvas({
       sim.tick(SETTLE_TICKS);
       drawRef.current();
       if (fitOnSettle) fitRef.current(0);
+      notifyRunning(false);
       return;
     }
     sim.alpha(kick).restart();
+    notifyRunning(true);
     if (fitOnSettle) {
       sim.on("end.fit", () => {
         sim.on("end.fit", null);
@@ -667,92 +738,49 @@ export function GraphCanvas({
     simRef.current?.on("end.fit", null);
   };
 
-  /* ---- Reaching the graph from the keyboard ---- */
-
-  /**
-   * A graph is not a list, and tabbing through one node at a time would be a
-   * poor way to read even a small one. So there are two movements, and no mode
-   * to be in: left and right walk every node in turn, most connected first,
-   * which is a tour of the graph; up and down walk the neighbours of wherever
-   * you are, which is the structure itself. Enter selects, Escape lets go.
-   *
-   * Focus is a real DOM focus on a real circle, so the browser's own focus ring
-   * and a screen reader's own reporting both work. Only one node carries a
-   * tabindex at a time, or a graph of any size would fill the tab order.
-   */
-  const orderRef = useRef<string[]>([]);
-  const neighborListRef = useRef<Map<string, string[]>>(new Map());
-  const focusedIdRef = useRef<string | null>(null);
-  const liveRegionRef = useRef<HTMLDivElement>(null);
-  // As a ref, the way the other live values are: d3 handlers installed once
-  // read it when they run, and a re-render in between is neither needed nor
-  // wanted.
-  const reducedMotion = useRef(reducedMotionProp);
-  reducedMotion.current = reducedMotionProp;
-
-  /** Say something once, for whoever is listening rather than looking. */
-  const announce = (message: string): void => {
-    const region = liveRegionRef.current;
-    if (region) region.textContent = message;
-  };
-
-  const describeNode = (d: GraphNode): string => {
-    const neighbors = neighborListRef.current.get(d.id)?.length ?? 0;
-    const parts = [d.label];
-    if (d.label !== d.id) parts.push(d.id);
-    if (d.group !== null) parts.push(d.group);
-    if (graph.ranking && d.value !== null) parts.push(formatMetric(d.value));
-    if (liveRef.current.pinned.has(d.id)) parts.push("pinned");
-    parts.push(`${d.inDegree} in, ${d.outDegree} out`);
-    parts.push(neighbors === 1 ? "1 neighbour" : `${neighbors} neighbours`);
-    return parts.join(", ");
-  };
-
   /** Bring a node into view, but only when it is not already in it. */
   const revealNode = (d: GraphNode): void => {
-    const svg = svgRef.current;
     const container = containerRef.current;
-    const behavior = zoomRef.current;
-    if (!svg || !container || !behavior) return;
-    const transform = zoomTransform(svg);
-    const [sx, sy] = transform.apply([d.x ?? 0, d.y ?? 0]);
+    const r = rendererRef.current;
+    if (!container || !r) return;
+    const at = r.screenPoint(d.x ?? 0, d.y ?? 0);
+    if (!at) return;
     const w = container.clientWidth;
     const h = container.clientHeight;
     const pad = 70;
-    if (sx >= pad && sx <= w - pad && sy >= pad && sy <= h - pad) return;
-    const k = transform.k;
-    const next = zoomIdentity.translate(w / 2 - k * (d.x ?? 0), h / 2 - k * (d.y ?? 0)).scale(k);
-    const sel = select(svg);
-    if (reducedMotion.current) sel.call(behavior.transform, next);
-    else sel.transition().duration(220).call(behavior.transform, next);
+    if (at.x >= pad && at.x <= w - pad && at.y >= pad && at.y <= h - pad) return;
+    const k = r.transform()?.k ?? 1;
+    r.centerOn(d.x ?? 0, d.y ?? 0, k, reducedMotion.current ? 0 : 220);
   };
 
   /**
-   * Move focus to a node: the tabindex, the browser focus, the tooltip, the
-   * announcement and the view all follow from here, so nothing can drift out of
-   * step with what is actually focused.
+   * Move focus to a node: the renderer's focus, the tooltip, the announcement
+   * and the view all follow from here, so nothing can drift out of step with
+   * what is actually focused.
    */
   const focusNode = (id: string | null, options: { move?: boolean } = {}): void => {
-    const sels = selsRef.current;
-    if (!sels) return;
+    const r = rendererRef.current;
+    if (!r) return;
     focusedIdRef.current = id;
-    sels.node.attr("tabindex", (d) => (d.id === id ? 0 : null));
+    r.focusNode(id, options);
     if (id === null) {
       hoverNodeRef.current = null;
       hideTooltip();
-      refreshStyles();
+      restyle();
       return;
     }
-    const datum = nodesRef.current.find((n) => n.id === id);
+    const datum = shared.scene.nodes.find((n) => n.id === id);
     if (!datum) return;
-    const element = sels.node.filter((d) => d.id === id).node();
-    if (options.move !== false) element?.focus({ preventScroll: true });
     hoverNodeRef.current = id;
-    refreshStyles();
+    restyle();
     revealNode(datum);
-    showTooltipOn(element, nodeTooltip(datum));
+    const anchor = r.nodeAnchor(id);
+    if (anchor instanceof Element) showTooltipOn(anchor, nodeTooltip(datum));
+    else if (anchor) showTooltipAt(anchor.x, anchor.y + 4, nodeTooltip(datum));
     announce(describeNode(datum));
   };
+  const focusNodeRef = useRef(focusNode);
+  focusNodeRef.current = focusNode;
 
   /** Step along one of the two orderings, wrapping at either end. */
   const step = (list: string[], from: string | null, delta: number): string | null => {
@@ -812,6 +840,8 @@ export function GraphCanvas({
     if (next !== undefined && next !== null) focusNode(next);
     else if (neighbors.length === 0) announce(`${d.id} has no neighbours`);
   };
+  const onNodeKeyDownRef = useRef(onNodeKeyDown);
+  onNodeKeyDownRef.current = onNodeKeyDown;
 
   /**
    * Ease the view onto the whole graph. The easing is the point: a view that
@@ -820,32 +850,15 @@ export function GraphCanvas({
    * worth making them unwell.
    */
   const fit = (duration = 600) => {
-    const container = containerRef.current;
-    const svg = svgRef.current;
-    const behavior = zoomRef.current;
-    if (!container || !svg || !behavior || nodesRef.current.length === 0) return;
+    const r = rendererRef.current;
+    const nodes = shared.scene.nodes;
+    if (!r || nodes.length === 0) return;
     if (reducedMotion.current) duration = 0;
-    const box = contentBounds(nodesRef.current, 60);
-    const w = container.clientWidth;
-    const h = container.clientHeight;
-    const k = Math.max(0.05, Math.min(w / box.width, h / box.height, 1.5));
-    const cx = box.x + box.width / 2;
-    const cy = box.y + box.height / 2;
-    const t = zoomIdentity
-      .translate(w / 2, h / 2)
-      .scale(k)
-      .translate(-cx, -cy);
-    const sel = select(svg);
-    if (duration > 0) {
-      sel.transition().duration(duration).call(behavior.transform, t);
-    } else {
-      sel.call(behavior.transform, t);
-    }
+    r.fit(contentBounds(nodes, 60), duration);
   };
 
-  // Installed once, with the zoom behaviour, and so reached the same way the
-  // repaint is: through a ref, rather than through whichever render was current
-  // when the double-click handler was attached.
+  // Installed once, alongside handlers that outlive their render, and so
+  // reached the same way the repaint is: through a ref.
   const fitRef = useRef(fit);
   fitRef.current = fit;
 
@@ -871,6 +884,8 @@ export function GraphCanvas({
     if (!rect) return;
     showTooltipAt(event.clientX - rect.left, event.clientY - rect.top, html);
   };
+  const showTooltipRef = useRef(showTooltip);
+  showTooltipRef.current = showTooltip;
 
   /**
    * The same tooltip, anchored to a mark rather than to a pointer. Keyboard
@@ -889,6 +904,8 @@ export function GraphCanvas({
     const tip = tooltipRef.current;
     if (tip) tip.style.display = "none";
   };
+  const hideTooltipRef = useRef(hideTooltip);
+  hideTooltipRef.current = hideTooltip;
 
   const nodeTooltip = (d: GraphNode): string => {
     const idLine = d.label !== d.id ? `<div class="tip-sub">${escapeHtml(d.id)}</div>` : "";
@@ -923,6 +940,8 @@ export function GraphCanvas({
       `${lines}<div class="tip-meta">${d.inDegree} in · ${d.outDegree} out</div>`
     );
   };
+  const nodeTooltipRef = useRef(nodeTooltip);
+  nodeTooltipRef.current = nodeTooltip;
 
   const linkTooltip = (l: GraphLink): string => {
     const attrs = liveRef.current.edgeAttrsFor(l);
@@ -941,6 +960,8 @@ export function GraphCanvas({
       l.rows.length > 1 ? `<div class="tip-meta">+${l.rows.length - 1} more rows</div>` : "";
     return head + lines + more;
   };
+  const linkTooltipRef = useRef(linkTooltip);
+  linkTooltipRef.current = linkTooltip;
 
   /**
    * Build the scene. Only the network itself brings us back here: new nodes,
@@ -948,11 +969,7 @@ export function GraphCanvas({
    * look is the effect below, which does not throw the simulation away.
    */
   useLayoutEffect(() => {
-    const svg = svgRef.current;
-    const viewport = viewportRef.current;
-    if (!svg || !viewport) return;
-
-    const previous = new Map(nodesRef.current.map((n) => [n.id, n]));
+    const previous = new Map(shared.scene.nodes.map((n) => [n.id, n]));
     // A node the user just placed starts where they dropped it rather than on
     // the seeding spiral, so it does not appear to jump away from the cursor;
     // an imported layout arrives the same way.
@@ -981,8 +998,9 @@ export function GraphCanvas({
       source: byId.get(endpoint(l.source)) as GraphNode,
       target: byId.get(endpoint(l.target)) as GraphNode,
     }));
-    nodesRef.current = nodes;
-    linksRef.current = links;
+    shared.scene.nodes = nodes;
+    shared.scene.links = links;
+    hoverLinkRef.current = null;
 
     const adjacency = new Map<string, Set<string>>();
     for (const n of nodes) adjacency.set(n.id, new Set([n.id]));
@@ -1011,196 +1029,22 @@ export function GraphCanvas({
       focusedIdRef.current = null;
     }
 
-    const { ambient: amb, style: st } = liveRef.current;
-    const root = select(viewport);
-    const linkLayer = root.select<SVGGElement>("[data-links]");
-    const hitLayer = root.select<SVGGElement>("[data-hits]");
-    const nodeLayer = root.select<SVGGElement>("[data-nodes]");
-    const labelLayer = root.select<SVGGElement>("[data-labels]");
+    computeBaseLabels();
+    rendererRef.current?.build();
 
-    const link = linkLayer
-      .selectAll<SVGPathElement, GraphLink>("path")
-      .data(links, linkKeyOf)
-      .join("path")
-      .attr("fill", "none")
-      .attr("stroke", (d) => edgeBase(d))
-      .attr("stroke-width", (d) => strokeWidth(d))
-      .attr("stroke-linecap", "round")
-      .attr("marker-end", (d) =>
-        amb || !st.arrows ? null : markerFor(edgeBase(d), arrowColors, theme),
-      );
-
-    const hit = hitLayer
-      .selectAll<SVGPathElement, GraphLink>("path")
-      .data(amb ? [] : links, linkKeyOf)
-      .join("path")
-      .attr("fill", "none")
-      .attr("stroke", "transparent")
-      .attr("stroke-width", 11)
-      .style("cursor", "pointer")
-      .on("click", (event: MouseEvent, d) => {
-        event.stopPropagation();
-        liveRef.current.onSelect({
-          kind: "edge",
-          source: endpoint(d.source),
-          target: endpoint(d.target),
-        });
-      })
-      .on("mouseenter", (event: MouseEvent, d) => {
-        showTooltip(event, linkTooltip(d));
-        link
-          .filter((l) => l === d)
-          .attr("stroke", liveRef.current.theme.edgeLit)
-          .attr("opacity", 1)
-          .attr("marker-end", liveRef.current.style.arrows ? "url(#arrow-lit)" : null);
-      })
-      .on("mousemove", (event: MouseEvent, d) => showTooltip(event, linkTooltip(d)))
-      .on("mouseleave", () => {
-        hideTooltip();
-        refreshStylesRef.current();
-      });
-
-    const node = nodeLayer
-      .selectAll<SVGCircleElement, GraphNode>("circle")
-      .data(nodes, (d) => d.id)
-      .join("circle")
-      .attr("data-id", (d) => d.id)
-      .attr("r", (d) => d.radius)
-      .attr("fill", nodeFill)
-      .attr("stroke", nodeStroke)
-      .attr("stroke-width", nodeStrokeWidth)
-      .style("cursor", amb ? "default" : "pointer");
-
-    if (!amb) {
-      // Exactly one node is in the tab order at a time. Reaching the graph puts
-      // focus on the most connected node, which is the one worth arriving at.
-      const entry = focusedIdRef.current ?? orderRef.current[0] ?? null;
-      node
-        .attr("role", "button")
-        .attr("aria-label", (d) => describeNode(d))
-        .attr("tabindex", (d) => (d.id === entry ? 0 : null));
-    }
-
-    const label = labelLayer
-      .selectAll<SVGTextElement, GraphNode>("text")
-      .data(amb ? [] : nodes, (d) => d.id)
-      .join("text")
-      .text((d) => d.label)
-      .attr("text-anchor", "middle")
-      .attr("font-size", 11)
-      .attr("font-weight", 500)
-      .attr("fill", liveRef.current.theme.label)
-      .attr("stroke", liveRef.current.theme.labelHalo)
-      .attr("stroke-width", 3.5)
-      .attr("paint-order", "stroke")
-      .attr("pointer-events", "none");
-
-    selsRef.current = { node, link, hit, label };
-
-    if (!amb) {
-      node
-        .on("mouseenter", (event: MouseEvent, d) => {
-          hoverNodeRef.current = d.id;
-          refreshStylesRef.current();
-          showTooltip(event, nodeTooltip(d));
-        })
-        .on("mousemove", (event: MouseEvent, d) => showTooltip(event, nodeTooltip(d)))
-        .on("mouseleave", () => {
-          hoverNodeRef.current = null;
-          refreshStylesRef.current();
-          hideTooltip();
-        })
-        .on("click", (event: MouseEvent, d) => {
-          event.stopPropagation();
-          liveRef.current.onSelect({ kind: "node", id: d.id });
-        })
-        // Focus does what hover does, so the graph reads the same whether it is
-        // being pointed at or tabbed through.
-        .on("focus", (_event: FocusEvent, d) => focusNode(d.id, { move: false }))
-        .on("blur", () => {
-          hoverNodeRef.current = null;
-          hideTooltip();
-          refreshStylesRef.current();
-        })
-        .on("keydown", (event: KeyboardEvent, d) => onNodeKeyDown(event, d));
-
-      node.call(
-        drag<SVGCircleElement, GraphNode>()
-          .on("start", (_event, d) => {
-            disarmSettleFit();
-            simRef.current?.alphaTarget(0.25).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-            hideTooltip();
-          })
-          .on("drag", (event, d) => {
-            d.fx = event.x;
-            d.fy = event.y;
-          })
-          .on("end", (event, d) => {
-            simRef.current?.alphaTarget(0);
-            const shiftPin = event.sourceEvent instanceof MouseEvent && event.sourceEvent.shiftKey;
-            if (liveRef.current.pinned.has(d.id) || shiftPin) {
-              // Pinned, or being pinned: the dropped spot is the point.
-              d.fx = event.x;
-              d.fy = event.y;
-              d.tx = event.x;
-              d.ty = event.y;
-              if (!liveRef.current.pinned.has(d.id)) liveRef.current.onPinNode?.(d.id);
-            } else if (
-              liveRef.current.layout === "force" ||
-              liveRef.current.layout === "forceatlas2"
-            ) {
-              d.fx = null;
-              d.fy = null;
-            } else {
-              // In static layouts a dragged node keeps its dropped spot.
-              d.tx = event.x;
-              d.ty = event.y;
-              d.fx = null;
-              d.fy = null;
-            }
-          }),
-      );
-    }
-
-    // Named, because it is wanted twice: on every frame while the layout runs,
-    // and once at the end when the layout was run out rather than watched.
-    const draw = () => {
-      link.attr("d", linkPath);
-      hit.attr("d", linkPath);
-      node.attr("cx", (d) => d.x ?? 0).attr("cy", (d) => d.y ?? 0);
-      // On ring-shaped layouts labels radiate outward from the origin so
-      // they don't pile up at the top and bottom of the circle.
-      const rings = liveRef.current.layout === "circle" || liveRef.current.layout === "radial";
-      label
-        .attr("text-anchor", (d) => {
-          if (!rings) return "middle";
-          const c = Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0));
-          return c > 0.2 ? "start" : c < -0.2 ? "end" : "middle";
-        })
-        .attr("x", (d) => {
-          if (!rings) return d.x ?? 0;
-          return (d.x ?? 0) + Math.cos(Math.atan2(d.y ?? 0, d.x ?? 0)) * (d.radius + 8);
-        })
-        .attr("y", (d) => {
-          if (!rings) return (d.y ?? 0) - d.radius - 6;
-          const s = Math.sin(Math.atan2(d.y ?? 0, d.x ?? 0));
-          return (d.y ?? 0) + s * (d.radius + 8) + (s > 0.35 ? 10 : s < -0.35 ? -4 : 4);
-        });
-    };
+    const draw = () => rendererRef.current?.draw();
     drawRef.current = draw;
 
     const sim = forceSimulation<GraphNode, GraphLink>(nodes)
-      .velocityDecay(amb ? 0.35 : 0.45)
-      .on("tick", draw);
+      .velocityDecay(ambient ? 0.35 : 0.45)
+      .on("tick", draw)
+      .on("end.activity", () => notifyRunning(false));
     // The empty state's background drifts forever, which is exactly the kind of
     // motion the setting is about, so it settles and stops instead.
-    if (amb && !reducedMotion.current) sim.alphaDecay(0.002).alphaMin(0);
+    if (ambient && !reducedMotion.current) sim.alphaDecay(0.002).alphaMin(0);
     simRef.current?.stop();
     simRef.current = sim;
 
-    computeBaseLabels();
     // Seeds covering most of the graph are a layout already run somewhere
     // else: a GEXF with positions, a shared workspace. The forces are hooked
     // up but given no heat at all, because any heat lets the links pull an
@@ -1213,7 +1057,7 @@ export function GraphCanvas({
     seededBaseRef.current = seeded ? base : null;
     justBuiltRef.current = true;
     applyLayoutForces(seeded ? 0 : 1, true);
-    refreshStyles();
+    restyle();
 
     // Early feedback while the layout is still spreading; the settle fit
     // armed above re-frames whatever it ends as.
@@ -1233,7 +1077,7 @@ export function GraphCanvas({
    * `applyStyle` hands back new objects, but the simulation owns the ones on
    * screen, along with their positions and velocities. So the new values are
    * copied across rather than swapped in, and the marks repaint from the same
-   * objects d3 is already bound to.
+   * objects the renderer is already bound to.
    *
    * Radius is the one that is not only drawn. The collide radius and the link
    * distance are both read off it, and d3 caches those when a force is
@@ -1242,12 +1086,9 @@ export function GraphCanvas({
    * is the whole difference between this and a rebuild.
    */
   useLayoutEffect(() => {
-    const sels = selsRef.current;
-    if (!sels) return;
-
     let resized = false;
     const incoming = new Map(graph.nodes.map((n) => [n.id, n]));
-    for (const live of nodesRef.current) {
+    for (const live of shared.scene.nodes) {
       const next = incoming.get(live.id);
       if (!next) continue;
       if (live.radius !== next.radius) resized = true;
@@ -1260,7 +1101,7 @@ export function GraphCanvas({
     }
 
     const incomingLinks = new Map(graph.links.map((l) => [linkKeyOf(l), l]));
-    for (const live of linksRef.current) {
+    for (const live of shared.scene.links) {
       const next = incomingLinks.get(linkKeyOf(live));
       if (!next) continue;
       live.weight = next.weight;
@@ -1269,11 +1110,10 @@ export function GraphCanvas({
       live.width = next.width;
     }
 
-    sels.node.attr("r", (d) => d.radius);
-    sels.label.text((d) => d.label);
-    if (!liveRef.current.ambient) sels.node.attr("aria-label", (d) => describeNode(d));
     computeBaseLabels();
-    refreshStyles();
+    rendererRef.current?.graphChanged?.();
+    restyle();
+    drawRef.current();
     if (resized) applyLayoutForces(0.3);
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
@@ -1296,7 +1136,7 @@ export function GraphCanvas({
 
   useEffect(() => {
     computeBaseLabels();
-    refreshStyles();
+    restyle();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [labelMode, selection, style.arrows, theme, highlightPath, dimmed]);
 
@@ -1307,67 +1147,40 @@ export function GraphCanvas({
   useEffect(() => {
     if (justBuiltRef.current) return;
     applyLayoutForces(0.08);
-    refreshStyles();
+    restyle();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [pinned]);
 
-  // A pattern that has just been dropped from the defs must stop being named
-  // before anything paints, or the node it filled would come out blank. Fills
-  // are otherwise set once, when the scene is built.
-  useLayoutEffect(() => {
-    selsRef.current?.node
-      .attr("fill", nodeFill)
-      .attr("stroke", nodeStroke)
-      .attr("stroke-width", nodeStrokeWidth);
+  // A changed pattern set repaints; the SVG renderer swaps its own defs from
+  // the prop in the same commit.
+  useEffect(() => {
+    restyle();
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [imagePatterns]);
 
-  // Pan and zoom.
-  useEffect(() => {
-    const svg = svgRef.current;
-    const viewport = viewportRef.current;
-    const container = containerRef.current;
-    if (!svg || !viewport || !container) return;
-    if (ambient) {
-      const center = () => {
-        select(viewport).attr(
-          "transform",
-          `translate(${container.clientWidth / 2},${container.clientHeight / 2})`,
-        );
-      };
-      center();
-      const observer = new ResizeObserver(center);
-      observer.observe(container);
-      return () => observer.disconnect();
-    }
-    const behavior = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.05, 6])
-      .on("zoom", (event) => {
-        select(viewport).attr("transform", event.transform.toString());
-        // A sourceEvent means a hand on the wheel rather than our own fit
-        // transition, and a camera the user has taken is not snatched back.
-        if (event.sourceEvent) disarmSettleFit();
-      });
-    zoomRef.current = behavior;
-    const sel = select(svg);
-    sel.call(behavior).on("dblclick.zoom", null);
-    // Center the origin right away so the graph never starts corner-anchored.
-    sel.call(
-      behavior.transform,
-      zoomIdentity.translate(container.clientWidth / 2, container.clientHeight / 2),
-    );
-    sel.on("click", (event: MouseEvent) => {
-      if (event.target === svg) liveRef.current.onSelect(null);
-    });
-    // The background is the only thing a double-click reaches, d3's own
-    // dblclick zoom having been unhooked above, so it is free to mean "fit".
-    sel.on("dblclick", (event: MouseEvent) => {
-      if (event.target === svg) fitRef.current(600);
-    });
-    return () => {
-      sel.on(".zoom", null).on("click", null).on("dblclick", null);
-    };
-  }, [ambient]);
+  /**
+   * A renderer swap repaints the same scene through the new painter: same
+   * nodes, same simulation, same camera. Nothing reheats, which is what makes
+   * the swap cheap enough to offer as a setting.
+   */
+  useLayoutEffect(() => {
+    if (justBuiltRef.current) return;
+    const r = rendererRef.current;
+    if (!r) return;
+    r.build();
+    // A camera-less renderer (WebGL owns its own) refits instead of restoring.
+    if (cameraRef.current && r.transform() !== null) r.setTransform(cameraRef.current);
+    else fitRef.current(0);
+    r.focusNode(focusedIdRef.current, { move: false });
+    r.restyle();
+    r.draw();
+    // Only when the physics changes hands: a renderer-owned layout was
+    // falling back to plain force under the old renderer, or the old renderer
+    // was the one simulating. A plain SVG-to-canvas swap reheats nothing.
+    const shouldOwn = r.runsSimulation?.(liveRef.current.layout) === true;
+    if (shouldOwn || rendererOwnedSimRef.current) applyLayoutForces(0.3, shouldOwn);
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRenderer]);
 
   // Declared after every effect that consults it, so it runs last in each
   // commit and the rebuild's stand-down lasts exactly that one commit.
@@ -1381,7 +1194,7 @@ export function GraphCanvas({
       applyLayoutForces(0.9, true);
     },
     separate: () => {
-      noverlap(nodesRef.current);
+      noverlap(shared.scene.nodes);
       simRef.current?.alpha(0.05).restart();
       window.setTimeout(() => fit(500), 60);
     },
@@ -1390,37 +1203,80 @@ export function GraphCanvas({
       // set, plus whatever hover or selection has forced visible is
       // transient and not worth re-arranging the graph for.
       const visible = new Map<string, string>();
-      for (const node of nodesRef.current) {
+      for (const node of shared.scene.nodes) {
         if (baseLabelsRef.current.has(node.id)) visible.set(node.id, node.label);
       }
-      labelNoverlap(nodesRef.current, visible, liveRef.current.pinned);
+      labelNoverlap(shared.scene.nodes, visible, liveRef.current.pinned);
       simRef.current?.alpha(0.05).restart();
       window.setTimeout(() => fit(500), 60);
     },
     center: (id: string) => {
-      const svg = svgRef.current;
-      const container = containerRef.current;
-      const behavior = zoomRef.current;
-      const node = nodesRef.current.find((n) => n.id === id);
-      if (!svg || !container || !behavior || !node) return;
+      const r = rendererRef.current;
+      const node = shared.scene.nodes.find((n) => n.id === id);
+      if (!r || !node) return;
       // Zoomed out the label would arrive unreadable, so the travel also
       // brings the scale up to one; zoomed in it stays where the reader put it.
-      const k = Math.max(zoomTransform(svg).k, 1);
-      const next = zoomIdentity
-        .translate(
-          container.clientWidth / 2 - k * (node.x ?? 0),
-          container.clientHeight / 2 - k * (node.y ?? 0),
-        )
-        .scale(k);
-      const sel = select(svg);
-      if (reducedMotion.current) sel.call(behavior.transform, next);
-      else sel.transition().duration(450).call(behavior.transform, next);
+      const k = Math.max(r.transform()?.k ?? 1, 1);
+      r.centerOn(node.x ?? 0, node.y ?? 0, k, reducedMotion.current ? 0 : 450);
     },
     buildExport: () => {
-      const svg = svgRef.current;
-      if (!svg || nodesRef.current.length === 0) return null;
-      const box = contentBounds(nodesRef.current, 70);
-      return { svgText: buildSvgDocument(svg, box, liveRef.current.theme.surface), box };
+      const r = rendererRef.current;
+      const nodes = shared.scene.nodes;
+      if (!r?.exportSvg || nodes.length === 0) return null;
+      const box = contentBounds(nodes, 70);
+      return { svgText: r.exportSvg(box, liveRef.current.theme.surface), box };
+    },
+    pauseLayout: () => {
+      const r = rendererRef.current;
+      if (rendererOwnedSimRef.current && r?.pauseSimulation) {
+        r.pauseSimulation();
+        return;
+      }
+      simRef.current?.stop();
+      notifyRunning(false);
+    },
+    resumeLayout: () => {
+      const r = rendererRef.current;
+      if (rendererOwnedSimRef.current && r?.resumeSimulation) {
+        r.resumeSimulation();
+        return;
+      }
+      // Picks up at whatever alpha the pause froze; an already-cold run just
+      // ends again, which reads as nothing happening because nothing should.
+      simRef.current?.restart();
+      notifyRunning(true);
+    },
+    exportPng: async () => {
+      const { nodes, links } = shared.scene;
+      if (nodes.length === 0) return null;
+      // A GPU simulation may hold fresher positions than the nodes do.
+      rendererRef.current?.syncPositions?.();
+      const box = contentBounds(nodes, 70);
+      // The scene is repainted at export scale rather than screenshotted, so
+      // the file is crisp whatever the window looked like; the scale gives
+      // way when the layout's extent would ask for an absurd surface.
+      const scale = Math.min(2, PNG_MAX_PIXELS / Math.max(box.width, box.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(box.width * scale));
+      canvas.height = Math.max(1, Math.round(box.height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D is unavailable in this browser.");
+      ctx.fillStyle = liveRef.current.theme.surface;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(scale, 0, 0, scale, -box.x * scale, -box.y * scale);
+      const view: ViewState = {
+        ...shared.view(),
+        // Transient pointer and keyboard state has no place in a file.
+        hoverLink: null,
+        keyboardFocusId: null,
+      };
+      paintScene(ctx, nodes, links, view, { exportSafe: true });
+      return await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("PNG encoding failed."))),
+          "image/png",
+        );
+      });
     },
   }));
 
@@ -1430,37 +1286,20 @@ export function GraphCanvas({
   const helpId = "graph-keys-help";
   return (
     <div className={ambient ? "graph-canvas ambient" : "graph-canvas"} ref={containerRef}>
-      <svg
-        ref={svgRef}
-        className="graph-svg"
-        /* Ambient it is decoration and says so; otherwise it is something to be
-           operated, and "application" is what tells a screen reader to hand the
-           arrow keys over rather than reading the page with them. */
-        role={ambient ? "img" : "application"}
-        aria-label={ambient ? "Decorative network animation" : "Network graph"}
-        aria-describedby={ambient ? undefined : helpId}
-      >
-        <defs>
-          <Arrow id="arrow-dim" fill={theme.arrowDim} />
-          <Arrow id="arrow-lit" fill={theme.edgeLit} />
-          <Arrow id="arrow-cn" fill={theme.neutral} />
-          {arrowColors.map((c, i) => (
-            <Arrow key={c} id={`arrow-c${i}`} fill={c} />
-          ))}
-          {[...imagePatterns].map(([source, id]) => (
-            <NodeImage key={id} id={id} source={source} surface={theme.surface} />
-          ))}
-        </defs>
-        <g ref={viewportRef} data-viewport="">
-          {/* The edge hit paths sit below the nodes: they are invisible, so
-              their order is purely about the pointer, and a click on a node
-              must reach the node even where an edge passes under it. */}
-          <g data-links="" />
-          <g data-hits="" />
-          <g data-nodes="" />
-          <g data-labels="" />
-        </g>
-      </svg>
+      {activeRenderer === "svg" && (
+        <SvgScene
+          ref={rendererRef}
+          shared={shared}
+          ambient={ambient}
+          theme={theme}
+          arrowColors={arrowColors}
+          imagePatterns={imagePatterns}
+        />
+      )}
+      {activeRenderer === "canvas" && <CanvasScene ref={rendererRef} shared={shared} />}
+      {activeRenderer === "webgl" && (
+        <WebglScene ref={rendererRef} shared={shared} onFailed={() => onRendererFailed?.()} />
+      )}
       {!ambient && <div className="graph-tooltip" ref={tooltipRef} />}
       {!ambient && (
         <>
@@ -1477,39 +1316,5 @@ export function GraphCanvas({
         </>
       )}
     </div>
-  );
-}
-
-/**
- * A node picture, as a pattern the circles fill themselves with. Bounding-box
- * units mean the 1x1 content box is the circle's own box, so the picture lands
- * centred and cropped square at whatever radius the node has, and the mark
- * stays a plain circle: still one element to hit, drag, dim and export.
- */
-function NodeImage({ id, source, surface }: { id: string; source: string; surface: string }) {
-  return (
-    <pattern id={id} width="1" height="1" patternContentUnits="objectBoundingBox">
-      {/* Backdrop, so a transparent picture and one that has not arrived yet
-          both read as the surface rather than as a hole in the graph. */}
-      <rect width="1" height="1" fill={surface} />
-      <image href={source} width="1" height="1" preserveAspectRatio="xMidYMid slice" />
-    </pattern>
-  );
-}
-
-function Arrow({ id, fill }: { id: string; fill: string }) {
-  return (
-    <marker
-      id={id}
-      viewBox="0 -4 8 8"
-      refX="7"
-      refY="0"
-      markerWidth="9"
-      markerHeight="9"
-      markerUnits="userSpaceOnUse"
-      orient="auto"
-    >
-      <path d="M0,-4L8,0L0,4" fill={fill} />
-    </marker>
   );
 }

@@ -39,6 +39,12 @@ PANELS = ["sidebar", "table", "stats"]
 #: "auto" reads the notebook's own colour scheme, whatever frontend it is.
 THEMES = ["auto", "light", "dark"]
 
+#: The painters the app can draw the graph with. SVG is the sharpest and the
+#: only one that can export itself as SVG; canvas and webgl trade that for
+#: speed on larger graphs, and webgl falls back to canvas where WebGL2 is
+#: missing. The View menu can change it afterwards either way.
+RENDERERS = ["svg", "canvas", "webgl"]
+
 
 class GraphWidget(anywidget.AnyWidget):
     """An interactive network graph, rendered in the notebook output.
@@ -61,6 +67,10 @@ class GraphWidget(anywidget.AnyWidget):
     #: "auto" follows the notebook's own light or dark theme and keeps
     #: following it; "light" and "dark" pin it. The View menu sets it too.
     theme = traitlets.Enum(THEMES, default_value="auto").tag(sync=True)
+    #: Which renderer draws the graph: "svg", "canvas" or "webgl". A notebook
+    #: knows how big the graph it is handing over is, so it can start the
+    #: viewer on the renderer that suits it.
+    renderer = traitlets.Enum(RENDERERS, default_value="svg").tag(sync=True)
 
     #: The id of the selected node, or None when nothing is selected.
     selected_node = traitlets.Unicode(None, allow_none=True).tag(sync=True)
@@ -127,6 +137,7 @@ def show(
     height: str = "700px",
     panels: Sequence[str] = (),
     theme: str = "auto",
+    renderer: str = "svg",
     app_url: str = APP_URL,
     **kwargs: Any,
 ) -> GraphWidget:
@@ -141,12 +152,15 @@ def show(
     The cell shows the graph and nothing else. ``panels`` opens any of
     ``"sidebar"``, ``"table"`` and ``"stats"`` to start with, and each has a
     labelled tab on the edge of the stage whether it is open or not.
-    ``theme`` is ``"auto"``, ``"light"`` or ``"dark"``.
+    ``theme`` is ``"auto"``, ``"light"`` or ``"dark"``. ``renderer`` picks the
+    painter: ``"svg"`` (sharpest, exports SVG), ``"canvas"`` (faster on
+    thousands of rows) or ``"webgl"`` (fastest on very large graphs).
     """
     return GraphWidget(
         build_workspace(edges, **kwargs),
         height=height,
         panels=list(panels),
         theme=theme,
+        renderer=renderer,
         app_url=app_url,
     )

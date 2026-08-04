@@ -43,6 +43,7 @@ export default {
         height: str(model.get("height")),
         panels: list(model.get("panels")),
         theme: str(model.get("theme")) as never,
+        renderer: str(model.get("renderer")) as never,
         appUrl: str(model.get("app_url")),
         onSelect: (node) => {
           model.set("selected_node", node);
@@ -58,7 +59,7 @@ export default {
     // Anything that changes what is mounted rebuilds the view. `doc` is
     // deliberately absent: it is what this end reports, and reopening on it
     // would restart the app on every edit.
-    const watched = ["workspace", "height", "panels", "theme"];
+    const watched = ["workspace", "height", "panels", "theme", "renderer"];
     for (const key of watched) model.on(`change:${key}`, open);
     open();
 

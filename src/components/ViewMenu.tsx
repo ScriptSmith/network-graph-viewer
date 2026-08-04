@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PANELS, type Corner, type Overlay, type Panel } from "../types";
 import { THEME_PREFERENCES, type ThemePreference } from "../lib/hostTheme";
 import { MOTION_PREFERENCES, type MotionPreference } from "../useReducedMotion";
+import { RENDERERS, type RendererId } from "../render";
 import { listen, useRootNode } from "../RootContext";
 
 const THEME_LABELS: Record<ThemePreference, string> = {
@@ -47,6 +48,10 @@ type Props = {
   onThemeChange: (next: ThemePreference) => void;
   motion: MotionPreference;
   onMotionChange: (next: MotionPreference) => void;
+  renderer: RendererId;
+  onRendererChange: (next: RendererId) => void;
+  /** False where WebGL2 does not exist, which greys the option rather than hiding it. */
+  webglAvailable: boolean;
   onSetOverlayVisible: (key: Overlay, visible: boolean) => void;
   onSetPanelOpen: (key: Panel, open: boolean) => void;
   onHideAll: () => void;
@@ -72,6 +77,9 @@ export function ViewMenu({
   onThemeChange,
   motion,
   onMotionChange,
+  renderer,
+  onRendererChange,
+  webglAvailable,
   onSetOverlayVisible,
   onSetPanelOpen,
   onHideAll,
@@ -187,6 +195,26 @@ export function ViewMenu({
                 {MOTION_LABELS[option]}
               </button>
             ))}
+          </div>
+
+          <p className="view-menu-title">Renderer</p>
+          <div className="view-menu-choice" role="group" aria-label="Renderer">
+            {RENDERERS.map((option) => {
+              const unavailable = option.id === "webgl" && !webglAvailable;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={option.id === renderer ? "choice-btn active" : "choice-btn"}
+                  aria-pressed={option.id === renderer}
+                  disabled={unavailable}
+                  onClick={() => onRendererChange(option.id)}
+                  title={unavailable ? "This browser has no WebGL2" : option.hint}
+                >
+                  {option.name}
+                </button>
+              );
+            })}
           </div>
 
           <div className="view-menu-rule" />

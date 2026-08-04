@@ -12,6 +12,7 @@ export interface Point {
 export type LayoutId =
   | "force"
   | "forceatlas2"
+  | "gpu"
   | "hierarchy"
   | "radial"
   | "circle"
@@ -51,10 +52,13 @@ export interface LayoutDefinition {
   blurb: string;
   /**
    * Where the node positions come from: `physics` runs a simulation with no
-   * targets at all, `computed` derives targets from the graph, and `external`
-   * takes them from somewhere else entirely, which today means a user script.
+   * targets at all, `computed` derives targets from the graph, `external`
+   * takes them from somewhere else entirely, which today means a user script,
+   * and `renderer` hands the whole simulation to the renderer, which today
+   * means cosmos.gl's GPU physics under the WebGL renderer. Anywhere the
+   * renderer cannot run it, a `renderer` layout falls back to plain force.
    */
-  positions: "physics" | "computed" | "external";
+  positions: "physics" | "computed" | "external" | "renderer";
   params: LayoutParam[];
 }
 
@@ -107,6 +111,13 @@ export const LAYOUTS: LayoutDefinition[] = [
       },
       { key: "weightColumn", name: "Edge weight", kind: "column", scope: "edges", default: "" },
     ],
+  },
+  {
+    id: "gpu",
+    name: "Force (GPU)",
+    blurb: "cosmos.gl's simulation on the graphics card, for very large graphs",
+    positions: "renderer",
+    params: [],
   },
   {
     id: "hierarchy",
@@ -245,6 +256,9 @@ export function computeTargets(
   switch (id) {
     case "force":
     case "forceatlas2":
+      return null;
+    case "gpu":
+      // The renderer owns it; everywhere else it behaves as plain force.
       return null;
     case "circle":
       return circleLayout(graph);

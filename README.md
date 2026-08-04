@@ -71,13 +71,34 @@ travel into an export.
 
 ### Layouts
 
-Eight layouts that morph into one another rather than jumping:
+Ten layouts that morph into one another rather than jumping:
 
 - **ForceAtlas2** with repulsion, gravity, LinLog and edge-weight controls, Barnes-Hut accelerated
 - **Force**, **hierarchy**, **radial**, **circle**, **grid**
+- **Force (GPU)**, cosmos.gl's simulation on the graphics card, for graphs the CPU layouts crawl on; it appears when the WebGL renderer is drawing
+- **Geographic**, nodes at their real coordinates from two columns
 - **Circle pack**, one disc per group
 - **Scripted**, positions from your own code
-- Plus an anti-overlap force and a one-shot Noverlap pass
+- Plus an anti-overlap force, a one-shot Noverlap pass, and a Pause button whenever a simulation is running
+
+### Renderers
+
+Three ways to draw the same scene, switchable in the View menu, with the
+layout, camera, selection and keyboard all carrying across the switch:
+
+- **SVG**, the default: the sharpest marks, and the only renderer that can
+  export the scene as SVG
+- **Canvas**: one drawing surface instead of one element per mark, for graphs
+  in the tens of thousands of edges
+- **WebGL**: [cosmos.gl](https://github.com/cosmosgl/graph) drawing from typed
+  arrays, for graphs in the hundreds of thousands, with its own GPU force
+  layout to match
+
+A graph that arrives past a size threshold is asked which renderer to use
+before anything is drawn, because at that size the first paint is itself the
+problem. PNG export works under every renderer by repainting the scene
+offscreen; the choice is remembered on this device rather than travelling
+with the graph.
 
 ### Writing your own
 
@@ -124,7 +145,9 @@ w.edges             # the edge table, edits and computed columns included
 
 A DataFrame, a list of dicts, a list of `(source, target)` pairs or a networkx
 graph all work. The cell shows the graph alone, with a labelled tab on each edge
-for the panels, and follows the notebook's own light or dark theme. See
+for the panels, and follows the notebook's own light or dark theme. A notebook
+that knows its graph is big can start the viewer on the renderer that suits it:
+`ngv.show(df, source="from", target="to", renderer="webgl")`. See
 [`python/`](python/) and [the example notebook](python/examples/demo.ipynb).
 
 ## Development
@@ -152,6 +175,7 @@ uv run pytest --nbmake examples/demo.ipynb
 
 - [Vite](https://vite.dev/) + [React 19](https://react.dev/) + TypeScript
 - [d3-force](https://d3js.org/d3-force), d3-zoom, d3-drag and d3-quadtree for simulation and interaction
+- [cosmos.gl](https://github.com/cosmosgl/graph) for the WebGL renderer and its GPU force layout
 - [SheetJS](https://sheetjs.com/) for Excel and CSV parsing
 - [hyparquet](https://github.com/hyparam/hyparquet) for Parquet, with [hyparquet-compressors](https://github.com/hyparam/hyparquet-compressors) for snappy, gzip, zstd and the rest
 - [anywidget](https://anywidget.dev/) for the Jupyter widget

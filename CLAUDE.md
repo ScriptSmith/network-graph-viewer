@@ -287,16 +287,40 @@ way to change data is the data table, which edits the underlying rows.
   rules and one type's overrides are edited through the same fields. Hover
   details live here too, global (the mapping's `attrs`/`nodeAttrs`) and per
   type alike.
-- `src/components/GraphCanvas.tsx` - the only place d3 touches the DOM. React
-  renders the SVG shell; d3 owns joins, ticks, zoom, drag. One simulation
-  powers everything: physics layouts use forces, computed layouts use strong
-  forceX/forceY toward targets, so layout switches animate as morphs. Props are
-  mirrored into `liveRef` so handlers installed once stay current; the scene
-  re-joins only when `graph` changes. A load that carries positions builds cold
-  (`seededBaseRef`), and a rebuild stands the reheating effects down for its
-  commit (`justBuiltRef`), or loading a workspace would re-run the layout it
-  arrived with. The view refits when the simulation ends, one-shot, disarmed
-  the moment the user takes the camera.
+- `src/components/GraphCanvas.tsx` - the controller behind every renderer: the
+  d3-force simulation, the layout forces, the keyboard model, the tooltips and
+  the announcements, whichever painter is up. One simulation powers everything:
+  physics layouts use forces, computed layouts use strong forceX/forceY toward
+  targets, so layout switches animate as morphs; the one exception is the
+  "gpu" layout, whose `positions: "renderer"` hands the physics to the WebGL
+  renderer (`runsSimulation`/`startSimulation` on the handle) and takes them
+  back on settle. Props are mirrored into `liveRef` so handlers installed once
+  stay current; the scene rebuilds only when `base` changes. A load that
+  carries positions builds cold (`seededBaseRef`), and a rebuild stands the
+  reheating effects down for its commit (`justBuiltRef`), or loading a
+  workspace would re-run the layout it arrived with. The view refits when the
+  simulation ends, one-shot, disarmed the moment the user takes the camera. A
+  renderer swap rebuilds the scene through the new painter with the same
+  nodes, simulation and camera, reheating nothing.
+- `src/render/` - the renderers. `types.ts` is the contract: a scene component
+  (`SvgScene`, `CanvasScene`, `WebglScene`) exposes an imperative
+  `RendererHandle` (`build`/`draw`/`restyle`, camera ops, focus, picking is
+  its own) and reads everything at paint time through `SharedScene.view()`,
+  never through props. `appearance.ts` is the one opinion about what a mark
+  looks like (the hover/selection/path/timeline precedence, link geometry,
+  label visibility and placement); every renderer asks it, which is what keeps
+  three painters from drifting into three answers. `SvgScene` is the old d3
+  join code and the only renderer that can serialize itself (`exportSvg`);
+  `CanvasScene` is a full repaint per frame through `paint.ts`, links batched
+  by paint into one `Path2D` stroke per style, or a few hundred thousand
+  edges would lock the page; `WebglScene` adapts cosmos.gl, translating node
+  objects into typed arrays, ids into indices, and our y-down origin-centred
+  world into cosmos's y-up `[0, spaceSize]` space through a per-scene mapping
+  (`mapRef`) that the GPU layout re-derives from the simulation's own output.
+  The renderer is a View-menu setting remembered per device (`ngv:renderer`),
+  never in the workspace; past `WEBGL_SUGGESTION` marks a new document is
+  asked about its renderer in place of the graph, because at that size the
+  first SVG paint is itself the lock-up the question exists to avoid.
 - `src/theme.ts` - color tokens, the shipped palettes and ramps, and
   `resolvePalette`, which turns a style's `palette`/`ramp` ids (or `custom`
   plus its own colors) into two arrays. The default categorical palette is
@@ -319,7 +343,25 @@ way to change data is the data table, which edits the underlying rows.
 
 - Graph marks are styled with SVG attributes, never CSS classes, so
   `lib/export.ts` can serialize a faithful standalone SVG (clone + background
-  rect). Keep it that way when adding visuals.
+  rect). Keep it that way when adding visuals. SVG export is only offered
+  while the SVG renderer is up; PNG works under every renderer by repainting
+  the scene offscreen through `render/paint.ts` at export scale, never by
+  screenshotting a surface.
+- cosmos.gl is `@cosmos.gl/graph` (MIT) and must never "migrate" to
+  `@cosmograph/cosmos`: the identically-described 3.x under that scope is
+  CC-BY-NC. Its `gl-bench` dependency points `browser` at a script with no
+  exports, which is why every vite config aliases it to the ESM build. The
+  library initializes async and its own `isReady` flips true before its data
+  stores exist: gate every call on the `ready` promise (`openRef` in
+  `WebglScene`), not on `isReady`. Known WebGL divergences, all deliberate:
+  no in-graph labels, no node images, reciprocal arcs draw straight, link
+  widths are screen pixels rather than zoom-scaled, and the pin has no ring.
+- The raster renderers keep the keyboard model on one focusable host element:
+  it wears `data-nodes` only while a node actually holds focus, which is what
+  lets the app's single-key shortcuts stand down exactly then (the
+  `closest("[data-nodes]")` check in `App.tsx` serves SVG circles and raster
+  hosts alike), and the focused node's ring is drawn by the renderer because
+  `:focus-visible` cannot reach a painted mark.
 - Node images are `<pattern>` fills in bounding-box units, one per distinct
   source, so a node stays a single circle to hit, drag, dim and export, and
   the pattern sizes itself to whatever radius the node has. A source that
@@ -329,8 +371,12 @@ way to change data is the data table, which edits the underlying rows.
 - In-graph text uses system fonts (export fidelity); webfonts are for UI
   chrome only.
 - **Algorithms are hand-written on purpose.** Dependencies are allowed for file
-  formats, the table, and the JS engine; not for graph algorithms. Louvain runs
-  in index order rather than shuffled so results are reproducible.
+  formats, the table, the JS engine, and rendering; not for graph algorithms.
+  Louvain runs in index order rather than shuffled so results are
+  reproducible. The one carve-out is the opt-in "Force (GPU)" layout, which is
+  cosmos.gl's simulation, says so in its blurb, and is a layout choice rather
+  than a metric: results differ run to run and nothing downstream depends on
+  them.
 - `src/lib/graph.test.ts` holds a golden snapshot seeded from the original
   pre-node-table pipeline. If it changes, the core semantics changed.
 - Computed columns are rounded for display via `displayCell`; imported values

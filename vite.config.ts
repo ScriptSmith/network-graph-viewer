@@ -9,9 +9,14 @@ export default defineConfig({
   base: "/network-graph-viewer/",
   plugins: [react()],
   resolve: {
-    // The page build fetches the compute worker as its own chunk. The embed
-    // build swaps this for the inlining variant; see src/workers/spawn.ts.
-    alias: { "#worker": src("./src/workers/spawn.ts") },
+    alias: {
+      // The page build fetches the compute worker as its own chunk. The embed
+      // build swaps this for the inlining variant; see src/workers/spawn.ts.
+      "#worker": src("./src/workers/spawn.ts"),
+      // cosmos.gl's FPS monitor dependency points `browser` at a plain script
+      // with no exports; its ESM build is the importable one.
+      "gl-bench": "gl-bench/dist/gl-bench.module.js",
+    },
   },
   test: {
     // Vitest stubs stylesheets out by default. The embed takes its own as

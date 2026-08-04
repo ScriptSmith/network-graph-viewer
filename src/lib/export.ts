@@ -67,6 +67,11 @@ export function downloadSvg(svgText: string, baseName: string): void {
   triggerDownload(blob, `${baseName}.svg`);
 }
 
+/** A file already encoded, from the renderers that paint rather than clone. */
+export function downloadBlob(blob: Blob, fileName: string): void {
+  triggerDownload(blob, fileName);
+}
+
 export async function downloadPng(
   svgText: string,
   box: ExportBox,

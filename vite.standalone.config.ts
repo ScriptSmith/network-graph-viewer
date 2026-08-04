@@ -25,6 +25,9 @@ export default defineConfig({
     alias: {
       "#worker": src("./src/workers/spawn.inline.ts"),
       "@jitl/quickjs-wasmfile-release-sync": "@jitl/quickjs-singlefile-browser-release-sync",
+      // cosmos.gl's FPS monitor dependency points `browser` at a plain script
+      // with no exports; its ESM build is the importable one.
+      "gl-bench": "gl-bench/dist/gl-bench.module.js",
     },
   },
   build: {

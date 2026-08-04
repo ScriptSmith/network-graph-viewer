@@ -93,7 +93,8 @@ import {
   watchHostTheme,
   type ThemePreference,
 } from "./lib/hostTheme";
-import { downloadPng, downloadSvg } from "./lib/export";
+import { downloadBlob, downloadPng, downloadSvg } from "./lib/export";
+import { isRendererId, webglSupported, type RendererId } from "./render";
 import { groupColorMap, resolvePalette } from "./theme";
 import { usePanelSize, type PanelSizeOptions } from "./usePanelSize";
 import { isMotionPreference, useReducedMotion, type MotionPreference } from "./useReducedMotion";
@@ -158,6 +159,14 @@ function sourceKey(source: UrlSource): string {
 }
 
 /**
+ * Mark counts past which a lighter renderer is worth suggesting. Roughly where
+ * one element per mark starts to drag, and where even a canvas repaint does;
+ * suggestions, not ceilings, and only ever offered once per document.
+ */
+const CANVAS_SUGGESTION = 2_000;
+const WEBGL_SUGGESTION = 20_000;
+
+/**
  * What is put away before anything has been asked for. Wide, the panels sit
  * around the graph and cover nothing, so all three are out. Narrow each one is
  * the whole window, and a window opening under one of them shows the reader a
@@ -193,6 +202,12 @@ export interface EmbedProps {
   panels?: Panel[];
   /** "auto" follows the host's own colour scheme and keeps following it. */
   theme?: ThemePreference;
+  /**
+   * Which painter draws the marks, chosen by the host. A notebook knows how
+   * big the graph it is handing over is; the reader can still change it in
+   * the View menu afterwards.
+   */
+  renderer?: RendererId;
   /** Called when the selected node changes, including when it clears. */
   onSelect?: (node: string | null) => void;
   /** Called after the tables are edited, so a host can read the changes back. */
@@ -443,6 +458,71 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     themeRoot.setAttribute("data-motion", reducedMotion ? "reduced" : "full");
     return () => themeRoot.removeAttribute("data-motion");
   }, [themeRoot, reducedMotion]);
+
+  /**
+   * The renderer, remembered the way the colours and the motion are: it is a
+   * fact about this machine and this reader, not about the graph, so it does
+   * not travel in the workspace. SVG is the default because it is the sharpest
+   * and the only one that can export itself; the prompt below suggests moving
+   * off it when a graph arrives that is too big for one element per mark. A
+   * host that named a renderer seeds the choice.
+   */
+  const [rendererPref, setRendererPref] = usePreference<RendererId>({
+    key: "ngv:renderer",
+    fallback: embed?.renderer ?? "svg",
+    isValid: isRendererId,
+    remember: !embedded,
+  });
+  const webglAvailable = useMemo(() => webglSupported(), []);
+  // A remembered choice can outlive the machine that could honour it.
+  const renderer: RendererId =
+    rendererPref === "webgl" && !webglAvailable ? "canvas" : rendererPref;
+
+  /**
+   * Choosing a renderer also settles who runs the physics. The GPU layout is
+   * the WebGL renderer's own simulation, so arriving there puts it in charge
+   * of the force layouts, and leaving hands the physics back to ours; the
+   * computed layouts mean the same thing under every renderer and stay put.
+   */
+  const handleRendererChange = useCallback(
+    (next: RendererId) => {
+      setRendererPref(next);
+      setLayout((current) => {
+        if (next === "webgl" && (current === "force" || current === "forceatlas2")) return "gpu";
+        if (next !== "webgl" && current === "gpu") return "force";
+        return current;
+      });
+    },
+    [setRendererPref],
+  );
+
+  /** The cheap probe passed but the device did not; land somewhere that works. */
+  const handleRendererFailed = useCallback(() => {
+    handleRendererChange("canvas");
+    setNotice("WebGL could not start in this browser, so the Canvas renderer is in use instead.");
+  }, [handleRendererChange]);
+
+  /**
+   * Whether the layout simulation is moving, held or done, whichever engine
+   * runs it. "Paused" is the reader's own act and outlives the stop
+   * notification that carrying it out produces, which is why the notification
+   * cannot simply overwrite it.
+   */
+  const [layoutActivity, setLayoutActivity] = useState<"idle" | "running" | "paused">("idle");
+  const handleSimulationRunning = useCallback((running: boolean) => {
+    setLayoutActivity((current) =>
+      running ? "running" : current === "paused" ? "paused" : "idle",
+    );
+  }, []);
+  const handleLayoutPause = useCallback(() => {
+    if (layoutActivity === "paused") {
+      canvasRef.current?.resumeLayout();
+      setLayoutActivity("running");
+    } else {
+      canvasRef.current?.pauseLayout();
+      setLayoutActivity("paused");
+    }
+  }, [layoutActivity]);
   const rewriteUrl = useCallback(
     (href: string) => {
       const source = readUrlSource(href);
@@ -1897,22 +1977,32 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     }
   }, [exportInput, appUrl]);
 
+  /**
+   * Picture exports. SVG is a serialization of the live SVG scene, so it is
+   * only offered while that renderer is up. PNG under the SVG renderer keeps
+   * its old path, rasterizing the exported SVG; under the raster renderers the
+   * scene is repainted offscreen at export scale instead, which is crisper
+   * than any screenshot and owes nothing to the window's size.
+   */
   const handleExport = useCallback(
     async (format: "svg" | "png") => {
-      const result = canvasRef.current?.buildExport();
-      if (!result || !doc) return;
+      if (!doc) return;
       const base = `${doc.name.replace(/\.[^.]+$/, "")}-graph`;
       try {
-        if (format === "svg") {
-          downloadSvg(result.svgText, base);
-        } else {
-          await downloadPng(result.svgText, result.box, base);
+        if (format === "svg" || renderer === "svg") {
+          const result = canvasRef.current?.buildExport();
+          if (!result) return;
+          if (format === "svg") downloadSvg(result.svgText, base);
+          else await downloadPng(result.svgText, result.box, base);
+          return;
         }
+        const blob = await canvasRef.current?.exportPng();
+        if (blob) downloadBlob(blob, `${base}.png`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Export failed.");
       }
     },
-    [doc],
+    [doc, renderer],
   );
 
   const handleDrop = useCallback(
@@ -1955,6 +2045,44 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     }
     return sources.size;
   }, [graph, allowRemoteImages]);
+
+  /**
+   * A graph too big for the renderer in force is suggested a lighter one,
+   * once per document: the reader may have reasons (the SVG export, the
+   * crisper marks), so it is an offer, never a switch made for them. The
+   * dismissal is keyed to the document rather than stored, because the next
+   * big file is a new decision.
+   */
+  const [rendererPromptFor, setRendererPromptFor] = useState<GraphDoc | null>(null);
+  const rendererSuggestion = useMemo<RendererId | null>(() => {
+    if (base === null) return null;
+    const marks = base.nodes.length + base.links.length;
+    if (marks > WEBGL_SUGGESTION && renderer !== "webgl" && webglAvailable) return "webgl";
+    if (marks > CANVAS_SUGGESTION && renderer === "svg") return "canvas";
+    return null;
+  }, [base, renderer, webglAvailable]);
+  const rendererPrompt =
+    doc !== null && rendererSuggestion !== null && rendererPromptFor !== doc
+      ? rendererSuggestion
+      : null;
+  /**
+   * Past the WebGL threshold the first paint is itself the problem: an SVG
+   * scene of hundreds of thousands of marks locks the page before any toast
+   * could be read, let alone clicked. So at that size the question is asked
+   * in place of the graph, and the scene is not built until it is answered.
+   */
+  const rendererGate =
+    rendererPrompt !== null &&
+    base !== null &&
+    base.nodes.length + base.links.length > WEBGL_SUGGESTION;
+
+  const chooseRenderer = useCallback(
+    (next: RendererId | null) => {
+      if (doc) setRendererPromptFor(doc);
+      if (next !== null) handleRendererChange(next);
+    },
+    [doc, handleRendererChange],
+  );
 
   // The sidebar owns the one file input; the empty state's dropzone borrows it.
   // Scoped to our own tree, or embedded it would find the host page's inputs.
@@ -2042,10 +2170,14 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         onLayoutChange={setLayout}
         onLayoutParamChange={handleLayoutParamChange}
         onPreventOverlapChange={setPreventOverlap}
+        layoutActivity={layoutActivity}
+        onLayoutPause={handleLayoutPause}
         onSeparate={() => canvasRef.current?.separate()}
         onTidyLabels={() => canvasRef.current?.tidyLabels()}
         onLabelModeChange={setLabelMode}
         onExport={(f) => void handleExport(f)}
+        renderer={renderer}
+        svgExport={renderer === "svg"}
         onExportData={handleExportData}
         onExportHtml={() => void handleExportHtml()}
         onGist={(reference) => void handleGist(reference)}
@@ -2111,12 +2243,49 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
       <div className="workspace">
         <main className="stage">
-          {graph && base && doc ? (
+          {graph && base && doc && rendererGate ? (
+            <div className="empty">
+              <div className="empty-card">
+                <h2 className="empty-title">
+                  {(base.nodes.length + base.links.length).toLocaleString()} nodes and edges
+                </h2>
+                <p className="empty-tag">
+                  That is more than the {renderer === "svg" ? "SVG" : "Canvas"} renderer stays
+                  smooth with. Pick how this graph should be drawn; the View menu can change it at
+                  any time.
+                </p>
+                <div className="btn-row">
+                  {rendererPrompt === "webgl" && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => chooseRenderer("webgl")}
+                    >
+                      Use WebGL (recommended)
+                    </button>
+                  )}
+                  {renderer !== "canvas" && (
+                    <button
+                      type="button"
+                      className={rendererPrompt === "canvas" ? "btn btn-primary" : "btn"}
+                      onClick={() => chooseRenderer("canvas")}
+                    >
+                      Use Canvas{rendererPrompt === "canvas" ? " (recommended)" : ""}
+                    </button>
+                  )}
+                  <button type="button" className="btn" onClick={() => chooseRenderer(null)}>
+                    Keep {renderer === "svg" ? "SVG" : "Canvas"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : graph && base && doc ? (
             <>
               <GraphCanvas
                 ref={canvasRef}
                 graph={graph}
                 base={base}
+                renderer={renderer}
                 layout={layout}
                 layoutParams={layoutParams}
                 scriptedTargets={scriptedTargets}
@@ -2137,6 +2306,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 allowRemoteImages={allowRemoteImages}
                 pinned={pinned}
                 onPinNode={handlePinNode}
+                onRendererFailed={handleRendererFailed}
+                onSimulationRunning={handleSimulationRunning}
                 reducedMotion={reducedMotion}
               />
               {hiddenOverlays.has("toolbar") && (
@@ -2191,6 +2362,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                     onThemeChange={setThemePref}
                     motion={motionPref}
                     onMotionChange={setMotionPref}
+                    renderer={renderer}
+                    onRendererChange={handleRendererChange}
+                    webglAvailable={webglAvailable}
                     corner={toolbarCorner}
                     onSetOverlayVisible={setOverlayVisible}
                     onSetPanelOpen={setPanelOpen}
@@ -2348,8 +2522,38 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
               </div>
             </>
           )}
-          {(error || notice || heldBackImages > 0) && (
+          {(error ||
+            notice ||
+            heldBackImages > 0 ||
+            (rendererPrompt !== null && !rendererGate)) && (
             <div className="toast-stack">
+              {rendererPrompt !== null && !rendererGate && base !== null && doc !== null && (
+                <div className="toast" role="status">
+                  <span>
+                    {(base.nodes.length + base.links.length).toLocaleString()} nodes and edges is a
+                    lot for the {renderer === "svg" ? "SVG" : "Canvas"} renderer. The{" "}
+                    {rendererPrompt === "webgl" ? "WebGL" : "Canvas"} one stays smoother at this
+                    size.
+                  </span>
+                  <button
+                    type="button"
+                    className="toast-action"
+                    onClick={() => {
+                      setRendererPromptFor(doc);
+                      handleRendererChange(rendererPrompt);
+                    }}
+                  >
+                    Use {rendererPrompt === "webgl" ? "WebGL" : "Canvas"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRendererPromptFor(doc)}
+                    aria-label="Keep the current renderer"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
               {heldBackImages > 0 && (
                 <div className="toast" role="status">
                   <span>

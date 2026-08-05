@@ -246,6 +246,15 @@ export function GraphCanvas({
   /** The camera as the live renderer last reported it, so a swap keeps the view. */
   const cameraRef = useRef<{ x: number; y: number; k: number } | null>(null);
   /**
+   * The camera as it stood when the departing renderer left the stage. The
+   * mounting renderer centres itself through its own zoom behavior, and that
+   * reports through `onCameraChange` before the swap effect runs, so by then
+   * `cameraRef` holds the newcomer's centering rather than the view being
+   * swapped away from. Effect cleanups run before the new renderer mounts,
+   * which is why the swap effect's cleanup is where the real view survives.
+   */
+  const swapCameraRef = useRef<{ x: number; y: number; k: number } | null>(null);
+  /**
    * The base whose scene was built from seed positions. Seeds are consumed on
    * first use, but StrictMode re-runs the build effect with the same base and
    * the positions surviving on the nodes; remembering the base keeps the
@@ -1164,21 +1173,26 @@ export function GraphCanvas({
    * the swap cheap enough to offer as a setting.
    */
   useLayoutEffect(() => {
-    if (justBuiltRef.current) return;
     const r = rendererRef.current;
-    if (!r) return;
-    r.build();
-    // A camera-less renderer (WebGL owns its own) refits instead of restoring.
-    if (cameraRef.current && r.transform() !== null) r.setTransform(cameraRef.current);
-    else fitRef.current(0);
-    r.focusNode(focusedIdRef.current, { move: false });
-    r.restyle();
-    r.draw();
-    // Only when the physics changes hands: a renderer-owned layout was
-    // falling back to plain force under the old renderer, or the old renderer
-    // was the one simulating. A plain SVG-to-canvas swap reheats nothing.
-    const shouldOwn = r.runsSimulation?.(liveRef.current.layout) === true;
-    if (shouldOwn || rendererOwnedSimRef.current) applyLayoutForces(0.3, shouldOwn);
+    if (!justBuiltRef.current && r) {
+      r.build();
+      // A camera-less renderer (WebGL owns its own) refits instead of restoring.
+      if (swapCameraRef.current && r.transform() !== null) r.setTransform(swapCameraRef.current);
+      else fitRef.current(0);
+      r.focusNode(focusedIdRef.current, { move: false });
+      r.restyle();
+      r.draw();
+      // Only when the physics changes hands: a renderer-owned layout was
+      // falling back to plain force under the old renderer, or the old renderer
+      // was the one simulating. A plain SVG-to-canvas swap reheats nothing.
+      const shouldOwn = r.runsSimulation?.(liveRef.current.layout) === true;
+      if (shouldOwn || rendererOwnedSimRef.current) applyLayoutForces(0.3, shouldOwn);
+    }
+    return () => {
+      // Leaving WebGL there is no view to carry: cosmos kept its camera to
+      // itself, so `cameraRef` still describes some renderer before it.
+      swapCameraRef.current = activeRenderer === "webgl" ? null : cameraRef.current;
+    };
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRenderer]);
 

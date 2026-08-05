@@ -106,6 +106,13 @@ test("the citation network is generated the same way every time", () => {
   expect(edges?.rows.slice(0, 5)).toMatchSnapshot();
 });
 
+test("the social network is generated the same way every time", () => {
+  const social = SAMPLES.find((s) => s.id === "social");
+  const edges = social?.dataset.tables[0];
+  expect(edges?.rows.length).toMatchSnapshot();
+  expect(edges?.rows.slice(0, 5)).toMatchSnapshot();
+});
+
 test("every sample survives the default style", () => {
   for (const network of SAMPLES) {
     const doc = buildDoc(network.dataset.fileName, network.dataset.tables[0]);

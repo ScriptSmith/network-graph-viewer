@@ -338,6 +338,10 @@ way to change data is the data table, which edits the underlying rows.
   would come out neutral rather than failing. The voyages sample carries
   coordinates and dates and declares `layout: "geo"`, which `handleSample`
   honours; it is what the Geographic layout and the timeline are shown on.
+  The social sample is generated (seeded, like citations) past
+  `WEBGL_SUGGESTION`, so opening it asks the renderer question; it is what the
+  Canvas and WebGL renderers are exercised on, and its snapshot in
+  `samples.test.ts` holds the generator still.
 
 ## Constraints
 

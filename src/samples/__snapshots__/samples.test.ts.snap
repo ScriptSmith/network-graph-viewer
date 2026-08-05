@@ -36,3 +36,35 @@ exports[`the citation network is generated the same way every time 2`] = `
   },
 ]
 `;
+
+exports[`the social network is generated the same way every time 1`] = `18865`;
+
+exports[`the social network is generated the same way every time 2`] = `
+[
+  {
+    "Followed": "inland-dormouse-1",
+    "Follower": "mossy-wren-2",
+    "Interactions": 4,
+  },
+  {
+    "Followed": "mossy-wren-2",
+    "Follower": "kindly-kestrel-3",
+    "Interactions": 5,
+  },
+  {
+    "Followed": "inland-dormouse-1",
+    "Follower": "tidal-ibis-4",
+    "Interactions": 1,
+  },
+  {
+    "Followed": "inland-dormouse-1",
+    "Follower": "pale-heron-5",
+    "Interactions": 6,
+  },
+  {
+    "Followed": "mossy-wren-2",
+    "Follower": "pale-heron-5",
+    "Interactions": 3,
+  },
+]
+`;

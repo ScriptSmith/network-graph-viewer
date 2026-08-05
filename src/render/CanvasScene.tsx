@@ -50,6 +50,13 @@ export function CanvasScene({ shared, ref }: CanvasSceneProps) {
   const zoomRef = useRef<ZoomBehavior<HTMLCanvasElement, unknown> | null>(null);
   const draggingRef = useRef(false);
   const focusedRef = useRef<string | null>(null);
+  /**
+   * Whether the surface has been given its once-only initial centering. A ref
+   * rather than a fact recomputed in the effect, because StrictMode re-runs a
+   * mount's effects after the controller has already restored the camera a
+   * swap carried over, and a second centering would throw that camera away.
+   */
+  const centeredRef = useRef(false);
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -175,10 +182,13 @@ export function CanvasScene({ shared, ref }: CanvasSceneProps) {
       });
     zoomRef.current = behavior;
     sel.call(behavior).on("dblclick.zoom", null);
-    sel.call(
-      behavior.transform,
-      zoomIdentity.translate(canvas.clientWidth / 2, canvas.clientHeight / 2),
-    );
+    if (!centeredRef.current) {
+      centeredRef.current = true;
+      sel.call(
+        behavior.transform,
+        zoomIdentity.translate(canvas.clientWidth / 2, canvas.clientHeight / 2),
+      );
+    }
 
     let grabbed: { node: GraphNode; dx: number; dy: number } | null = null;
     sel.call(
@@ -217,6 +227,9 @@ export function CanvasScene({ shared, ref }: CanvasSceneProps) {
       const node = pickNode(w.x, w.y);
       if (node) {
         canvas.style.cursor = "pointer";
+        // A link hovered a moment ago stays lit unless it is let go of here:
+        // the pointer can land on a node without ever crossing empty space.
+        shared.callbacks.onHoverLink(null, null);
         shared.callbacks.onHoverNode(node, event);
         return;
       }

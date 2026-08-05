@@ -66,6 +66,13 @@ export function SvgScene({
   const selsRef = useRef<{ node: NodeSel; link: LinkSel; hit: LinkSel; label: LabelSel } | null>(
     null,
   );
+  /**
+   * Whether the surface has been given its once-only initial centering. A ref
+   * rather than a fact recomputed in the effect, because StrictMode re-runs a
+   * mount's effects after the controller has already restored the camera a
+   * swap carried over, and a second centering would throw that camera away.
+   */
+  const centeredRef = useRef(false);
   // Live copies for the handlers d3 installs once.
   const live = useRef({ theme, arrowColors, imagePatterns });
   live.current = { theme, arrowColors, imagePatterns };
@@ -289,10 +296,16 @@ export function SvgScene({
     const sel = select(svg);
     sel.call(behavior).on("dblclick.zoom", null);
     // Center the origin right away so the graph never starts corner-anchored.
-    sel.call(
-      behavior.transform,
-      zoomIdentity.translate((container?.clientWidth ?? 0) / 2, (container?.clientHeight ?? 0) / 2),
-    );
+    if (!centeredRef.current) {
+      centeredRef.current = true;
+      sel.call(
+        behavior.transform,
+        zoomIdentity.translate(
+          (container?.clientWidth ?? 0) / 2,
+          (container?.clientHeight ?? 0) / 2,
+        ),
+      );
+    }
     sel.on("click", (event: MouseEvent) => {
       if (event.target === svg) shared.callbacks.onBackgroundClick();
     });

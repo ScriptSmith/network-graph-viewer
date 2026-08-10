@@ -8,7 +8,7 @@ import { expect, test, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyStyle, buildBaseGraph } from "../lib/graph";
-import { DEFAULT_STYLE, type GraphDoc } from "../types";
+import { DEFAULT_STYLE, type Graph, type GraphDoc } from "../types";
 import { NodeSearch } from "./NodeSearch";
 
 const doc: GraphDoc = {
@@ -41,17 +41,20 @@ const doc: GraphDoc = {
   nodesDeclared: true,
 };
 
-const graph = applyStyle(buildBaseGraph(doc), doc, {
-  ...DEFAULT_STYLE,
-  nodeLabel: "column:Name",
-});
+const style = { ...DEFAULT_STYLE, nodeLabel: "column:Name" };
+const graph = applyStyle(buildBaseGraph(doc), doc, style);
 
-function mounted(onPick: (id: string) => void): { el: HTMLElement; root: Root } {
+function mounted(
+  onPick: (id: string) => void,
+  onStage: Graph = graph,
+): { el: HTMLElement; root: Root } {
   const el = document.createElement("div");
   document.body.appendChild(el);
   const root = createRoot(el);
   act(() => {
-    root.render(<NodeSearch graph={graph} corner="top-left" onPick={onPick} />);
+    root.render(
+      <NodeSearch doc={doc} graph={onStage} style={style} corner="top-left" onPick={onPick} />,
+    );
   });
   return { el, root };
 }
@@ -163,6 +166,96 @@ test("found nodes are remembered and offered again while the box is empty", () =
     options[0].dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   });
   expect(picked).toEqual(["p2", "p2"]);
+
+  act(() => root.unmount());
+});
+
+test("a type's own label column is searched, so the name on the mark finds the node", () => {
+  const typed: GraphDoc = {
+    ...doc,
+    nodes: {
+      name: "Nodes",
+      columns: [
+        { name: "Id", type: "text" },
+        { name: "Name", type: "text" },
+        { name: "Kind", type: "text" },
+        { name: "Code", type: "text" },
+      ],
+      rows: [
+        { Id: "p1", Name: "Grace Okafor", Kind: "person", Code: "GO-1" },
+        { Id: "p2", Name: "Priya Sharma", Kind: "person", Code: "PS-2" },
+        { Id: "p3", Name: "Kenji Mori", Kind: "robot", Code: "KM-3" },
+      ],
+    },
+  };
+  const typedStyle = {
+    ...DEFAULT_STYLE,
+    nodeLabel: "column:Name",
+    typeStyles: { column: "Kind", styles: { robot: { labelColumn: "Code" } } },
+  };
+  const typedGraph = applyStyle(buildBaseGraph(typed), typed, typedStyle);
+  // The mark for p3 reads "KM-3", not "Kenji Mori".
+  expect(typedGraph.nodes.find((n) => n.id === "p3")?.label).toBe("KM-3");
+
+  const el = document.createElement("div");
+  document.body.appendChild(el);
+  const root = createRoot(el);
+  act(() => {
+    root.render(
+      <NodeSearch
+        doc={typed}
+        graph={typedGraph}
+        style={typedStyle}
+        corner="top-left"
+        onPick={() => {}}
+      />,
+    );
+  });
+
+  type(el, "km-3");
+  const options = [...el.querySelectorAll("[role=option]")];
+  expect(options.map((o) => o.querySelector(".node-opt-label")?.textContent)).toEqual(["KM-3"]);
+
+  // The global label column still answers for the other type.
+  type(el, "grace");
+  expect(el.querySelector(".node-opt-label")?.textContent).toBe("Grace Okafor");
+
+  act(() => root.unmount());
+});
+
+test("a node the filters have removed is still findable, and says it is hidden", () => {
+  // p3 is off the stage. Searching the filtered graph meant it could not be
+  // found at all, which is backwards: not seeing something is the usual reason
+  // for looking for it.
+  const narrowed = applyStyle(
+    buildBaseGraph(doc, { keepNodes: new Set(["p1", "p2"]) }),
+    doc,
+    style,
+  );
+  expect(narrowed.nodes.map((n) => n.id)).toEqual(["p1", "p2"]);
+
+  const picked: string[] = [];
+  const { el, root } = mounted((id) => picked.push(id), narrowed);
+
+  type(el, "kenji");
+  const options = [...el.querySelectorAll("[role=option]")];
+  expect(options).toHaveLength(1);
+  expect(options[0].querySelector(".node-opt-label")?.textContent).toBe("Kenji Mori");
+  expect(options[0].className).toContain("hidden-hit");
+  expect(options[0].querySelector(".node-opt-note")).not.toBeNull();
+
+  // And it can still be picked: the app centres on it, filters being the
+  // reader's own to lift.
+  act(() => {
+    options[0].dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  });
+  expect(picked).toEqual(["p3"]);
+
+  // A node that is on stage carries no such mark.
+  type(el, "grace");
+  const onStage = [...el.querySelectorAll("[role=option]")];
+  expect(onStage[0].className).not.toContain("hidden-hit");
+  expect(onStage[0].querySelector(".node-opt-note")).toBeNull();
 
   act(() => root.unmount());
 });

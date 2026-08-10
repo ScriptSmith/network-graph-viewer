@@ -1,8 +1,23 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import type { Corner, Graph, GraphNode } from "../types";
+import {
+  useDeferredValue,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
+import type { Corner, Graph, GraphDoc, GraphStyle, Row } from "../types";
+import { styleColumn } from "../types";
+import { cellToId } from "../lib/cells";
+import { hasColumn } from "../lib/doc";
 
 interface NodeSearchProps {
+  /** Searched in full: every node the document declares, filtered or not. */
+  doc: GraphDoc;
+  /** The graph on stage, which says which hits are currently hidden. */
   graph: Graph;
+  /** The style in force, for the column display names come from. */
+  style: GraphStyle;
   /** Where the toolbar is parked, so the matches open into the stage. */
   corner: Corner;
   onPick: (id: string) => void;
@@ -10,13 +25,26 @@ interface NodeSearchProps {
   inputRef?: RefObject<HTMLInputElement | null>;
 }
 
+/** One offered node: what it is called, and whether it is currently on stage. */
+interface Hit {
+  id: string;
+  label: string;
+  present: boolean;
+}
+
 const MAX_MATCHES = 12;
 const MAX_RECENT = 5;
 
 /**
  * Type a name, get taken to the node. Matches are a substring of the label or
- * the id, names first, over the graph as currently filtered: a node a filter
- * has removed is not on the stage, so there is nothing to take the reader to.
+ * the id, names first.
+ *
+ * The search runs over the **document**, not the graph on screen. Searching
+ * the filtered graph meant a node the chain had removed could not be found at
+ * all, which is exactly backwards: not being able to see something is the
+ * usual reason for looking for it, and a hidden node is the one someone wants
+ * to name as the next centre to expand from. Hits the chain is hiding are
+ * offered and marked as such rather than withheld.
  *
  * The box holds a query only while it is being used: clicking away clears it,
  * since a stale query over a live graph reads as a filter that is not there.
@@ -25,49 +53,82 @@ const MAX_RECENT = 5;
  * which nodes someone looked for is data about the data, and this app writes
  * nothing about anyone's data anywhere.
  */
-export function NodeSearch({ graph, corner, onPick, inputRef }: NodeSearchProps) {
+export function NodeSearch({ doc, graph, style, corner, onPick, inputRef }: NodeSearchProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  const [recent, setRecent] = useState<string[]>([]);
+  const [recent, setRecent] = useState<Hit[]>([]);
   const ownRef = useRef<HTMLInputElement>(null);
   const input = inputRef ?? ownRef;
 
+  // The whole point of searching the document is that it is bigger than the
+  // stage, so the pass is deferred: a keystroke paints, and the scan catches
+  // up behind it rather than holding the character back.
+  const deferred = useDeferredValue(query);
+
+  const onStage = useMemo(() => new Set(graph.nodes.map((n) => n.id)), [graph]);
+
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferred.trim().toLowerCase();
     if (q === "") return [];
-    const starts: GraphNode[] = [];
-    const contains: GraphNode[] = [];
-    for (const node of graph.nodes) {
-      const label = node.label.toLowerCase();
-      const id = node.id.toLowerCase();
-      if (label.startsWith(q) || id.startsWith(q)) starts.push(node);
-      else if (label.includes(q) || id.includes(q)) contains.push(node);
+    const labelColumn = styleColumn(style.nodeLabel);
+    const labelCol = labelColumn !== null && hasColumn(doc.nodes, labelColumn) ? labelColumn : null;
+    // A type can choose its own label column, and the mark wears that name,
+    // so the search answers to it too: the row says what kind the node is,
+    // the kind may override the column, the global choice is the fallback.
+    const types = style.typeStyles;
+    const labelColFor = (row: Row): string | null => {
+      if (types !== undefined) {
+        const kind = cellToId(row[types.column]);
+        if (kind !== null && Object.hasOwn(types.styles, kind)) {
+          const override = types.styles[kind].labelColumn;
+          if (override !== undefined && hasColumn(doc.nodes, override)) return override;
+        }
+      }
+      return labelCol;
+    };
+
+    const starts: Hit[] = [];
+    const contains: Hit[] = [];
+    for (const row of doc.nodes.rows) {
+      const id = cellToId(row[doc.nodeIdColumn]);
+      if (id === null) continue;
+      const col = labelColFor(row);
+      const label = (col === null ? null : cellToId(row[col])) ?? id;
+      const lowId = id.toLowerCase();
+      const lowLabel = label.toLowerCase();
+      if (lowId.startsWith(q) || lowLabel.startsWith(q)) {
+        starts.push({ id, label, present: onStage.has(id) });
+        // Prefix matches are shown first and on their own fill the list, so
+        // enough of them means nothing further can reach the screen.
+        if (starts.length >= MAX_MATCHES) break;
+      } else if (contains.length < MAX_MATCHES && (lowId.includes(q) || lowLabel.includes(q))) {
+        contains.push({ id, label, present: onStage.has(id) });
+      }
     }
     return [...starts, ...contains].slice(0, MAX_MATCHES);
-  }, [graph, query]);
+  }, [doc, style.nodeLabel, style.typeStyles, onStage, deferred]);
 
-  // Remembered finds, shown while the box is empty. Resolved against the
-  // current graph, so one that a filter has since removed simply waits.
-  const recentNodes = useMemo(() => {
-    if (recent.length === 0) return [];
-    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-    return recent.map((id) => byId.get(id)).filter((n): n is GraphNode => n !== undefined);
-  }, [graph, recent]);
+  // Remembered finds, shown while the box is empty. They carry their own name,
+  // so all the current graph is asked is whether each is on stage right now.
+  const recentNodes = useMemo(
+    () => recent.map((hit) => ({ ...hit, present: onStage.has(hit.id) })),
+    [onStage, recent],
+  );
 
   const searching = query.trim() !== "";
   const options = searching ? matches : recentNodes;
   const activeIndex = Math.min(active, Math.max(0, options.length - 1));
   const showing = open && (searching || recentNodes.length > 0);
 
-  const pick = (node: GraphNode) => {
+  const pick = (hit: Hit) => {
     setRecent((current) =>
-      [node.id, ...current.filter((id) => id !== node.id)].slice(0, MAX_RECENT),
+      [{ ...hit }, ...current.filter((h) => h.id !== hit.id)].slice(0, MAX_RECENT),
     );
     setQuery("");
     setOpen(false);
     input.current?.blur();
-    onPick(node.id);
+    onPick(hit.id);
   };
 
   const clear = () => {
@@ -153,23 +214,36 @@ export function NodeSearch({ graph, corner, onPick, inputRef }: NodeSearchProps)
       {showing && (
         <ul className={`node-search-menu from-${corner}`} id="node-search-list" role="listbox">
           {!searching && <li className="node-search-head">Recent</li>}
-          {options.map((node, i) => (
+          {options.map((hit, i) => (
             <li
-              key={node.id}
+              key={hit.id}
               id={`node-search-opt-${i}`}
               role="option"
               aria-selected={i === activeIndex}
-              className={i === activeIndex ? "node-opt active" : "node-opt"}
+              className={[
+                "node-opt",
+                i === activeIndex ? "active" : "",
+                hit.present ? "" : "hidden-hit",
+              ]
+                .filter(Boolean)
+                .join(" ")}
               // Mousedown rather than click, so the pick lands before the
               // input's blur closes the list out from under it.
               onMouseDown={(e) => {
                 e.preventDefault();
-                pick(node);
+                pick(hit);
               }}
               onMouseEnter={() => setActive(i)}
             >
-              <span className="node-opt-label">{node.label}</span>
-              {node.label !== node.id && <span className="node-opt-id">{node.id}</span>}
+              <span className="node-opt-label">{hit.label}</span>
+              {hit.label !== hit.id && <span className="node-opt-id">{hit.id}</span>}
+              {/* Offered, but say so: the reader is about to be taken to a
+                  node the chain is holding off the stage. */}
+              {!hit.present && (
+                <span className="node-opt-note" title="Hidden by the current filters">
+                  filtered
+                </span>
+              )}
             </li>
           ))}
           {searching && options.length === 0 && (

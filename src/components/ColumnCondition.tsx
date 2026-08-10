@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import type { Column, ColumnFilter, Row } from "../types";
-import { columnRange, distinctValues } from "../lib/graph";
-import { computeBins, numericValues } from "../lib/histogram";
+import { distinctsOf, numericBinsOf, rangeOf } from "../lib/stats";
 import { Histogram } from "./Histogram";
 
 interface ColumnConditionProps {
@@ -39,24 +38,34 @@ export function ColumnCondition({ rows, column, value, binRows, onChange }: Colu
   return <ValueCondition rows={rows} column={column} value={value} onChange={onChange} />;
 }
 
+/**
+ * The checkbox list, in whichever of the two values forms the condition is
+ * already in. A step that arrived as a whitelist keeps building one up; a step
+ * born from "All" subtracts instead, so unchecking one value on a column with
+ * a hundred thousand of them writes one value rather than the other 99,999.
+ * Both read as the same list of ticks on screen.
+ */
 function ValueCondition({ rows, column, value, onChange }: ColumnConditionProps) {
-  const values = useMemo(() => distinctValues(rows, column.name), [rows, column]);
-  const selected = value.kind === "values" ? new Set(value.selected) : new Set<string>();
+  const values = useMemo(() => distinctsOf(rows, column.name), [rows, column]);
+  const excluded = value.kind === "values" && "excluded" in value ? new Set(value.excluded) : null;
+  const selected =
+    value.kind === "values" && "selected" in value ? new Set(value.selected) : new Set<string>();
+
+  const checked = (key: string) => (excluded ? !excluded.has(key) : selected.has(key));
 
   const toggle = (key: string) => {
-    const next = new Set(selected);
+    const next = new Set(excluded ?? selected);
     if (next.has(key)) next.delete(key);
     else next.add(key);
-    onChange({ kind: "values", selected: [...next] });
+    onChange(
+      excluded ? { kind: "values", excluded: [...next] } : { kind: "values", selected: [...next] },
+    );
   };
 
   return (
     <>
       <div className="filter-links">
-        <button
-          type="button"
-          onClick={() => onChange({ kind: "values", selected: values.map((v) => v.key) })}
-        >
+        <button type="button" onClick={() => onChange({ kind: "values", excluded: [] })}>
           All
         </button>
         <button type="button" onClick={() => onChange({ kind: "values", selected: [] })}>
@@ -66,7 +75,7 @@ function ValueCondition({ rows, column, value, onChange }: ColumnConditionProps)
       <div className="filter-values">
         {values.slice(0, MAX_VALUE_ROWS).map(({ key, count }) => (
           <label key={key} className="check-item">
-            <input type="checkbox" checked={selected.has(key)} onChange={() => toggle(key)} />
+            <input type="checkbox" checked={checked(key)} onChange={() => toggle(key)} />
             <span className="check-name">{key === "" ? "(blank)" : key}</span>
             <span className="check-count">{count}</span>
           </label>
@@ -80,11 +89,11 @@ function ValueCondition({ rows, column, value, onChange }: ColumnConditionProps)
 }
 
 function RangeCondition({ rows, column, value, binRows, onChange }: ColumnConditionProps) {
-  const range = useMemo(() => columnRange(rows, column.name), [rows, column]);
+  const range = useMemo(() => rangeOf(rows, column.name), [rows, column]);
   const current = value.kind === "range" ? value : { kind: "range" as const, min: null, max: null };
 
   const bins = useMemo(
-    () => (binRows === undefined ? null : computeBins(numericValues(binRows, column.name))),
+    () => (binRows === undefined ? null : numericBinsOf(binRows, column.name)),
     [binRows, column.name],
   );
 

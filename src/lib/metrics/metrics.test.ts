@@ -5,6 +5,8 @@ import { disparity, embeddedness, simmelian } from "./edges";
 import { components, coreness, triangles } from "./structure";
 import {
   SAMPLE_LIMIT,
+  directed,
+  indexOfId,
   shortestPath,
   shortestPathInfo,
   shortestRoutes,
@@ -450,4 +452,26 @@ test("shortestRoutes lists the alternatives, capped and deterministic", () => {
 
   // Same call, same answer.
   expect(shortestRoutes(g, "A", "D", { limit: 10 })).toEqual(info);
+});
+
+test("the views are built once per graph and read the same either way", () => {
+  const g = graphOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "A"],
+  ]);
+  // A compute run asks several measures of one graph and most of them want the
+  // same undirected view, so it is built once. Every consumer treats it as
+  // read-only, which is what makes handing the same object back safe.
+  expect(undirected(g)).toBe(undirected(g));
+  expect(directed(g)).toBe(directed(g));
+
+  // A different graph over the same ids is still its own view.
+  const other = graphOf([["A", "B"]]);
+  expect(undirected(other)).not.toBe(undirected(g));
+
+  // The id lookup replaces what was a linear scan at every call.
+  expect(indexOfId(g, "C")).toBe(2);
+  expect(indexOfId(g, "nobody")).toBe(-1);
+  expect(g.ids.map((id) => indexOfId(g, id))).toEqual([0, 1, 2]);
 });

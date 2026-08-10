@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import type { CellValue, Column, Graph, GraphDoc, GraphLink, GraphStyle, Row } from "../types";
 import { edgeDetailColumnsFor, nodeDetailColumnsFor } from "../lib/doc";
-import { distinctValues, endpointId, markColor } from "../lib/graph";
+import { endpointId, markColor } from "../lib/graph";
+import { distinctsOf } from "../lib/stats";
+import { whereWalks, type EgoWhere } from "../lib/filter";
 import { expansionPreview } from "../lib/expand";
 import { imageSource, isRemoteSource } from "../lib/images";
 import { type Palette } from "../theme";
@@ -27,8 +29,8 @@ interface NodeDetailsProps {
   /** Takes the exploration's ego step back off the chain. */
   onClearExpand: () => void;
   /** The exploration's edge constraint, when its ego step carries one. */
-  egoWhere: { column: string; values: string[] } | undefined;
-  onEgoWhereChange: (where: { column: string; values: string[] } | undefined) => void;
+  egoWhere: EgoWhere | undefined;
+  onEgoWhereChange: (where: EgoWhere | undefined) => void;
   /** Whether the path tool is armed and waiting for its far end. */
   pathArmed: boolean;
   /** Whether tracing follows the arrows, adjustable while armed. */
@@ -77,6 +79,60 @@ function AttrValue({
     }
   }
   return <>{displayCell(column, value)}</>;
+}
+
+/** How many edge cards one direction shows before asking. */
+const EDGE_PAGE = 50;
+
+/**
+ * One direction's incident edges, a page at a time.
+ *
+ * A card per edge is fine for a node with six of them and is a few thousand
+ * DOM nodes for a hub with two thousand, which is long past the point anybody
+ * reads them and right at the point the panel stops opening. The cap is on the
+ * drawing, never on the counting: the heading says how many there are.
+ */
+function EdgeList({
+  title,
+  links,
+  direction,
+  doc,
+  style,
+  onSelect,
+}: {
+  title: string;
+  links: GraphLink[];
+  direction: "in" | "out";
+  doc: GraphDoc;
+  style: GraphStyle;
+  onSelect: (id: string) => void;
+}) {
+  const [limit, setLimit] = useState(EDGE_PAGE);
+  if (links.length === 0) return null;
+
+  const hidden = links.length - limit;
+  return (
+    <section className="insp-section">
+      <h4>
+        {title}
+        {links.length > EDGE_PAGE && <span className="insp-count"> {links.length}</span>}
+      </h4>
+      {links.slice(0, limit).map((l, i) => (
+        <EdgeCard
+          key={i}
+          link={l}
+          direction={direction}
+          attrColumns={edgeDetailColumnsFor(doc, style, l.rows as Row[])}
+          onSelect={onSelect}
+        />
+      ))}
+      {hidden > 0 && (
+        <button type="button" className="insp-more" onClick={() => setLimit(limit + EDGE_PAGE)}>
+          Show {Math.min(hidden, EDGE_PAGE)} more ({hidden} hidden)
+        </button>
+      )}
+    </section>
+  );
 }
 
 function EdgeCard({
@@ -169,31 +225,50 @@ export function NodeDetails({
     return expansionPreview(doc, new Set([selectedId]), selectedId, nodeTypeColumn, edgeTypeColumn);
   }, [previewOpen, preview, doc, selectedId, nodeTypeColumn, edgeTypeColumn]);
 
-  // Unchecking a line materialises the constraint over every value the
-  // column holds, the way the Filter step's own editor does, so the first
-  // toggle narrows by one value rather than to one value.
+  // Unchecking a line names that line, rather than naming every other line to
+  // leave it out. The old shape read the column's every distinct value into
+  // the constraint to subtract one from it, which cost a scan per click and
+  // rode along in the workspace.
   const toggleEdgeType = (kind: string) => {
     if (edgeTypeColumn === null) return;
-    const all = distinctValues(doc.edges.rows, edgeTypeColumn).map((v) => v.key);
-    const current =
-      egoWhere !== undefined && egoWhere.column === edgeTypeColumn ? egoWhere.values : all;
-    const values = current.includes(kind) ? current.filter((v) => v !== kind) : [...current, kind];
-    // Back to every value ticked means back to no constraint at all.
-    onEgoWhereChange(
-      values.length === all.length && all.every((v) => values.includes(v))
-        ? undefined
-        : { column: edgeTypeColumn, values },
-    );
+    const on = egoWhere !== undefined && egoWhere.column === edgeTypeColumn ? egoWhere : undefined;
+    let excluded: string[];
+    if (on === undefined) excluded = [];
+    else if ("excluded" in on) excluded = on.excluded;
+    // A whitelist arriving from an older workspace keeps its meaning by being
+    // read as what it leaves out of the values actually present.
+    else {
+      excluded = distinctsOf(doc.edges.rows, edgeTypeColumn)
+        .map((v) => v.key)
+        .filter((v) => !on.values.includes(v));
+    }
+    const next = excluded.includes(kind) ? excluded.filter((v) => v !== kind) : [...excluded, kind];
+    // Nothing left out means no constraint at all.
+    onEgoWhereChange(next.length === 0 ? undefined : { column: edgeTypeColumn, excluded: next });
   };
 
   const walked = (kind: string): boolean =>
-    egoWhere === undefined || egoWhere.column !== edgeTypeColumn || egoWhere.values.includes(kind);
+    egoWhere === undefined || egoWhere.column !== edgeTypeColumn || whereWalks(egoWhere, kind);
 
-  const node = graph.nodes.find((n) => n.id === selectedId);
+  // Finding the node and splitting its edges are three passes over the whole
+  // graph, and every unrelated re-render of this panel used to pay for them:
+  // selecting a hub in a large network was the first place the app froze.
+  // One pass now, and only when the graph or the selection actually moves.
+  const node = useMemo(
+    () => graph.nodes.find((n) => n.id === selectedId) ?? null,
+    [graph, selectedId],
+  );
+  const { outgoing, incoming } = useMemo(() => {
+    const out: GraphLink[] = [];
+    const inn: GraphLink[] = [];
+    for (const l of graph.links) {
+      if (endpointId(l.source) === selectedId) out.push(l);
+      if (endpointId(l.target) === selectedId) inn.push(l);
+    }
+    return { outgoing: out, incoming: inn };
+  }, [graph, selectedId]);
+
   if (!node) return null;
-
-  const outgoing = graph.links.filter((l) => endpointId(l.source) === selectedId);
-  const incoming = graph.links.filter((l) => endpointId(l.target) === selectedId);
 
   const nodeAttrs = nodeDetailColumnsFor(doc, style, node.row).filter(
     (c) => node.row[c.name] !== null && node.row[c.name] !== "",
@@ -410,34 +485,26 @@ export function NodeDetails({
           </dl>
         </section>
       )}
-      {outgoing.length > 0 && (
-        <section className="insp-section">
-          <h4>Outgoing</h4>
-          {outgoing.map((l, i) => (
-            <EdgeCard
-              key={`o${i}`}
-              link={l}
-              direction="out"
-              attrColumns={edgeDetailColumnsFor(doc, style, l.rows as Row[])}
-              onSelect={onSelect}
-            />
-          ))}
-        </section>
-      )}
-      {incoming.length > 0 && (
-        <section className="insp-section">
-          <h4>Incoming</h4>
-          {incoming.map((l, i) => (
-            <EdgeCard
-              key={`i${i}`}
-              link={l}
-              direction="in"
-              attrColumns={edgeDetailColumnsFor(doc, style, l.rows as Row[])}
-              onSelect={onSelect}
-            />
-          ))}
-        </section>
-      )}
+      {/* Keyed on the node, so a fresh selection starts back at the first
+          page rather than inheriting how far the last one was unrolled. */}
+      <EdgeList
+        key={`o${selectedId}`}
+        title="Outgoing"
+        links={outgoing}
+        direction="out"
+        doc={doc}
+        style={style}
+        onSelect={onSelect}
+      />
+      <EdgeList
+        key={`i${selectedId}`}
+        title="Incoming"
+        links={incoming}
+        direction="in"
+        doc={doc}
+        style={style}
+        onSelect={onSelect}
+      />
     </section>
   );
 }

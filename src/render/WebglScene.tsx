@@ -482,9 +482,13 @@ export function WebglScene({ shared, onFailed, ref }: WebglSceneProps) {
       lastPointerRef.current = event;
     };
     const onDblClick = () => {
-      if (hoveredIndexRef.current === null && hoveredLinkRef.current === null) {
-        shared.callbacks.onBackgroundDblClick();
+      const at = hoveredIndexRef.current;
+      if (at !== null) {
+        const node = shared.scene.nodes[at];
+        if (node) shared.callbacks.onNodeDblClick(node);
+        return;
       }
+      if (hoveredLinkRef.current === null) shared.callbacks.onBackgroundDblClick();
     };
     // Keyboard: the same one-tab-stop model the canvas renderer keeps.
     const onKeyDown = (event: KeyboardEvent) => {

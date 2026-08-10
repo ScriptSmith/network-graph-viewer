@@ -78,7 +78,22 @@ way to change data is the data table, which edits the underlying rows.
   there is no legend and nothing to fold into "Other". `markColor()` is the one
   answer to what color a node is, asked by the canvas, the inspector and GEXF.
 - `src/lib/filter.ts` - the filter chain. Steps apply **in order**, each seeing
-  the subgraph the last one produced, so reordering changes the answer.
+  the subgraph the last one produced, so reordering changes the answer. A
+  step's `narrowedHalf` (which half, edges or nodes, it narrowed) is **told,
+  never inferred**: inferring it from array identity silently breaks
+  inversion, where an inverted no-op must yield the empty set, and being told
+  is what makes identity-preserving returns safe app-wide.
+- `src/lib/graphIndex.ts` - the shared incidence index: an id-to-int interner
+  per document and CSR incidence at two levels, both lazy and WeakMap-cached
+  (per `BaseGraph` for the chain's subgraphs, per document for the seed
+  picker and the expansion preview). One undirected CSR answers out/in/any
+  through a `forward` flag per entry, and neighbour order inside it is
+  link/row order: Louvain runs in index order to stay reproducible and user
+  scripts read `graph.neighbors` as a list, so the order the rows arrived in
+  **is** the contract, held by tests. `reachable`, `componentCount`,
+  `toScriptGraph`, `toMetricGraph`, the canvas dim/keyboard index and
+  `expansionPreview` all ride it; `project.ts` deliberately does not, because
+  its insertion-order grouping decides projected link direction.
 - `src/lib/metrics/` - every algorithm, hand-written. `model.ts` holds the
   compact `MetricGraph` the rest operate on; `index.ts` is the registry that
   drives the compute panel and writes results as ordinary columns.
@@ -179,6 +194,9 @@ way to change data is the data table, which edits the underlying rows.
   nodes per shared counterpart, weight by the shared count. Work is the sum
   of counterpart degrees squared, so it stops at a counterpart boundary past
   `PROJECTION_PAIR_LIMIT` and reports how far it got.
+- `src/lib/stats.ts` - distincts, ranges and bins for the popovers and the
+  editors, memoized in WeakMaps keyed on the rows array: edits replace arrays
+  copy-on-write, so invalidation is structural rather than tracked.
 - `src/lib/histogram.ts` + `components/Histogram.tsx` - binning and the
   draggable min/max brackets, drawn behind range filter steps and the
   timeline. Bins are computed over what actually enters that step
@@ -214,8 +232,48 @@ way to change data is the data table, which edits the underlying rows.
   Column types come off the schema rather than a sample, which is the whole
   point: a zero-padded id column survives here and would not survive a guess.
   Values are coerced because parquet holds shapes a row cannot (bigint, Date,
-  structs). Capped at `PARQUET_ROW_LIMIT`, and the shortfall is reported
-  through `Dataset.truncated` rather than passing for the whole file.
+  structs). Capped at `PARQUET_ROW_LIMIT`, which is `WORKING_SET_LIMIT` under
+  its old name; a file past it opens source-backed instead of truncating.
+- `src/lib/store.ts` - `TableStore`, the seam for a future columnar
+  representation. It wraps today's `Row[]` (identical row objects, cached
+  column views, copy-on-write transforms) and has **zero consumers on
+  purpose**: its benchmark (store.bench.test.ts) measured a one-shot column
+  scan through `col()` at 1.43x the plain row loop, so the measured rule is
+  that a column read once stays on the rows and only repeated reads off a
+  stable array go through a cached store. It waits, reviewed, for the
+  representation flip.
+- `src/lib/source/` - the source layer: a file or URL too large to open whole
+  sits **in front of** the document, never under it; the reader carves out a
+  bounded working set and everything downstream stays an ordinary document.
+  `types.ts` is the `DataSource` vocabulary (`schema`, `distinct`, `range`,
+  `bins`, `searchNodes`, `lookupIds`, `neighborhood` for counts,
+  `materialize` for rows), async and plain-data so an implementation can live
+  behind a wasm engine or a notebook kernel; `contract.ts` is the
+  specification, run under vitest against `native.ts`, the in-memory
+  reference nothing else constructs. `sql.ts` is every statement the engine
+  runs, pure and unit-tested: identifiers quoted by doubling, every value
+  bound as a parameter except `createView`'s file name (DuckDB refuses to
+  prepare DDL; that one inlining is escaped and tested, keep it the only
+  one), and every row-returning statement ends in a LIMIT. `duckdb.ts` is
+  the adapter; `probeFile` (index.ts) chooses the path before any reader
+  claims the file, exactly from a parquet footer or extrapolated from the
+  first 64 KB of delimited text, and must keep running before
+  `TEXT_EXTENSIONS` claims `.csv`. `limits.ts` holds `WORKING_SET_LIMIT`.
+- `src/useSource.ts` + `components/SourceCard.tsx` - the engine's lifetime
+  and its UI. The hook owns the whole protocol: `pending` (opened, waiting
+  for a selection), `live` (behind the working set on stage), `detached` (a
+  reopened workspace's saved recipe with no engine yet), and `release()`,
+  which every document arrival calls; the one arrival that keeps its engine
+  is `load`'s own promotion of pending to live. The card is the front door
+  (endpoints, seeds by search or pasted list validated by point lookup,
+  depth, direction, walk constraint, counts that run only when asked); once
+  a graph is on stage it lives in the sidebar's Data step. `rematerialize`
+  in App.tsx lands a reload through a keep-mode history step with the edits
+  overlay laid back on and computed columns re-run, and "Expand from here"
+  on a source-backed view widens the selection instead of adding an ego
+  step. The workspace's optional `source` field (ref + selection, checked in
+  `validSource`) reopens detached, reconnected by offering the file again
+  (matched by name and size) or reopening the URL.
 - `src/lib/script/` - the QuickJS sandbox and the payload it receives.
 - `src/workers/compute.worker.ts` - metrics and user scripts, off the main
   thread. `spawn.ts` is how it is created, imported everywhere as `#worker`:
@@ -360,6 +418,39 @@ way to change data is the data table, which edits the underlying rows.
   `WebglScene`), not on `isReady`. Known WebGL divergences, all deliberate:
   no in-graph labels, no node images, reciprocal arcs draw straight, link
   widths are screen pixels rather than zoom-scaled, and the pin has no ring.
+- The DuckDB engine is lazy-loaded in the page app only. The widget and
+  standalone bundles must never carry it: a vite library build inlines
+  dynamic imports and base64s the assets they name, so the `#duckdb`
+  specifier is aliased per config (page: the real module; embed and
+  standalone: `duckdb.absent.ts`), the way `#worker` already is. Verify by
+  bundle size (~3.6 MB each) and by grepping both built bundles for
+  `duckdb`; the absent stub's identifier is the only acceptable hit. Never
+  by reading the config.
+- `@duckdb/duckdb-wasm` is pinned exactly at `1.32.0`: the project publishes
+  dev builds as npm `latest`, so bumps are manual and deliberate. Its wasm
+  and worker assets are self-hosted via `?url` imports, never a CDN.
+- No spill. A wasm32 heap does not page to disk, so intermediates that
+  exceed it fail rather than slow: every row-returning statement the source
+  layer emits carries a LIMIT, counts are checked before materializing, and
+  a selection past the budget reports through `truncated` and the card,
+  never as an OOM.
+- The source is read-only, and `applyChain`/`applyStyle` stay synchronous
+  and in-memory: SQL is data access, never an algorithm result and never
+  under the filter chain. Table edits apply to the materialized working set
+  and replay through the overlay on re-materialize, like "Update data".
+- Fragment-only privacy extends to source references: no credential ever
+  serializes into a workspace or link, and `validSource` (and the URL open
+  path) reject credentialed URLs and non-http(s) schemes. Keep it that way.
+- `WORKING_SET_LIMIT` holds at 200k. The history row budget in
+  `useDocHistory.ts` (entries weighed by unshared row objects, oldest
+  evicted past `ROW_BUDGET`, `MIN_DEPTH` always kept) is what makes raising
+  it thinkable; moving it is a decision made against a real file, with Adam.
+- No cell-granular generic accessor on a hot path: hot loops branch once per
+  column and run monomorphic. `TableStore.cell()`/`row()` are for tooltips,
+  the inspector, editing and other cold bounded paths, and a one-shot column
+  scan never goes through `col()` (store.bench.test.ts encodes the measured
+  rule; it is also the suite's one timing-sensitive test, so if it fails,
+  re-run it alone before believing it).
 - The raster renderers keep the keyboard model on one focusable host element:
   it wears `data-nodes` only while a node actually holds focus, which is what
   lets the app's single-key shortcuts stand down exactly then (the

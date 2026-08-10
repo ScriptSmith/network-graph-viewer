@@ -14,7 +14,7 @@ import { guessStyle } from "../parse";
 import { parseDot, writeDot } from "./dot";
 import { parseGexf, writeGexf } from "./gexf";
 import { parseGraphml, writeGraphml } from "./graphml";
-import { parseWorkspace, writeWorkspace } from "./ngv";
+import { parseWorkspace, validSource, writeWorkspace } from "./ngv";
 import { detectFormat, extractGistFileHint, extractGistId, matchesFileHint, toCsv } from "./index";
 import { compoundKey } from "../cells";
 import { overlayFromJson } from "../overlay";
@@ -626,4 +626,49 @@ test("a timewindow step survives the workspace round trip", () => {
   const { workspace } = parseWorkspace(text, "x");
   expect(workspace.chain).toHaveLength(1);
   expect(workspace.chain[0]).toMatchObject({ kind: "timewindow", column: "When", min: 100 });
+});
+
+test("a saved source is validated the way every other workspace field is", () => {
+  const good = {
+    ref: { kind: "file", name: "big.parquet", size: 12345 },
+    selection: {
+      table: "big",
+      source: "src",
+      target: "dst",
+      seeds: ["a"],
+      depth: 2,
+      direction: "any",
+      edgeLimit: 1000,
+    },
+  };
+  expect(validSource(good)?.ref).toEqual({ kind: "file", name: "big.parquet", size: 12345 });
+  expect(validSource(good)?.selection.seeds).toEqual(["a"]);
+
+  // Shapes that are not quite right are dropped rather than repaired.
+  expect(validSource(undefined)).toBeUndefined();
+  expect(validSource({ ref: { kind: "elsewhere" }, selection: good.selection })).toBeUndefined();
+  expect(validSource({ ...good, selection: { ...good.selection, seeds: [7] } })).toBeUndefined();
+  expect(
+    validSource({ ...good, selection: { ...good.selection, direction: "sideways" } }),
+  ).toBeUndefined();
+
+  // A url source is http(s) only, and never one carrying credentials: a
+  // workspace arrives from a link anyone can write.
+  const url = (u: string) =>
+    validSource({ ref: { kind: "url", url: u }, selection: good.selection });
+  expect(url("https://example.com/g.parquet")?.ref).toEqual({
+    kind: "url",
+    url: "https://example.com/g.parquet",
+  });
+  expect(url("javascript:alert(1)")).toBeUndefined();
+  expect(url("file:///etc/passwd")).toBeUndefined();
+  expect(url("https://user:secret@example.com/g.parquet")).toBeUndefined();
+
+  // Numbers are clamped rather than trusted.
+  const wild = validSource({
+    ...good,
+    selection: { ...good.selection, depth: 9999, edgeLimit: 1e12 },
+  });
+  expect(wild?.selection.depth).toBe(6);
+  expect(wild?.selection.edgeLimit).toBe(200_000);
 });

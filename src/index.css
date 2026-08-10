@@ -1055,6 +1055,23 @@ body.resizing-y {
   color: var(--ink-3);
 }
 
+/* A hit the chain is currently holding off the stage. Still offered, since not
+   being able to see something is the usual reason for looking for it. */
+.node-opt-note {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.node-opt.hidden-hit .node-opt-label {
+  opacity: 0.7;
+}
+
 .node-opt-empty {
   color: var(--ink-3);
   cursor: default;
@@ -1808,6 +1825,30 @@ body.resizing-y {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--ink-3);
+}
+
+/* How many there are, next to a heading whose list is only showing some. */
+.insp-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+
+.insp-more {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px;
+  background: none;
+  border: 1px dashed var(--hairline);
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.insp-more:hover {
+  border-style: solid;
 }
 
 .edge-card {
@@ -3012,6 +3053,20 @@ input.swatch::-moz-color-swatch {
   font-size: 12px;
 }
 
+/* Wide enough to virtualize its columns, which means the widths are computed
+   rather than measured, so the browser must not size them from the contents. */
+.dt-table.dt-fixed {
+  table-layout: fixed;
+  width: auto;
+  min-width: 0;
+}
+
+.dt-table.dt-fixed td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dt-table thead {
   position: sticky;
   top: 0;
@@ -3788,6 +3843,47 @@ input.swatch::-moz-color-swatch {
   gap: 5px;
 }
 
+/* The ego step's seed picker: a box to name a node by, and the matches it
+   finds in the document rather than only in what is currently drawn. */
+.chain-seed {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chain-seed .control {
+  flex: 1;
+  min-width: 0;
+}
+
+.chain-seed-menu {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chain-seed-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.chain-seed-opt:hover {
+  background: var(--raised-2);
+  color: var(--ink);
+}
+
 .chain-chip {
   background: var(--raised-2);
   border: 1px solid var(--hairline);
@@ -4337,4 +4433,79 @@ input.swatch::-moz-color-swatch {
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* The source card: a file too large to open whole, and the choice of what to
+   take out of it. It stands in for the onboarding, so it wears the card's own
+   width rather than a panel's. */
+.source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+}
+
+.source-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.source-name {
+  font-size: 14px;
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.source-meta {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.source-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+/* Every child, not just the fields. A bare `.control` carries `width: 100%`,
+   which as a flex item resolves its basis to the whole row and squeezes
+   whatever sits beside it down to nothing: the depth slider disappeared under
+   the direction select this way. The filter chain's rows say the same thing
+   for the same reason. */
+.source-row > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Stacked, but the button sizes to its own text: stretched across the card it
+   reads as a heading rather than as something to press. */
+.source-meter {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.source-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* An action living inside a line of text: the node count waits to be asked,
+   and a full button inside the meta line would read as a heading. */
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-link:disabled {
+  color: var(--ink-3);
+  cursor: default;
+  text-decoration: none;
 }

@@ -109,6 +109,16 @@ export interface DataTableProps {
 const ROW_HEIGHT = 30;
 const FILTER_WIDTH = 232;
 const MENU_WIDTH = 250;
+/**
+ * Past this many columns the table virtualizes them too, and takes fixed
+ * column widths to do it. Set well above any hand-made spreadsheet and well
+ * below the width a data file reaches, so the tables people actually edit keep
+ * sizing their columns to their contents.
+ */
+const COLUMN_VIRTUAL_FROM = 30;
+const COLUMN_WIDTH = 160;
+/** Kept in step with `.dt-gutter` in index.css. */
+const GUTTER_WIDTH = 44;
 
 /** One line of the table: a row, or the rule that divides hits from the rest. */
 type Item = { kind: "row"; row: TanRow<Row> } | { kind: "split"; matched: number; others: number };
@@ -279,6 +289,48 @@ export function DataTable({
     overscan: 12,
   });
 
+  /**
+   * A column looked up by name, once per table rather than once per cell.
+   * Every cell drawn needed its `Column`, and a linear scan for it is fine on
+   * eight columns and is columns x drawn-cells per frame on a wide file.
+   */
+  const columnsByName = useMemo(() => {
+    const map = new Map<string, Column>();
+    for (const c of table.columns) map.set(c.name, c);
+    return map;
+  }, [table.columns]);
+  const columnOf = (id: string) => columnsByName.get(id) as Column;
+
+  /**
+   * Columns are virtualized the way rows are, but only once there are enough
+   * of them to be worth it: a wide parquet file runs to hundreds, and every
+   * one of them costs a cell per drawn row whether or not it is on screen.
+   *
+   * Below the threshold nothing changes, which matters more than the saving
+   * does. Virtualizing means fixed column widths, since the offsets are
+   * computed rather than measured, and content-sized columns are the better
+   * table whenever the browser can afford to size them.
+   */
+  const leafColumns = tableInstance.getVisibleLeafColumns();
+  const virtualColumns = leafColumns.length > COLUMN_VIRTUAL_FROM;
+  const columnVirtualizer = useVirtualizer({
+    horizontal: true,
+    count: leafColumns.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => COLUMN_WIDTH,
+    overscan: 3,
+  });
+  const drawnColumns = columnVirtualizer.getVirtualItems();
+  const padLeft = virtualColumns && drawnColumns.length > 0 ? drawnColumns[0].start : 0;
+  const padRight =
+    virtualColumns && drawnColumns.length > 0
+      ? columnVirtualizer.getTotalSize() - drawnColumns[drawnColumns.length - 1].end
+      : 0;
+
+  /** The cells of one row that are actually on screen, in screen order. */
+  const drawnCells = <T,>(cells: T[]): T[] =>
+    virtualColumns ? drawnColumns.map((v) => cells[v.index]).filter(Boolean) : cells;
+
   useEffect(() => {
     onShownCountChange(shownCount);
   }, [shownCount, onShownCountChange]);
@@ -353,15 +405,24 @@ export function DataTable({
 
   return (
     <div className="dt" ref={scrollRef}>
-      <table className="dt-table">
+      <table
+        className={virtualColumns ? "dt-table dt-fixed" : "dt-table"}
+        // Fixed layout sizes from the widths given rather than the contents,
+        // so the table has to state its own total: the gutter, plus what the
+        // column virtualizer says all the columns come to.
+        style={
+          virtualColumns ? { width: GUTTER_WIDTH + columnVirtualizer.getTotalSize() } : undefined
+        }
+      >
         <thead>
           {tableInstance.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
               <th className="dt-gutter" />
-              {headerGroup.headers.map((header) => {
-                const column = table.columns.find((c) => c.name === header.column.id) as Column;
+              {padLeft > 0 && <th style={{ width: padLeft }} aria-hidden="true" />}
+              {drawnCells(headerGroup.headers).map((header) => {
+                const column = columnOf(header.column.id);
                 return (
-                  <th key={header.id}>
+                  <th key={header.id} style={virtualColumns ? { width: COLUMN_WIDTH } : undefined}>
                     <div className="dt-head">
                       <button
                         type="button"
@@ -396,6 +457,7 @@ export function DataTable({
                   </th>
                 );
               })}
+              {padRight > 0 && <th style={{ width: padRight }} aria-hidden="true" />}
             </tr>
           ))}
         </thead>
@@ -438,8 +500,9 @@ export function DataTable({
                       {row.getIsExpanded() ? "▾" : "▸"}
                     </button>
                   </td>
-                  {row.getVisibleCells().map((cell) => {
-                    const column = table.columns.find((c) => c.name === cell.column.id) as Column;
+                  {padLeft > 0 && <td style={{ width: padLeft }} />}
+                  {drawnCells(row.getVisibleCells()).map((cell) => {
+                    const column = columnOf(cell.column.id);
                     if (cell.getIsGrouped()) {
                       return (
                         <td key={cell.id}>
@@ -460,6 +523,7 @@ export function DataTable({
                       </td>
                     );
                   })}
+                  {padRight > 0 && <td style={{ width: padRight }} />}
                 </tr>
               );
             }
@@ -504,8 +568,9 @@ export function DataTable({
                     ×
                   </button>
                 </td>
-                {row.getVisibleCells().map((cell) => {
-                  const column = table.columns.find((c) => c.name === cell.column.id) as Column;
+                {padLeft > 0 && <td style={{ width: padLeft }} />}
+                {drawnCells(row.getVisibleCells()).map((cell) => {
+                  const column = columnOf(cell.column.id);
                   const isEditing = editing?.row === original && editing.column === column.name;
                   const node = nodeCells.has(column.name) ? cellToId(original[column.name]) : null;
                   return (
@@ -545,6 +610,7 @@ export function DataTable({
                     </td>
                   );
                 })}
+                {padRight > 0 && <td style={{ width: padRight }} />}
               </tr>
             );
           })}

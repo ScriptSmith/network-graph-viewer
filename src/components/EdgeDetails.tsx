@@ -1,7 +1,11 @@
+import { useMemo, useState } from "react";
 import type { Graph, GraphDoc, GraphStyle, Row } from "../types";
 import { edgeDetailColumnsFor } from "../lib/doc";
 import { endpointId, markColor } from "../lib/graph";
 import { NEUTRAL, nodeColor, type Palette } from "../theme";
+
+/** How many row cards one edge shows before asking. */
+const ROW_PAGE = 50;
 
 interface EdgeDetailsProps {
   doc: GraphDoc;
@@ -33,8 +37,13 @@ export function EdgeDetails({
   onSelectNode,
   onClear,
 }: EdgeDetailsProps) {
-  const link = graph.links.find(
-    (l) => endpointId(l.source) === edge.source && endpointId(l.target) === edge.target,
+  const [limit, setLimit] = useState(ROW_PAGE);
+  const link = useMemo(
+    () =>
+      graph.links.find(
+        (l) => endpointId(l.source) === edge.source && endpointId(l.target) === edge.target,
+      ),
+    [graph, edge.source, edge.target],
   );
   if (!link) return null;
 
@@ -84,7 +93,7 @@ export function EdgeDetails({
         {rows.length === 1 ? "1 row" : `${rows.length} rows`}
         {link.colorValue ? ` · ${link.colorValue}` : ""}
       </p>
-      {rows.map((row, i) => {
+      {rows.slice(0, limit).map((row, i) => {
         const details = attrColumns.filter((c) => row[c] !== null && row[c] !== "");
         if (details.length === 0) return null;
         return (
@@ -100,6 +109,13 @@ export function EdgeDetails({
           </div>
         );
       })}
+      {/* A pair with thousands of parallel rows is a card each otherwise, and
+          the count above already said how many there are. */}
+      {rows.length > limit && (
+        <button type="button" className="insp-more" onClick={() => setLimit(limit + ROW_PAGE)}>
+          Show {Math.min(rows.length - limit, ROW_PAGE)} more ({rows.length - limit} hidden)
+        </button>
+      )}
     </section>
   );
 }

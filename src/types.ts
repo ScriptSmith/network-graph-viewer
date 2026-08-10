@@ -201,8 +201,21 @@ export function isCellStyle(token: string): boolean {
   return token.startsWith("cell:");
 }
 
+/**
+ * A condition on one column. The two `values` forms are the two frames a
+ * reader actually has, building a few up or subtracting a few out, and each
+ * stays small in the frame it belongs to.
+ *
+ * `selected` is a frozen whitelist: it means what every condition written
+ * before the exclusion form existed means, and keeps meaning it, so old links
+ * open unchanged. `excluded` is the complement, which makes an empty exclusion
+ * no constraint at all, and one that tracks values arriving later through an
+ * update rather than shutting them out. The histogram brackets already read
+ * this way, where a bracket parked on its own end of the range means no bound.
+ */
 export type ColumnFilter =
   | { kind: "values"; selected: string[] }
+  | { kind: "values"; excluded: string[] }
   | { kind: "range"; min: number | null; max: number | null };
 
 export type Filters = Record<string, ColumnFilter>;

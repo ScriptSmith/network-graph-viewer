@@ -12,6 +12,7 @@
  */
 import type { AsyncBuffer, SchemaTree } from "hyparquet";
 import type { CellValue, ColumnType, Dataset, Row } from "../types";
+import { WORKING_SET_LIMIT } from "./source/limits";
 
 export const PARQUET_EXTENSIONS = [".parquet", ".pq"];
 
@@ -19,8 +20,13 @@ export const PARQUET_EXTENSIONS = [".parquet", ".pq"];
  * Every row here is held in memory and drawn, so a parquet file running to
  * millions of rows is read up to this many and the rest is reported rather
  * than quietly dropped.
+ *
+ * The same ceiling the whole working set has, since it is the same question:
+ * how many edge rows the app can hold. It lives in `lib/source` now, because
+ * that is also what decides whether a file is better opened through a query
+ * engine than read into memory at all.
  */
-export const PARQUET_ROW_LIMIT = 200_000;
+export const PARQUET_ROW_LIMIT = WORKING_SET_LIMIT;
 
 /** A `File` as something hyparquet can read byte ranges out of. */
 function asyncBuffer(file: File): AsyncBuffer {

@@ -1,4 +1,5 @@
 import type { BaseGraph, GraphNode, Row } from "../../types";
+import { nodeIndex } from "../graphIndex";
 import { asNumber } from "../parse";
 
 /**
@@ -20,8 +21,10 @@ const endpoint = (e: string | GraphNode): string => (typeof e === "string" ? e :
  * numeric column over the rows behind each link, defaulting to 1.
  */
 export function toMetricGraph(graph: BaseGraph, weightColumn: string | null = null): MetricGraph {
-  const ids = graph.nodes.map((n) => n.id);
-  const index = new Map(ids.map((id, i) => [id, i]));
+  // The ids and their lookup come from the graph's own index rather than being
+  // derived again here; this is the same interning the ego walk and the
+  // component count use, and only the weights depend on the column asked for.
+  const { ids, index } = nodeIndex(graph);
 
   const source = new Int32Array(graph.links.length);
   const target = new Int32Array(graph.links.length);
@@ -76,7 +79,41 @@ export interface Undirected {
   totalWeight: number;
 }
 
+/**
+ * The views and the id lookup, held against the metric graph that produced
+ * them.
+ *
+ * These sit below the incidence index rather than on it: they are built from
+ * `source`/`target`, which is what a `MetricGraph` is, and it can arrive in a
+ * worker with no `BaseGraph` anywhere near it. A compute run asks several
+ * measures of one graph and most of them want the same undirected view, so
+ * memoizing here is what stops each one rebuilding it. Every consumer treats
+ * these as read-only, which is what makes sharing them safe.
+ */
+const undirectedViews = new WeakMap<MetricGraph, Undirected>();
+const directedViews = new WeakMap<MetricGraph, Directed>();
+const idIndexes = new WeakMap<MetricGraph, Map<string, number>>();
+
+/** Where an id sits in `graph.ids`, or -1. Was a linear scan at every call. */
+export function indexOfId(graph: MetricGraph, id: string): number {
+  let index = idIndexes.get(graph);
+  if (index === undefined) {
+    index = new Map();
+    for (let i = 0; i < graph.ids.length; i++) index.set(graph.ids[i], i);
+    idIndexes.set(graph, index);
+  }
+  return index.get(id) ?? -1;
+}
+
 export function undirected(graph: MetricGraph): Undirected {
+  const cached = undirectedViews.get(graph);
+  if (cached !== undefined) return cached;
+  const built = buildUndirected(graph);
+  undirectedViews.set(graph, built);
+  return built;
+}
+
+function buildUndirected(graph: MetricGraph): Undirected {
   const n = graph.ids.length;
   const merged: Map<number, number>[] = Array.from({ length: n }, () => new Map());
 
@@ -121,6 +158,14 @@ export interface Directed {
 }
 
 export function directed(graph: MetricGraph): Directed {
+  const cached = directedViews.get(graph);
+  if (cached !== undefined) return cached;
+  const built = buildDirected(graph);
+  directedViews.set(graph, built);
+  return built;
+}
+
+function buildDirected(graph: MetricGraph): Directed {
   const n = graph.ids.length;
   const out: number[][] = Array.from({ length: n }, () => []);
   const inn: number[][] = Array.from({ length: n }, () => []);
@@ -184,8 +229,8 @@ export function shortestRoutes(
   options: { directed?: boolean; limit?: number } = {},
 ): RouteInfo | null {
   const limit = Math.max(1, options.limit ?? 1);
-  const source = graph.ids.indexOf(from);
-  const target = graph.ids.indexOf(to);
+  const source = indexOfId(graph, from);
+  const target = indexOfId(graph, to);
   if (source === -1 || target === -1) return null;
   if (source === target) return { routes: [[from]], count: 1 };
 

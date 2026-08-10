@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { GraphDoc } from "./types";
+import type { GraphDoc, Table } from "./types";
 import { diffDocs, extendOverlay, EMPTY_OVERLAY, type EditsOverlay } from "./lib/overlay";
 
 /**
@@ -9,8 +9,14 @@ import { diffDocs, extendOverlay, EMPTY_OVERLAY, type EditsOverlay } from "./lib
  * backwards out of one document into another is not a step anyone means.
  *
  * Whole documents are kept rather than diffs. The transforms in lib/edit.ts
- * copy only the rows they touch, so a snapshot shares almost everything with
- * the one before it and costs about what recording the change would.
+ * copy only the rows they touch, so a snapshot usually shares almost
+ * everything with the one before it, but column renames, retypes and computed
+ * columns rebuild every row object, and fifty snapshots of a large table that
+ * each own their rows is how an undo history becomes the biggest thing on the
+ * heap. So each entry carries a weight, the row objects it holds that its
+ * successor does not share, and the oldest entries are let go once the total
+ * passes a budget. A minimum number of steps is always kept whatever they
+ * weigh: undo never vanishes, it only stops reaching back so far.
  *
  * The edits overlay rides alongside: each recorded step diffs its before and
  * after documents and folds the delta in, so "update data" can replay the
@@ -20,14 +26,59 @@ import { diffDocs, extendOverlay, EMPTY_OVERLAY, type EditsOverlay } from "./lib
  * from under the edits is exactly that.
  */
 
-/** How many steps back the table remembers. */
+/** How many steps back the table remembers, at most. */
 const DEPTH = 50;
+
+/** Steps always kept, whatever they weigh. */
+export const MIN_DEPTH = 5;
+
+/**
+ * Row objects the history may hold beyond what the present document shares.
+ * At the current 200k working-set ceiling this is about fifteen whole-table
+ * rebuilds; raising the working set is the conversation that would retune it.
+ */
+export const ROW_BUDGET = 3_000_000;
 
 interface Entry {
   doc: GraphDoc;
   overlay: EditsOverlay;
   /** What was done to leave this document, so a button can name it. */
   label: string;
+  /** Row objects this entry keeps alive that its successor does not share. */
+  weight: number;
+}
+
+/** Rows in `before` that `after` no longer holds, by identity. */
+function rowsNotShared(before: Table, after: Table): number {
+  if (before.rows === after.rows) return 0;
+  const kept = new Set(after.rows);
+  let n = 0;
+  for (const row of before.rows) if (!kept.has(row)) n++;
+  return n;
+}
+
+/**
+ * What keeping `before` costs beyond keeping `after`: 1 for a cell edit, the
+ * whole table for a column op or a computed column, which rebuild every row.
+ */
+export function entryWeight(before: GraphDoc, after: GraphDoc): number {
+  return rowsNotShared(before.edges, after.edges) + rowsNotShared(before.nodes, after.nodes);
+}
+
+/**
+ * The newest steps that fit: everything up to `DEPTH` while the summed weight
+ * stays under budget, and never fewer than `MIN_DEPTH` however heavy they are.
+ */
+export function trimPast<T extends { weight: number }>(past: T[]): T[] {
+  const most = Math.min(past.length, DEPTH);
+  let kept = 0;
+  let total = 0;
+  while (kept < most) {
+    total += past[past.length - 1 - kept].weight;
+    if (kept >= MIN_DEPTH && total > ROW_BUDGET) break;
+    kept++;
+  }
+  return kept === past.length ? past : past.slice(past.length - kept);
 }
 
 interface State {
@@ -72,7 +123,10 @@ export function useDocHistory(): DocHistory {
         const overlay =
           mode === "record" ? extendOverlay(s.overlay, diffDocs(s.present, next)) : s.overlay;
         return {
-          past: [...s.past, { doc: s.present, overlay: s.overlay, label }].slice(-DEPTH),
+          past: trimPast([
+            ...s.past,
+            { doc: s.present, overlay: s.overlay, label, weight: entryWeight(s.present, next) },
+          ]),
           present: next,
           overlay,
           future: [],
@@ -94,7 +148,17 @@ export function useDocHistory(): DocHistory {
         past: s.past.slice(0, -1),
         present: previous.doc,
         overlay: previous.overlay,
-        future: [{ doc: s.present, overlay: s.overlay, label: previous.label }, ...s.future],
+        future: [
+          {
+            doc: s.present,
+            overlay: s.overlay,
+            label: previous.label,
+            // Weighed against where the history now stands, so a redo landing
+            // it back in the past keeps the accounting honest.
+            weight: entryWeight(s.present, previous.doc),
+          },
+          ...s.future,
+        ],
       };
     });
   }, []);
@@ -104,7 +168,15 @@ export function useDocHistory(): DocHistory {
       const [next, ...rest] = s.future;
       if (!next || !s.present) return s;
       return {
-        past: [...s.past, { doc: s.present, overlay: s.overlay, label: next.label }],
+        past: trimPast([
+          ...s.past,
+          {
+            doc: s.present,
+            overlay: s.overlay,
+            label: next.label,
+            weight: entryWeight(s.present, next.doc),
+          },
+        ]),
         present: next.doc,
         overlay: next.overlay,
         future: rest,

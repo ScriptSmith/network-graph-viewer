@@ -33,6 +33,38 @@ export function findColumn(table: Table, name: string): Column | undefined {
   return table.columns.find((c) => c.name === name);
 }
 
+/**
+ * Every node's display name, from the node table alone.
+ *
+ * The built graph carries labels already, but only for the nodes on stage, and
+ * the places that name a node the reader cannot currently see (the ego step's
+ * seed picker and its chips) need the whole document's answer. Cached against
+ * the rows and the column, so asking per chip costs one lookup.
+ */
+const labelCaches = new WeakMap<
+  Row[],
+  { column: string | null; idColumn: string; labels: Map<string, string> }
+>();
+
+export function nodeLabels(doc: GraphDoc, labelColumn: string | null): ReadonlyMap<string, string> {
+  const column = labelColumn !== null && hasColumn(doc.nodes, labelColumn) ? labelColumn : null;
+  const cached = labelCaches.get(doc.nodes.rows);
+  // The id column is part of the key, the way `docIncidence` keys itself: the
+  // rows can survive a change of which column names the nodes.
+  if (cached !== undefined && cached.column === column && cached.idColumn === doc.nodeIdColumn) {
+    return cached.labels;
+  }
+
+  const labels = new Map<string, string>();
+  for (const row of doc.nodes.rows) {
+    const id = cellToId(row[doc.nodeIdColumn]);
+    if (id === null || labels.has(id)) continue;
+    labels.set(id, (column === null ? null : cellToId(row[column])) ?? id);
+  }
+  labelCaches.set(doc.nodes.rows, { column, idColumn: doc.nodeIdColumn, labels });
+  return labels;
+}
+
 /** A column name not already taken by the table, suffixed if it collides. */
 export function uniqueColumnName(table: Table, base: string): string {
   if (!hasColumn(table, base)) return base;

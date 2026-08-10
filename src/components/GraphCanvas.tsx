@@ -40,6 +40,7 @@ import {
   type LayoutParams,
 } from "../lib/layouts";
 import { endpointId as endpoint, weightScale } from "../lib/graph";
+import { incidenceOf, nodeIndex } from "../lib/graphIndex";
 import { isRemoteSource } from "../lib/images";
 import { contentBounds, type ExportBox } from "../lib/export";
 import { displayCell, formatMetric } from "../lib/format";
@@ -128,6 +129,12 @@ interface GraphCanvasProps {
   nodeAttrsFor?: (d: GraphNode) => Column[];
   selection: GraphSelection | null;
   onSelect: (next: GraphSelection | null) => void;
+  /**
+   * Expand the neighbourhood around one node, which a double-click on it asks
+   * for. Optional, since a host that offers no exploration should not grow one
+   * because someone double-clicked.
+   */
+  onExpandFrom?: (id: string) => void;
   /**
    * A shortest path to light: painted like hover and selection are, through
    * the restyle path, attributes only, never a scene rebuild.
@@ -220,6 +227,7 @@ export function GraphCanvas({
   nodeAttrsFor = NO_NODE_ATTRS,
   selection,
   onSelect,
+  onExpandFrom,
   highlightPath = null,
   dimmed = null,
   seedPositions,
@@ -362,6 +370,7 @@ export function GraphCanvas({
     selectedId,
     selectedEdge,
     onSelect,
+    onExpandFrom,
     palette,
     colors,
     edgeColors,
@@ -389,6 +398,7 @@ export function GraphCanvas({
     selectedId,
     selectedEdge,
     onSelect,
+    onExpandFrom,
     palette,
     colors,
     edgeColors,
@@ -582,6 +592,10 @@ export function GraphCanvas({
       },
       onBackgroundClick: () => liveRef.current.onSelect(null),
       onBackgroundDblClick: () => fitRef.current(600),
+      // Double-clicking a node is the shortest way to say "and what is around
+      // this one": the same act the inspector's button performs, without
+      // having to find the button first.
+      onNodeDblClick: (node) => liveRef.current.onExpandFrom?.(node.id),
     };
     return {
       scene: { nodes: [], links: [] },
@@ -1011,13 +1025,19 @@ export function GraphCanvas({
     shared.scene.links = links;
     hoverLinkRef.current = null;
 
+    // Neighbours come off the document's shared incidence rather than a third
+    // walk over the links. Keyed on `base`, which is the identity that tracks
+    // structure and the identity this effect rebuilds on; `applyStyle` copies
+    // nodes in order, so its integers line up with the scene's nodes. A node
+    // counts as its own neighbour here, which is what keeps a hovered node lit
+    // along with the ring around it.
+    const { ids } = nodeIndex(base);
+    const { offsets, neighbor } = incidenceOf(base);
     const adjacency = new Map<string, Set<string>>();
-    for (const n of nodes) adjacency.set(n.id, new Set([n.id]));
-    for (const l of links) {
-      const s = endpoint(l.source);
-      const t = endpoint(l.target);
-      adjacency.get(s)?.add(t);
-      adjacency.get(t)?.add(s);
+    for (let v = 0; v < ids.length; v++) {
+      const set = new Set<string>([ids[v]]);
+      for (let p = offsets[v]; p < offsets[v + 1]; p++) set.add(ids[neighbor[p]]);
+      adjacency.set(ids[v], set);
     }
     adjacencyRef.current = adjacency;
     hoverNodeRef.current = null;

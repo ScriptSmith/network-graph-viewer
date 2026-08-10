@@ -1,5 +1,7 @@
 import { useMemo, useRef } from "react";
+import type { ReactNode } from "react";
 import type { Dataset, Graph, GraphDoc, GraphStyle, LabelMode, Mapping } from "../types";
+import { styleColumn } from "../types";
 import {
   layoutDefinition,
   LAYOUTS,
@@ -12,13 +14,14 @@ import type { RendererId } from "../render";
 import type { EditTarget } from "../lib/edit";
 import type { ProjectionSide } from "../lib/project";
 import { ACCEPTED_EXTENSIONS } from "../lib/parse";
-import { edgeStyleColumns } from "../lib/doc";
+import { edgeStyleColumns, nodeLabels } from "../lib/doc";
 import type { MetricOptions } from "../lib/metrics";
 import type { MetricRun } from "../lib/metrics/runner";
 import { exportAs, TEXT_EXTENSIONS, type ExportFormat, type ExportInput } from "../lib/io";
 import { ComputePanel } from "./ComputePanel";
 import { ScriptPanel, type ScriptRunRequest } from "./ScriptPanel";
 import { GistLoad } from "./GistLoad";
+import { UrlLoad } from "./UrlLoad";
 import { SharePanel } from "./SharePanel";
 import { FilterChain } from "./FilterChain";
 import { PalettePicker } from "./PalettePicker";
@@ -52,6 +55,8 @@ interface SidebarProps {
   onNodeStyleScopeChange: (scope: string | null) => void;
   onEdgeStyleScopeChange: (scope: string | null) => void;
   onFile: (file: File) => void;
+  /** The live source's own controls, when the graph came out of one. */
+  sourcePanel?: ReactNode;
   /** New rows under the same setup: the update-data flow. */
   onUpdateFile: (file: File) => void;
   onSample: (network: SampleNetwork) => void;
@@ -83,6 +88,8 @@ interface SidebarProps {
   onExportData: (format: ExportFormat) => void;
   onExportHtml: () => void;
   onGist: (reference: string) => void;
+  /** Open a remote CSV or parquet URL as a source, through the engine. */
+  onOpenUrl: (url: string) => void;
   onGistSaved: (id: string) => void;
   gistId: string | null;
   buildLink: () => Promise<string | null>;
@@ -125,6 +132,7 @@ export function Sidebar({
   onNodeStyleScopeChange,
   onEdgeStyleScopeChange,
   onFile,
+  sourcePanel,
   onUpdateFile,
   onSample,
   onClear,
@@ -152,6 +160,7 @@ export function Sidebar({
   onExportData,
   onExportHtml,
   onGist,
+  onOpenUrl,
   onGistSaved,
   gistId,
   buildLink,
@@ -226,7 +235,14 @@ export function Sidebar({
             <span className="step-no">{stepNo("data")}</span> Data
           </h2>
           <div className="step-body">
-            {dataset && doc ? (
+            {sourcePanel}
+            {sourcePanel && doc ? (
+              <div className="btn-row">
+                <button type="button" className="btn btn-quiet" onClick={onClear}>
+                  Clear
+                </button>
+              </div>
+            ) : dataset && doc ? (
               <>
                 <div className="file-chip" title={dataset.fileName}>
                   <span className="file-name">{dataset.fileName}</span>
@@ -309,6 +325,10 @@ export function Sidebar({
                       <span className="field-label">From a GitHub gist</span>
                       <GistLoad onLoad={onGist} />
                     </div>
+                    <div className="field">
+                      <span className="field-label">From a URL, as a source</span>
+                      <UrlLoad onOpen={onOpenUrl} />
+                    </div>
                   </div>
                 </details>
               </>
@@ -328,6 +348,10 @@ export function Sidebar({
                 <div className="field">
                   <span className="field-label">Or load a GitHub gist</span>
                   <GistLoad onLoad={onGist} />
+                </div>
+                <div className="field">
+                  <span className="field-label">Or open a remote file by URL</span>
+                  <UrlLoad onOpen={onOpenUrl} />
                 </div>
               </>
             )}
@@ -441,6 +465,7 @@ export function Sidebar({
               chain={chain}
               results={chainResults}
               selectedId={selectedId}
+              labels={nodeLabels(doc, styleColumn(style.nodeLabel))}
               showIsolated={showIsolated}
               active={visible}
               onChange={onChainChange}

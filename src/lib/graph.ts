@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { isCellStyle, styleColumn } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
+import { incidenceOf } from "./graphIndex";
 import { findColumn, hasColumn } from "./doc";
 import { imageSource } from "./images";
 import { asNumber } from "./parse";
@@ -503,26 +504,21 @@ export function columnRange(rows: Row[], column: string): { min: number; max: nu
 
 /** Number of connected components, treating edges as undirected. */
 export function componentCount(graph: BaseGraph): number {
-  const adjacency = new Map<string, string[]>();
-  for (const n of graph.nodes) adjacency.set(n.id, []);
-  for (const l of graph.links) {
-    const s = endpointId(l.source);
-    const t = endpointId(l.target);
-    adjacency.get(s)?.push(t);
-    adjacency.get(t)?.push(s);
-  }
-  const seen = new Set<string>();
+  const { offsets, neighbor } = incidenceOf(graph);
+  const n = graph.nodes.length;
+  const seen = new Uint8Array(n);
   let components = 0;
-  for (const n of graph.nodes) {
-    if (seen.has(n.id)) continue;
+  for (let start = 0; start < n; start++) {
+    if (seen[start] === 1) continue;
     components++;
-    const queue = [n.id];
-    seen.add(n.id);
+    const queue = [start];
+    seen[start] = 1;
     while (queue.length > 0) {
-      const id = queue.pop() as string;
-      for (const next of adjacency.get(id) ?? []) {
-        if (!seen.has(next)) {
-          seen.add(next);
+      const v = queue.pop() as number;
+      for (let p = offsets[v]; p < offsets[v + 1]; p++) {
+        const next = neighbor[p];
+        if (seen[next] === 0) {
+          seen[next] = 1;
           queue.push(next);
         }
       }

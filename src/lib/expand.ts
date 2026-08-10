@@ -1,6 +1,7 @@
 import type { GraphDoc } from "../types";
 import { cellKey, cellToId } from "./cells";
 import { hasColumn } from "./doc";
+import { docIncidence } from "./graphIndex";
 
 /**
  * What one more hop from a node would bring in: the neighbours the current
@@ -45,12 +46,19 @@ export function expansionPreview(
   const byNodeType = new Map<string, number>();
   const byEdgeType = new Map<string, number>();
 
-  for (const row of doc.edges.rows) {
-    const s = cellToId(row[doc.mapping.source]);
-    const t = cellToId(row[doc.mapping.target]);
-    if (s === null || t === null) continue;
-    const other = s === center ? t : t === center ? s : null;
-    if (other === null || other === center || visible.has(other)) continue;
+  // Only the rows naming the centre are read, rather than all of them. The
+  // index fills a node's entries in row order, so first-arrival still picks
+  // the same naming row it picked when this scanned the table.
+  const { ids, index, offsets, neighbor, link } = docIncidence(doc);
+  const at = index.get(center);
+  if (at === undefined) {
+    return { total: 0, byNodeType: [], byEdgeType: [] };
+  }
+
+  for (let p = offsets[at]; p < offsets[at + 1]; p++) {
+    const other = ids[neighbor[p]];
+    if (other === center || visible.has(other)) continue;
+    const row = doc.edges.rows[link[p]];
 
     if (edgeTypeColumn !== null) {
       const kind = cellKey(row[edgeTypeColumn]);

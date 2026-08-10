@@ -9,7 +9,8 @@ import type {
   StyleCurve,
 } from "../types";
 import { isCellStyle, styleColumn } from "../types";
-import { CELL_RADIUS, CELL_WIDTH, CENTRALITY_TOKENS, distinctValues } from "../lib/graph";
+import { CELL_RADIUS, CELL_WIDTH, CENTRALITY_TOKENS } from "../lib/graph";
+import { distinctsOf } from "../lib/stats";
 import {
   colorCellColumns,
   edgeStyleColumns,
@@ -286,7 +287,7 @@ export function NodeStyleSection({
   const detailCandidates = useMemo(() => nodeTableColumns.map((c) => c.name), [nodeTableColumns]);
   const globalAttrs = useMemo(() => nodeDetailColumns(doc).map((c) => c.name), [doc]);
   const values = useMemo(
-    () => (types === undefined ? [] : distinctValues(doc.nodes.rows, types.column)),
+    () => (types === undefined ? [] : distinctsOf(doc.nodes.rows, types.column)),
     [doc.nodes.rows, types],
   );
 
@@ -677,7 +678,7 @@ export function EdgeStyleSection({
   );
   const detailCandidates = useMemo(() => styleColumns.map((c) => c.name), [styleColumns]);
   const values = useMemo(
-    () => (types === undefined ? [] : distinctValues(doc.edges.rows, types.column)),
+    () => (types === undefined ? [] : distinctsOf(doc.edges.rows, types.column)),
     [doc.edges.rows, types],
   );
 

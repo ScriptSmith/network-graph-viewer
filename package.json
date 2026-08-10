@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@cosmos.gl/graph": "~3.4.0",
+    "@duckdb/duckdb-wasm": "1.32.0",
     "@jitl/quickjs-singlefile-browser-release-sync": "^0.32.0",
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "@tanstack/react-table": "^8.21.3",

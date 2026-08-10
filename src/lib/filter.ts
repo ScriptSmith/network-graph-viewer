@@ -1,6 +1,8 @@
 import type { BaseGraph, ColumnFilter, GraphDoc, Row, Table } from "../types";
 import { cellKey, cellToId, edgeKey } from "./cells";
-import { buildBaseGraph, distinctValues, endpointId } from "./graph";
+import { buildBaseGraph, endpointId } from "./graph";
+import { incidenceOf, nodeIndex } from "./graphIndex";
+import { distinctsOf } from "./stats";
 import { asNumber, asTime } from "./parse";
 import { timeColumns } from "./timeline";
 import { toMetricGraph } from "./metrics";
@@ -24,14 +26,33 @@ export type FilterSpec =
   | {
       kind: "ego";
       centers: string[];
+      /** 0 is the centres alone, which is a way of asking "just these". */
       depth: number;
       direction: "any" | "out" | "in";
       /**
        * Only edges whose column matches are walked. The reach is still
        * measured on the narrowed graph, so this is "so many stops along
        * these lines" rather than a filter applied afterwards.
+       *
+       * Two forms, the same pair a column condition has and for the same
+       * reason: `values` is the whitelist every constraint written before
+       * meant, and `excluded` lets the panel's line toggles subtract one kind
+       * without first naming every other.
        */
-      where?: { column: string; values: string[] };
+      where?: EgoWhere;
+      /**
+       * Keep only the rows actually walked: those carrying a step from one
+       * depth to the next. Off by default, because the neighbourhood has
+       * always included every edge between the nodes it reached, and a saved
+       * workspace must keep meaning what it meant.
+       *
+       * On, the answer is the walk rather than the region: with a constraint
+       * the edges of other kinds between reached nodes go, and without one a
+       * depth-1 walk is a star rather than the neighbourhood with its own
+       * cross-links drawn in. An edge between two centres is not a step from
+       * one depth to the next, so it is not walked either.
+       */
+      walkedOnly?: boolean;
     }
   | { kind: "mutual" }
   | { kind: "backbone"; alpha: number; weightColumn: string | null }
@@ -55,6 +76,49 @@ export type FilterSpec =
  */
 export type FilterStep = { id: string; enabled: boolean; invert?: boolean } & FilterSpec;
 
+/** Which edges an ego walk is allowed to follow. */
+export type EgoWhere =
+  | { column: string; values: string[] }
+  | { column: string; excluded: string[] };
+
+/**
+ * Compile a walk constraint into a test over one cell key. Absent, everything
+ * is walkable and the test is not run at all.
+ */
+export function compileWhere(where: EgoWhere | undefined): ((key: string) => boolean) | null {
+  if (where === undefined) return null;
+  if ("excluded" in where) {
+    if (where.excluded.length === 0) return null;
+    const excluded = new Set(where.excluded);
+    return (key) => !excluded.has(key);
+  }
+  const selected = new Set(where.values);
+  return (key) => selected.has(key);
+}
+
+/** Whether a walk constraint lets a named kind through, for the editors. */
+export function whereWalks(where: EgoWhere | undefined, kind: string): boolean {
+  const test = compileWhere(where);
+  return test === null || test(kind);
+}
+
+/**
+ * A pasted list of ids, in the two shapes lists arrive in. Lines, commas and
+ * semicolons are the separators when the text has any, and only then does
+ * whitespace count: an id is very often a name with a space in it, and
+ * splitting "Mill Quay, Quayside" on spaces would ask for three nodes that do
+ * not exist instead of the two that do. Not a list at all (fewer than two
+ * parts) answers null, so a paste of one name falls through to typing.
+ */
+export function splitSeedList(text: string): string[] | null {
+  const separated = /[\n,;]/.test(text);
+  const parts = text
+    .split(separated ? /[\n,;]+/ : /\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length < 2 ? null : parts;
+}
+
 export interface ChainStepResult {
   id: string;
   nodes: number;
@@ -74,12 +138,20 @@ export function newStepId(): string {
   return `step-${++stepCounter}`;
 }
 
-export function describeStep(step: FilterStep): string {
-  const name = describeSpec(step);
+/**
+ * What a step says it does, in the chain and in the undo history.
+ *
+ * `label` resolves a node id to its display name, so an ego step reads as the
+ * name on the canvas rather than the key underneath it. Optional, because the
+ * id is a perfectly good answer where no label column is chosen and because
+ * plenty of callers have no document to hand.
+ */
+export function describeStep(step: FilterStep, label?: (id: string) => string): string {
+  const name = describeSpec(step, label);
   return step.invert === true ? `not: ${name}` : name;
 }
 
-function describeSpec(step: FilterStep): string {
+function describeSpec(step: FilterStep, label?: (id: string) => string): string {
   switch (step.kind) {
     case "column":
       return step.column;
@@ -92,11 +164,21 @@ function describeSpec(step: FilterStep): string {
     case "component":
       return step.count === 1 ? "Giant component" : `${step.count} largest components`;
     case "ego": {
-      const reach =
+      const from =
         step.centers.length === 1
-          ? `${step.depth} step${step.depth === 1 ? "" : "s"} from ${step.centers[0]}`
-          : `${step.depth} steps from ${step.centers.length} nodes`;
-      return step.where === undefined ? reach : `${reach} via ${step.where.column}`;
+          ? (label?.(step.centers[0]) ?? step.centers[0])
+          : `${step.centers.length} nodes`;
+      // Depth 0 is not "0 steps from" anything; it is the centres themselves.
+      const reach =
+        step.depth === 0
+          ? step.centers.length === 1
+            ? from
+            : `${from} only`
+          : `${step.depth} step${step.depth === 1 ? "" : "s"} from ${from}`;
+      const walked = step.walkedOnly === true ? ", walked only" : "";
+      return step.where === undefined
+        ? `${reach}${walked}`
+        : `${reach} via ${step.where.column}${walked}`;
     }
     case "mutual":
       return "Reciprocated edges";
@@ -135,10 +217,24 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 
 const isNumberOrNull = (v: unknown): boolean => v === null || typeof v === "number";
 
-function isColumnFilter(value: unknown): value is ColumnFilter {
+const isStringArray = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every((s) => typeof s === "string");
+
+export function isEgoWhere(value: unknown): value is EgoWhere {
+  if (!isRecord(value) || typeof value.column !== "string") return false;
+  // Exactly one of the two forms, for the reason a column condition is.
+  if (isStringArray(value.values)) return value.excluded === undefined;
+  return isStringArray(value.excluded) && value.values === undefined;
+}
+
+export function isColumnFilter(value: unknown): value is ColumnFilter {
   if (!isRecord(value)) return false;
   if (value.kind === "values") {
-    return Array.isArray(value.selected) && value.selected.every((s) => typeof s === "string");
+    // Exactly one of the two forms. A record carrying both says two different
+    // things about the same column and there is no reading that picks a
+    // winner, so it is not a condition this can run.
+    if (isStringArray(value.selected)) return value.excluded === undefined;
+    return isStringArray(value.excluded) && value.selected === undefined;
   }
   return value.kind === "range" && isNumberOrNull(value.min) && isNumberOrNull(value.max);
 }
@@ -175,11 +271,8 @@ export function isFilterStep(value: unknown): value is FilterStep {
         value.centers.every((c) => typeof c === "string") &&
         typeof value.depth === "number" &&
         (value.direction === "any" || value.direction === "out" || value.direction === "in") &&
-        (value.where === undefined ||
-          (isRecord(value.where) &&
-            typeof value.where.column === "string" &&
-            Array.isArray(value.where.values) &&
-            value.where.values.every((v) => typeof v === "string")))
+        (value.walkedOnly === undefined || typeof value.walkedOnly === "boolean") &&
+        (value.where === undefined || isEgoWhere(value.where))
       );
     case "mutual":
       return true;
@@ -217,6 +310,7 @@ export function findValueStep(
       step.table === table &&
       step.column === column &&
       step.op.kind === "values" &&
+      "selected" in step.op &&
       step.op.selected.length === 1 &&
       step.op.selected[0] === value,
   );
@@ -280,11 +374,19 @@ export function retargetChain(
   return out;
 }
 
-/** A condition that lets everything through, so a fresh step is a no-op. */
+/**
+ * A condition that lets everything through, so a fresh step is a no-op.
+ *
+ * The empty exclusion is what makes that free. Seeding the whitelist form
+ * instead meant reading the column's every distinct value into the step, which
+ * cost a full scan to open the editor, rode along in every share link, and was
+ * re-stringified per render; on a high-cardinality column it made the values
+ * filter unusable. Nothing is scanned here now.
+ */
 export function neutralCondition(table: Table, columnName: string): ColumnFilter {
   const column = table.columns.find((c) => c.name === columnName);
   if (column?.type === "number") return { kind: "range", min: null, max: null };
-  return { kind: "values", selected: distinctValues(table.rows, columnName).map((v) => v.key) };
+  return { kind: "values", excluded: [] };
 }
 
 export function defaultStep(kind: FilterSpec["kind"], doc: GraphDoc): FilterStep {
@@ -382,26 +484,67 @@ function narrow(
   rows: Row[],
   keepNodes: ReadonlySet<string> | null,
 ): Narrowing {
+  // A step that constrains nothing is the common case: every column step is
+  // born that way. Answering it here hands both halves back by identity, which
+  // costs no copy and leaves the arrays downstream caches key on alone.
+  // Inverted, the same step is the empty set rather than a no-op, so the
+  // shortcut only holds the one way round.
+  if (step.invert !== true && step.kind === "column" && isNeutral(step.op)) {
+    return { rows, keepNodes };
+  }
+
   const narrowed = applyStep(step, graph, doc, rows, keepNodes);
   if (step.invert !== true) return narrowed;
 
-  let outRows = rows;
-  if (narrowed.rows !== rows) {
+  if (narrowedHalf(step) === "rows") {
     const kept = new Set(narrowed.rows);
-    outRows = rows.filter((row) => !kept.has(row));
+    return { rows: rows.filter((row) => !kept.has(row)), keepNodes };
   }
 
-  let outKeep = keepNodes;
-  if (narrowed.keepNodes !== keepNodes) {
-    const kept = narrowed.keepNodes;
-    const complement = new Set<string>();
-    for (const node of graph.nodes) {
-      if (kept === null || !kept.has(node.id)) complement.add(node.id);
-    }
-    outKeep = intersect(keepNodes, complement);
+  const kept = narrowed.keepNodes;
+  const complement = new Set<string>();
+  for (const node of graph.nodes) {
+    if (kept === null || !kept.has(node.id)) complement.add(node.id);
   }
+  return { rows, keepNodes: intersect(keepNodes, complement) };
+}
 
-  return { rows: outRows, keepNodes: outKeep };
+/**
+ * Whether a condition lets every row through, answered without touching the
+ * data. Only the empty exclusion qualifies: an unbounded range still drops
+ * rows whose cell is not a number, and a whitelist cannot be judged without
+ * reading the column.
+ */
+function isNeutral(filter: ColumnFilter): boolean {
+  return filter.kind === "values" && "excluded" in filter && filter.excluded.length === 0;
+}
+
+/**
+ * Which half of the working set a kind of step narrows: the edge rows, or the
+ * node set. It is a property of the kind, never of what came back.
+ *
+ * Inversion has to be told this rather than infer it. Comparing what a step
+ * returned against what it was given reads "let everything through" as "did
+ * not run", and those inverted are opposite answers: everything, versus the
+ * empty set an inverted no-op has always produced. That inference held only
+ * while every step copied its half unconditionally, which stopped being true
+ * the moment a condition could be a no-op cheaply enough to return its input
+ * untouched.
+ */
+function narrowedHalf(step: FilterStep): "rows" | "nodes" {
+  switch (step.kind) {
+    case "column":
+    case "timewindow":
+      return step.table === "edges" ? "rows" : "nodes";
+    case "mutual":
+    case "backbone":
+      return "rows";
+    case "degree":
+    case "kcore":
+    case "component":
+    case "ego":
+      return "nodes";
+  }
 }
 
 /**
@@ -485,8 +628,19 @@ function applyStep(
       return { rows, keepNodes: intersect(keepNodes, keep) };
     }
 
-    case "ego":
-      return { rows, keepNodes: intersect(keepNodes, reachable(graph, step)) };
+    case "ego": {
+      const reach = reachable(graph, step);
+      const keep = intersect(keepNodes, reach.nodes);
+      // Inverted, the step is everything *outside* the neighbourhood, where
+      // nothing was walked and "only the walked rows" has no reading. So the
+      // narrowed half stays the node set either way, which is what lets
+      // `narrowedHalf` keep answering with one of them.
+      if (reach.walked === null || step.invert === true) return { rows, keepNodes: keep };
+      // The walk collected the rows it stepped along, and those are a subset
+      // of the ones that built this graph, so membership is all this asks.
+      const kept = reach.walked;
+      return { rows: rows.filter((row) => kept.has(row)), keepNodes: keep };
+    }
 
     case "mutual": {
       const present = new Set(
@@ -548,58 +702,79 @@ function valueFor(
   return degree;
 }
 
-/** Nodes within `depth` hops of the chosen centres, following the chosen direction. */
-function reachable(
-  graph: BaseGraph,
-  step: Extract<FilterSpec, { kind: "ego" }>,
-): ReadonlySet<string> {
-  const adjacency = new Map<string, string[]>();
-  const push = (from: string, to: string) => {
-    const list = adjacency.get(from);
-    if (list) list.push(to);
-    else adjacency.set(from, [to]);
-  };
-  // The constraint compiles to one set before the walk: a link merges every
-  // row with the same endpoints, and any one of them matching opens the edge.
-  const where = step.where;
-  const selected = where === undefined ? null : new Set(where.values);
-  for (const link of graph.links) {
-    if (
-      selected !== null &&
-      where !== undefined &&
-      !link.rows.some((row) => selected.has(cellKey(row[where.column])))
-    ) {
-      continue;
-    }
-    const s = endpointId(link.source);
-    const t = endpointId(link.target);
-    if (step.direction !== "in") push(s, t);
-    if (step.direction !== "out") push(t, s);
-  }
+/** What one ego walk found: the nodes it reached, and the rows it stepped along. */
+interface Reach {
+  nodes: ReadonlySet<string>;
+  /**
+   * The rows carrying a step from one depth to the next, or null when unasked.
+   *
+   * Rows rather than links, because a link is a merge of every row with the
+   * same endpoints and the walk did not take all of them: where a pair is
+   * joined by both a rail row and a bus row, a rail-constrained walk stepped
+   * along one of them.
+   */
+  walked: ReadonlySet<Row> | null;
+}
 
-  const present = new Set(graph.nodes.map((n) => n.id));
-  const seen = new Set<string>();
-  let frontier: string[] = [];
+/** Nodes within `depth` hops of the chosen centres, following the chosen direction. */
+function reachable(graph: BaseGraph, step: Extract<FilterSpec, { kind: "ego" }>): Reach {
+  const { index, ids } = nodeIndex(graph);
+  const { offsets, neighbor, link, forward } = incidenceOf(graph);
+
+  // The constraint compiles to one test before the walk: a link merges every
+  // row with the same endpoints, and any one of them matching opens the edge.
+  // Only the links actually reached are tested, rather than all of them.
+  const where = step.where;
+  const test = compileWhere(where);
+  const column = where?.column;
+  const walkableRow = (row: Row): boolean =>
+    test === null || column === undefined || test(cellKey(row[column]));
+  const walkable = (e: number): boolean =>
+    test === null || column === undefined || graph.links[e].rows.some(walkableRow);
+
+  // -1 is unreached; anything else is how many steps out it was found.
+  const depth = new Int32Array(ids.length).fill(-1);
+  const nodes = new Set<string>();
+  const walked = step.walkedOnly === true ? new Set<Row>() : null;
+  let frontier: number[] = [];
   for (const centre of step.centers) {
-    if (present.has(centre) && !seen.has(centre)) {
-      seen.add(centre);
-      frontier.push(centre);
+    const at = index.get(centre);
+    if (at !== undefined && depth[at] === -1) {
+      depth[at] = 0;
+      nodes.add(centre);
+      frontier.push(at);
     }
   }
 
   for (let hop = 0; hop < step.depth && frontier.length > 0; hop++) {
-    const next: string[] = [];
-    for (const id of frontier) {
-      for (const other of adjacency.get(id) ?? []) {
-        if (!seen.has(other)) {
-          seen.add(other);
+    const next: number[] = [];
+    for (const v of frontier) {
+      for (let p = offsets[v]; p < offsets[v + 1]; p++) {
+        // One undirected structure answers all three directions: an entry is
+        // walkable outward when its owner is the link's source.
+        if (step.direction === "out" && forward[p] === 0) continue;
+        if (step.direction === "in" && forward[p] === 1) continue;
+        const other = neighbor[p];
+        if (depth[other] !== -1 && depth[other] !== hop + 1) continue;
+        if (!walkable(link[p])) continue;
+        if (depth[other] === -1) {
+          depth[other] = hop + 1;
+          nodes.add(ids[other]);
           next.push(other);
+        }
+        // Every link from this depth to the next counts, not only the one
+        // that got there first, or the walk would come out a spanning tree
+        // with the routes that tie for shortest missing from it.
+        if (walked !== null) {
+          for (const row of graph.links[link[p]].rows as Row[]) {
+            if (walkableRow(row)) walked.add(row);
+          }
         }
       }
     }
     frontier = next;
   }
-  return seen;
+  return { nodes, walked };
 }
 
 function nodeIdsWhere(doc: GraphDoc, predicate: (row: Row) => boolean): Set<string> {
@@ -630,22 +805,30 @@ function intersect(
  */
 export function narrows(rows: Row[], column: string, filter: ColumnFilter): boolean {
   if (filter.kind === "range") return filter.min !== null || filter.max !== null;
+  // An exclusion answers for itself. Only the whitelist form has to be read
+  // against the column to know whether it leaves anything out.
+  if ("excluded" in filter) return filter.excluded.length > 0;
   const selected = new Set(filter.selected);
-  return distinctValues(rows, column).some((v) => !selected.has(v.key));
+  return distinctsOf(rows, column).some((v) => !selected.has(v.key));
 }
 
 /**
  * Compile a condition into a test over one row.
  *
- * The compile step is the point. A values condition holds a list, and a fresh
- * step is seeded with *every* distinct value so that adding one never blanks
- * the canvas, which means the list is as long as the column's cardinality.
- * Searching it per row makes a filter that changes nothing cost rows x values,
- * and this runs inside a render on every keystroke of a cell edit. Built once
- * per step, the same work is a hash lookup.
+ * The compile step is the point. A values condition holds a list as long as
+ * whatever the reader picked, and searching it per row makes a filter cost
+ * rows x values while this runs inside a render on every keystroke of a cell
+ * edit. Built once per step, the same work is a hash lookup.
  */
 export function compileCondition(filter: ColumnFilter): (row: Row, column: string) => boolean {
   if (filter.kind === "values") {
+    if ("excluded" in filter) {
+      // The no-constraint case is the one a fresh step is in, so it is worth
+      // not hashing a cell per row to answer "yes" every time.
+      if (filter.excluded.length === 0) return () => true;
+      const excluded = new Set(filter.excluded);
+      return (row, column) => !excluded.has(cellKey(row[column]));
+    }
     const selected = new Set(filter.selected);
     return (row, column) => selected.has(cellKey(row[column]));
   }

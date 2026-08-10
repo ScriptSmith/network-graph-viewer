@@ -7,11 +7,13 @@ import type {
   Table,
   TypeStyles,
 } from "../../types";
-import { DEFAULT_STYLE, isColumnRole, isStyleCurve } from "../../types";
-import { isFilterStep, type FilterStep } from "../filter";
+import { DEFAULT_STYLE, isColumnRole, isStyleCurve, type ColumnFilter } from "../../types";
+import { isColumnFilter, isEgoWhere, isFilterStep, type FilterStep } from "../filter";
 import { isLayoutId, type LayoutId, type LayoutParams } from "../layouts";
 import { DEFAULT_METRIC_OPTIONS, METRIC_IDS, type ComputedRecipe } from "../metrics";
 import { overlayFromJson, overlayIsEmpty, overlayToJson, type EditsOverlay } from "../overlay";
+import { WORKING_SET_LIMIT } from "../source/limits";
+import type { ColumnPredicate, EdgeSelection, SourceRef } from "../source/types";
 import type { ImportedGraph, Position } from "./types";
 
 /**
@@ -45,6 +47,23 @@ export interface Workspace {
   computed?: ComputedRecipe[];
   /** The user's table edits, so a future reload can lay them back on top. */
   edits?: ReturnType<typeof overlayToJson>;
+  /**
+   * Where the working set was carved from, when it came out of a source too
+   * large to embed: which file, and the recipe that selected it.
+   *
+   * The rows themselves still travel, exactly as they do for any other
+   * workspace, so a source-backed link opens into the same graph for anyone.
+   * This is what lets the reader who has the file go back for more of it.
+   * Never a credential and never a token: a workspace arrives from a link
+   * anyone can write, and it goes out in one too.
+   */
+  source?: SavedSource;
+}
+
+/** A source named again: how to find it, and what was taken out of it. */
+export interface SavedSource {
+  ref: SourceRef;
+  selection: EdgeSelection;
 }
 
 export interface WorkspaceInput {
@@ -60,6 +79,7 @@ export interface WorkspaceInput {
   scripts?: Record<string, string>;
   computed?: ComputedRecipe[];
   edits?: EditsOverlay;
+  source?: SavedSource;
 }
 
 export interface WriteWorkspaceOptions {
@@ -89,6 +109,7 @@ export function writeWorkspace(input: WorkspaceInput, options: WriteWorkspaceOpt
     scripts: input.scripts,
     ...(input.computed && input.computed.length > 0 ? { computed: input.computed } : {}),
     ...(input.edits && !overlayIsEmpty(input.edits) ? { edits: overlayToJson(input.edits) } : {}),
+    ...(input.source ? { source: input.source } : {}),
   };
   return JSON.stringify(workspace, null, options.pretty === false ? undefined : 2);
 }
@@ -265,6 +286,103 @@ function validComputed(value: unknown): ComputedRecipe[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * A saved source reference, checked the way every other field is.
+ *
+ * This arrives from a link anyone can write, and it names a file the reader is
+ * about to be asked for. A shape that is not exactly right is dropped rather
+ * than repaired: the graph is still the graph, and losing the way back to the
+ * source is a smaller harm than acting on a made-up one. Nothing here can
+ * cause a fetch by itself.
+ */
+export function validSource(value: unknown): SavedSource | undefined {
+  if (!isRecord(value)) return undefined;
+  const { ref, selection } = value;
+  if (!isRecord(ref) || !isRecord(selection)) return undefined;
+
+  let checked: SourceRef;
+  if (ref.kind === "file") {
+    if (typeof ref.name !== "string" || typeof ref.size !== "number") return undefined;
+    checked = { kind: "file", name: ref.name, size: ref.size };
+  } else if (ref.kind === "url") {
+    // http(s) only, and never anything carrying credentials: a workspace must
+    // not be able to make the reader's browser sign in as somebody.
+    if (typeof ref.url !== "string") return undefined;
+    let parsed: URL;
+    try {
+      parsed = new URL(ref.url);
+    } catch {
+      return undefined;
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined;
+    if (parsed.username !== "" || parsed.password !== "") return undefined;
+    checked = { kind: "url", url: parsed.toString() };
+  } else {
+    return undefined;
+  }
+
+  const strings = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (
+    typeof selection.table !== "string" ||
+    typeof selection.source !== "string" ||
+    typeof selection.target !== "string" ||
+    !strings(selection.seeds) ||
+    // Finite, not merely a number: `typeof NaN === "number"`, and a NaN depth
+    // or budget would reach the engine as `LIMIT NaN`.
+    typeof selection.depth !== "number" ||
+    !isFinite(selection.depth) ||
+    (selection.direction !== "any" &&
+      selection.direction !== "out" &&
+      selection.direction !== "in") ||
+    typeof selection.edgeLimit !== "number" ||
+    !isFinite(selection.edgeLimit)
+  ) {
+    return undefined;
+  }
+
+  // The walk constraint and the predicates ride along whole or not at all: a
+  // recipe that silently lost its constraint would Reload a different, larger
+  // graph than the one that was saved.
+  const where = selection.where;
+  if (where !== undefined && !isEgoWhere(where)) return undefined;
+  let predicates: ColumnPredicate[] | undefined;
+  if (selection.predicates !== undefined) {
+    if (!Array.isArray(selection.predicates)) return undefined;
+    predicates = [];
+    for (const entry of selection.predicates) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as { column?: unknown }).column !== "string" ||
+        !isColumnFilter((entry as { op?: unknown }).op)
+      ) {
+        return undefined;
+      }
+      const p = entry as { column: string; op: ColumnFilter };
+      predicates.push({ column: p.column, op: p.op });
+    }
+  }
+
+  return {
+    ref: checked,
+    selection: {
+      table: selection.table,
+      source: selection.source,
+      target: selection.target,
+      seeds: selection.seeds,
+      // Clamped rather than trusted: a depth of a million is a walk nobody
+      // asked for, and a budget past the ceiling is not the reader's to raise.
+      depth: Math.max(0, Math.min(6, Math.round(selection.depth))),
+      direction: selection.direction,
+      edgeLimit: Math.max(1, Math.min(WORKING_SET_LIMIT, Math.round(selection.edgeLimit))),
+      ...(selection.walkedOnly === true ? { walkedOnly: true } : {}),
+      ...(where !== undefined ? { where } : {}),
+      ...(predicates !== undefined && predicates.length > 0 ? { predicates } : {}),
+    },
+  };
+}
+
 /** Positions that are not two finite numbers would place a node at NaN. */
 function validPositions(value: unknown): Record<string, Position> {
   if (!isRecord(value)) return {};
@@ -333,6 +451,7 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
   const positions = new Map<string, Position>(Object.entries(positionRecord));
   const computed = validComputed(workspace.computed);
   const edits = overlayFromJson(workspace.edits);
+  const source = validSource(workspace.source);
   return {
     doc,
     positions: positions.size > 0 ? positions : undefined,
@@ -358,6 +477,7 @@ export function parseWorkspace(text: string, name: string): ImportedWorkspace {
         ? (workspace.scripts as Record<string, string>)
         : undefined,
       ...(computed !== undefined ? { computed } : {}),
+      ...(source !== undefined ? { source } : {}),
       ...(overlayIsEmpty(edits) ? {} : { edits: overlayToJson(edits) }),
     },
   };

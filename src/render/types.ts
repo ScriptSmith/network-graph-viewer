@@ -90,6 +90,11 @@ export interface RendererCallbacks {
   onCameraChange(t: { x: number; y: number; k: number }): void;
   onBackgroundClick(): void;
   onBackgroundDblClick(): void;
+  /**
+   * A node was double-clicked. The background's own double-click still means
+   * "fit", so the two never both fire: whichever the pointer was over wins.
+   */
+  onNodeDblClick(node: GraphNode): void;
 }
 
 /**

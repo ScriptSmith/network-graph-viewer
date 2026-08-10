@@ -25,6 +25,11 @@ import type {
 import { DEFAULT_STYLE, OVERLAYS, PANELS, nodeSelection, selectedNode, styleColumn } from "./types";
 import { SAMPLE_DATASET, SAMPLES, type SampleNetwork } from "./samples";
 import { ACCEPTED_EXTENSIONS, parseFile, guessStyle } from "./lib/parse";
+import { formatNumber } from "./lib/format";
+import { SOURCE_EXTENSIONS } from "./lib/source";
+import type { EdgeSelection } from "./lib/source";
+import { useSource } from "./useSource";
+import { DetachedSourceCard, SourceCard } from "./components/SourceCard";
 import {
   decodePayload,
   detectFormat,
@@ -61,7 +66,14 @@ import { mergeWithOverlay, overlayFromJson, overlayIsEmpty, type MergeReport } f
 import { deleteColumn, renameColumn } from "./lib/bulk";
 import { applyStyle, buildBaseGraph, hasLegend } from "./lib/graph";
 import { isRemoteSource } from "./lib/images";
-import { applyChain, findValueStep, newStepId, retargetChain, type FilterStep } from "./lib/filter";
+import {
+  applyChain,
+  findValueStep,
+  newStepId,
+  retargetChain,
+  type EgoWhere,
+  type FilterStep,
+} from "./lib/filter";
 import {
   defaultParams,
   projectGeo,
@@ -113,6 +125,7 @@ import { NodeSearch } from "./components/NodeSearch";
 import { Sidebar } from "./components/Sidebar";
 import { SampleList } from "./components/SampleList";
 import { GistLoad } from "./components/GistLoad";
+import { UrlLoad } from "./components/UrlLoad";
 import { StatsPanel } from "./components/StatsPanel";
 import { TableDrawer } from "./components/TableDrawer";
 import { Legend } from "./components/Legend";
@@ -216,6 +229,29 @@ export interface EmbedProps {
 
 export default function App({ embed }: { embed?: EmbedProps } = {}) {
   const [dataset, setDataset] = useState<Dataset | null>(null);
+  /**
+   * Every source engine's lifetime, owned in one place. `pending` is a file
+   * too large to open whole, waiting for the reader's selection; `live` is
+   * the engine behind the working set on stage; `detached` is a reopened
+   * workspace's saved recipe with no engine yet. Only ever populated on the
+   * page: the widget and the standalone export are handed their data rather
+   * than opening files, and neither carries the engine this needs.
+   */
+  const src = useSource();
+  const {
+    release: releaseSource,
+    cancel: cancelSource,
+    liveRef: liveSourceRef,
+    open: openSourceFile,
+    openUrl: openSourceUrl,
+    load: loadSource,
+    reload: reloadSource,
+    restore: restoreSource,
+    reattach: reattachSource,
+    reattachUrl: reattachSourceUrl,
+    setPendingSelection,
+    setLiveSelection,
+  } = src;
   // The gist the graph on screen came from, so a save offers to update it.
   const [gistId, setGistId] = useState<string | null>(null);
   const [edgeTableIndex, setEdgeTableIndex] = useState(0);
@@ -557,6 +593,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
   const adoptDoc = useCallback(
     (next: GraphDoc, nextStyle: GraphStyle) => {
+      // A document built from tables in hand is not the working set of any
+      // source: whatever engine was open belonged to what it replaces.
+      releaseSource();
       resetDoc(next);
       setStyle(nextStyle);
       setChain([]);
@@ -568,12 +607,25 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setNotice(null);
       setAllowRemoteImages(false);
     },
-    [resetDoc],
+    [releaseSource, resetDoc],
   );
 
   const adoptImported = useCallback(
-    (imported: ImportedGraph & { workspace?: import("./lib/io").Workspace }) => {
+    (
+      imported: ImportedGraph & { workspace?: import("./lib/io").Workspace },
+      options: { keepSource?: boolean } = {},
+    ) => {
       const { doc: next, positions, style: stated, workspace } = imported;
+      // Whatever engine was open belonged to the document being replaced. The
+      // one arrival that keeps its engine is the load that just promoted it,
+      // which says so; re-materializing does not come through here at all.
+      if (options.keepSource !== true) {
+        releaseSource();
+        // A workspace that names its source gets it back detached: the recipe
+        // on the card, the engine reconnected only when the reader offers the
+        // file (or URL) again. Not embedded, where no engine can exist.
+        if (!embedded && workspace?.source) restoreSource(workspace.source);
+      }
       setDataset(null);
       setEdgeTableIndex(0);
       setNodeTableIndex(null);
@@ -600,7 +652,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       setAllowRemoteImages(false);
       revealGraph();
     },
-    [resetDoc, revealGraph],
+    [releaseSource, restoreSource, embedded, resetDoc, revealGraph],
   );
 
   const adoptDataset = useCallback(
@@ -626,10 +678,40 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     [adoptDoc, revealGraph],
   );
 
+  /**
+   * A source card that lives in the sidebar needs the sidebar on screen: with
+   * a graph on stage a dropped file would otherwise start an engine and show
+   * nothing at all.
+   */
+  const revealSidebar = useCallback(() => {
+    setCollapsed((current) => {
+      if (!current.has("sidebar")) return current;
+      const next = new Set(current);
+      next.delete("sidebar");
+      return next;
+    });
+  }, []);
+
   const handleFile = useCallback(
     async (file: File) => {
       try {
         const lowered = file.name.toLowerCase();
+
+        // The probe comes first, and before the text reader in particular:
+        // delimited files are read as text, so anything asked afterwards would
+        // never be asked at all for the one format most likely to be huge.
+        // The probe costs a footer read on parquet and one block on delimited
+        // text; the engine is fetched only on the branch that needs it, so an
+        // ordinary file never pays for any of it.
+        if (SOURCE_EXTENSIONS.some((ext) => lowered.endsWith(ext))) {
+          const opened = await openSourceFile(file);
+          if (opened) {
+            forgetUrlSource();
+            if (docRef.current !== null) revealSidebar();
+            return;
+          }
+        }
+
         if (TEXT_EXTENSIONS.some((ext) => lowered.endsWith(ext))) {
           const text = await file.text();
           const imported = await parseText(text, file.name);
@@ -640,6 +722,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
           else adoptImported(imported);
           return;
         }
+
         const parsed = await parseFile(file);
         forgetUrlSource();
         adoptDataset(parsed);
@@ -647,8 +730,132 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         setError(e instanceof Error ? e.message : "Could not read that file.");
       }
     },
-    [adoptDataset, adoptImported, forgetUrlSource],
+    [adoptDataset, adoptImported, forgetUrlSource, revealSidebar, openSourceFile],
   );
+
+  /** Put the chosen slice of the source on stage, through the import door. */
+  const handleLoadSource = useCallback(async () => {
+    const result = await loadSource();
+    if (result === null) return;
+    // The load just promoted its own engine to live; that is the one arrival
+    // that must not release what it brought.
+    adoptImported(result, { keepSource: true });
+    if (result.truncated) {
+      setNotice(
+        `Loaded ${formatNumber(result.truncated.read)} of ${formatNumber(result.truncated.total)} rows; the rest is past the working-set budget.`,
+      );
+    }
+  }, [adoptImported, loadSource]);
+
+  /**
+   * Open a remote file as a source. Always through the engine, whatever its
+   * size: the point of a URL source is that the file never arrives whole.
+   */
+  const handleOpenUrl = useCallback(
+    async (url: string) => {
+      setError(null);
+      try {
+        await openSourceUrl(url);
+        forgetUrlSource();
+        if (docRef.current !== null) revealSidebar();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not open that URL.");
+      }
+    },
+    [openSourceUrl, forgetUrlSource, revealSidebar],
+  );
+
+  /**
+   * Draw more (or less) out of the live source.
+   *
+   * The working set is replaced rather than added to, because a neighbourhood
+   * is defined by its recipe and a bigger one is a different recipe, not a
+   * pile of two. It lands through the same door "Update data" uses: a
+   * `keep`-mode history step, with the edits overlay laid back on top and the
+   * compute recipe re-run, so widening the view costs the reader nothing they
+   * had already done to it.
+   */
+  const rematerialize = useCallback(
+    async (selection: EdgeSelection) => {
+      if (!doc) return;
+      setError(null);
+      const result = await reloadSource(selection);
+      if (result === null) return;
+      try {
+        let merged = result.doc;
+        if (!overlayIsEmpty(overlay)) {
+          merged = mergeWithOverlay(doc, overlay, result.doc).doc;
+        }
+        let final = merged;
+        for (const run of computedRuns) {
+          const graphNow = buildBaseGraph(final, { showIsolated: true });
+          const computed = await computeMetrics(
+            toMetricGraph(graphNow, run.options.weightColumn),
+            run.metrics,
+            run.options,
+          );
+          final = applyComputedColumns(final, computed.result);
+        }
+        editDoc("expanding from the source", () => final, "keep");
+        if (result.truncated) {
+          setNotice(
+            `Loaded ${formatNumber(result.truncated.read)} of ${formatNumber(result.truncated.total)} rows; the rest is past the working-set budget.`,
+          );
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "The metrics could not be re-run.");
+      }
+    },
+    [computedRuns, doc, editDoc, overlay, reloadSource],
+  );
+
+  /**
+   * The source behind the graph, as a card in the sidebar's Data step.
+   *
+   * Live, it is the recipe in force with "Reload": seeds, depth, direction
+   * and the walk constraint, editable in place. Detached (a reopened
+   * workspace), it is the recipe with the way to reconnect it. And while a
+   * fresh over-limit file waits for a selection with a graph already on
+   * stage, the open card lives here too, since the stage is occupied.
+   */
+  const sourcePanel =
+    src.live !== null ? (
+      <SourceCard
+        mode="live"
+        name={src.live.ref.kind === "file" ? src.live.ref.name : src.live.ref.url}
+        source={src.live.source}
+        schema={src.live.schema}
+        selection={src.live.selection}
+        onSelectionChange={setLiveSelection}
+        onLoad={() => {
+          const live = liveSourceRef.current;
+          if (live !== null) void rematerialize(live.selection);
+        }}
+        loading={src.liveBusy}
+        error={src.liveError}
+      />
+    ) : src.detached !== null ? (
+      <DetachedSourceCard
+        saved={src.detached}
+        busy={src.liveBusy}
+        error={src.liveError}
+        onReattach={(file) => void reattachSource(file)}
+        onReattachUrl={() => void reattachSourceUrl()}
+      />
+    ) : src.pending !== null && doc !== null ? (
+      <SourceCard
+        mode="open"
+        name={src.pending.name}
+        source={src.pending.source}
+        schema={src.pending.schema}
+        selection={src.pending.selection}
+        onSelectionChange={setPendingSelection}
+        onLoad={() => void handleLoadSource()}
+        loading={src.pendingBusy}
+        onCancel={cancelSource}
+        error={src.pendingError}
+      />
+    ) : null;
 
   /**
    * "Update data": fresh rows under the same setup. The incoming file
@@ -801,6 +1008,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         }
 
         forgetUrlSource();
+        // The new file is now what the tables hold; whatever source was
+        // behind the old working set no longer describes them.
+        releaseSource();
         // "keep": the update swaps the data under the edits; the overlay is
         // exactly what must survive it.
         editDoc("updating the data", () => final, "keep");
@@ -854,7 +1064,17 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         setError(e instanceof Error ? e.message : "Could not read that file.");
       }
     },
-    [doc, overlay, computedRuns, style, chain, nodeTableIndex, editDoc, forgetUrlSource],
+    [
+      doc,
+      overlay,
+      computedRuns,
+      style,
+      chain,
+      nodeTableIndex,
+      editDoc,
+      forgetUrlSource,
+      releaseSource,
+    ],
   );
 
   // Cells copied in Excel or Google Sheets arrive as tab-separated text, so
@@ -1359,6 +1579,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
 
   const handleClear = useCallback(() => {
     forgetUrlSource();
+    // Clearing the stage clears the source behind it too: a workspace with
+    // nothing on stage has nothing the recipe describes.
+    releaseSource();
     setDataset(null);
     setEdgeTableIndex(0);
     setNodeTableIndex(null);
@@ -1372,7 +1595,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     setCollapsed(defaultCollapsed());
     setHiddenOverlays(new Set());
     setError(null);
-  }, [resetDoc, forgetUrlSource]);
+  }, [resetDoc, forgetUrlSource, releaseSource]);
 
   /** Rebuild the document from a different pair of imported tables. */
   const handleTableChange = useCallback(
@@ -1679,7 +1902,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     return null;
   }, [chain]);
 
-  const handleExpandFrom = useCallback((id: string) => {
+  const expandChainFrom = useCallback((id: string) => {
     setChain((current) => {
       for (let i = current.length - 1; i >= 0; i--) {
         const step = current[i];
@@ -1696,6 +1919,24 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       ];
     });
   }, []);
+
+  const handleExpandFrom = useCallback(
+    (id: string) => {
+      // On a source-backed view the question is not "narrow to this
+      // neighbourhood" but "go and get it": the rows around this node were
+      // never brought in, so an ego step over what is on stage would find
+      // nothing and quietly do nothing. Widening the selection is the answer,
+      // and the chain is left alone so the two never fight over the view.
+      const live = liveSourceRef.current;
+      if (live) {
+        if (live.selection.seeds.includes(id)) return;
+        void rematerialize({ ...live.selection, seeds: [...live.selection.seeds, id] });
+        return;
+      }
+      expandChainFrom(id);
+    },
+    [expandChainFrom, rematerialize, liveSourceRef],
+  );
 
   /** The way back out of an exploration: the ego step comes off the chain. */
   const handleClearExpand = useCallback(() => {
@@ -1722,7 +1963,8 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   }, [doc, selectedId, labelFor]);
 
   const handleEgoDepthChange = useCallback((depth: number) => {
-    const clamped = Math.max(1, Math.min(6, depth));
+    // 0 is a real answer here: the centres alone, with nothing walked to.
+    const clamped = Math.max(0, Math.min(6, depth));
     setChain((current) => {
       for (let i = current.length - 1; i >= 0; i--) {
         const step = current[i];
@@ -1849,27 +2091,24 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
    * step's own editor writes, on the same ego step, so the two views of the
    * exploration cannot disagree about which edges are walked.
    */
-  const handleEgoWhereChange = useCallback(
-    (where: { column: string; values: string[] } | undefined) => {
-      setChain((current) => {
-        for (let i = current.length - 1; i >= 0; i--) {
-          const step = current[i];
-          if (step.kind === "ego" && step.enabled) {
-            return current.map((s) => {
-              if (s.id !== step.id || s.kind !== "ego") return s;
-              if (where === undefined) {
-                const { where: _dropped, ...rest } = s;
-                return rest;
-              }
-              return { ...s, where };
-            });
-          }
+  const handleEgoWhereChange = useCallback((where: EgoWhere | undefined) => {
+    setChain((current) => {
+      for (let i = current.length - 1; i >= 0; i--) {
+        const step = current[i];
+        if (step.kind === "ego" && step.enabled) {
+          return current.map((s) => {
+            if (s.id !== step.id || s.kind !== "ego") return s;
+            if (where === undefined) {
+              const { where: _dropped, ...rest } = s;
+              return rest;
+            }
+            return { ...s, where };
+          });
         }
-        return current;
-      });
-    },
-    [],
-  );
+      }
+      return current;
+    });
+  }, []);
 
   /**
    * Clicking a legend entry or a breakdown bar drops a one-value column step
@@ -1912,9 +2151,21 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       pinned: [...pinned],
       computed: computedRuns,
       edits: overlay,
+      // Where this working set came from, when it came out of a source. The
+      // rows travel too, so a shared link opens for anyone; this is what lets
+      // whoever has the file go back for more of it.
+      // A detached recipe still travels: the graph was carved from the source
+      // whether or not its engine is currently attached.
+      ...(src.live !== null
+        ? { source: { ref: src.live.ref, selection: src.live.selection } }
+        : src.detached !== null
+          ? { source: src.detached }
+          : {}),
     };
   }, [
     doc,
+    src.live,
+    src.detached,
     graph,
     style,
     palette,
@@ -2154,6 +2405,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         onNodeStyleScopeChange={setNodeStyleScope}
         onEdgeStyleScopeChange={setEdgeStyleScope}
         onFile={(f) => void handleFile(f)}
+        sourcePanel={sourcePanel}
         onUpdateFile={(f) => void handleUpdateFile(f)}
         onSample={handleSample}
         onClear={handleClear}
@@ -2181,6 +2433,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         onExportData={handleExportData}
         onExportHtml={() => void handleExportHtml()}
         onGist={(reference) => void handleGist(reference)}
+        onOpenUrl={(url) => void handleOpenUrl(url)}
         onGistSaved={handleGistSaved}
         gistId={gistId}
         buildLink={buildLink}
@@ -2300,6 +2553,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 nodeAttrsFor={nodeAttrsFor}
                 selection={selection}
                 onSelect={handleSelect}
+                onExpandFrom={handleExpandFrom}
                 highlightPath={pathHighlight}
                 dimmed={timelineDim}
                 seedPositions={seedPositionsRef}
@@ -2330,7 +2584,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   {...toolbarDrag.handleProps}
                 >
                   <NodeSearch
+                    doc={doc}
                     graph={graph}
+                    style={style}
                     corner={toolbarCorner}
                     onPick={handleSearchPick}
                     inputRef={searchRef}
@@ -2439,94 +2695,132 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 reducedMotion={reducedMotion}
               />
               <div className="empty">
-                <div className="empty-card">
-                  <img className="empty-icon" src={iconUrl} alt="" width={96} height={96} />
-                  <h2 className="empty-title">Two columns make a graph</h2>
-                  <p className="empty-tag">
-                    Upload an edge list, one row per connection: the first two columns you map
-                    become the arrows, everything else becomes detail you can style, filter, and
-                    chart.
-                  </p>
-                  {/* The illustration is four columns of names that must not
+                {src.pending !== null ? (
+                  <div className="empty-card">
+                    <SourceCard
+                      mode="open"
+                      name={src.pending.name}
+                      source={src.pending.source}
+                      schema={src.pending.schema}
+                      selection={src.pending.selection}
+                      onSelectionChange={setPendingSelection}
+                      onLoad={() => void handleLoadSource()}
+                      loading={src.pendingBusy}
+                      onCancel={cancelSource}
+                      error={src.pendingError}
+                    />
+                  </div>
+                ) : src.opening ? (
+                  <div className="empty-card">
+                    <h2 className="empty-title">Opening a large file</h2>
+                    <p className="empty-tag">
+                      Starting the query engine; the file stays where it is and is read by byte
+                      range.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="empty-card">
+                    <img className="empty-icon" src={iconUrl} alt="" width={96} height={96} />
+                    <h2 className="empty-title">Two columns make a graph</h2>
+                    <p className="empty-tag">
+                      Upload an edge list, one row per connection: the first two columns you map
+                      become the arrows, everything else becomes detail you can style, filter, and
+                      chart.
+                    </p>
+                    {/* The illustration is four columns of names that must not
                       wrap, so on a narrow screen it scrolls rather than
                       losing the shape it is there to show. */}
-                  <div className="example-scroll">
-                    <table className="example-table">
-                      <thead>
-                        <tr className="example-arrow" aria-hidden="true">
-                          <td>
-                            <span className="arrow-tail" />
-                          </td>
-                          <td>
-                            <span className="arrow-head" />
-                          </td>
-                          <td colSpan={2} />
-                        </tr>
-                        <tr>
-                          <th>Supervisor</th>
-                          <th>Supervisee</th>
-                          <th>Department</th>
-                          <th>Meetings</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td>Alex Rivera</td>
-                          <td>Priya Sharma</td>
-                          <td>Engineering</td>
-                          <td>4</td>
-                        </tr>
-                        <tr>
-                          <td>Priya Sharma</td>
-                          <td>Grace Okafor</td>
-                          <td>Engineering</td>
-                          <td>4</td>
-                        </tr>
-                        <tr>
-                          <td>Alex Rivera</td>
-                          <td>Kenji Mori</td>
-                          <td>Operations</td>
-                          <td>2</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <p className="example-caption">
-                    Any column names work; you pick which is which after loading.
-                  </p>
-                  <button type="button" className="dropzone" onClick={pickAnyFile}>
-                    <strong>Drop a file here or click to browse</strong>
-                    <span className="hint">
-                      .csv · .xlsx · .parquet · .json · .gexf · .graphml · .dot
-                    </span>
-                  </button>
-                  <p className="example-caption">
-                    Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => handleSample(SAMPLES[0])}
-                  >
-                    Try the sample supervision network
-                  </button>
-                  <p className="example-caption">Or one of these:</p>
-                  <SampleList onPick={handleSample} />
-                  {/* The last way in that is not a file. It lives here as well
+                    <div className="example-scroll">
+                      <table className="example-table">
+                        <thead>
+                          <tr className="example-arrow" aria-hidden="true">
+                            <td>
+                              <span className="arrow-tail" />
+                            </td>
+                            <td>
+                              <span className="arrow-head" />
+                            </td>
+                            <td colSpan={2} />
+                          </tr>
+                          <tr>
+                            <th>Supervisor</th>
+                            <th>Supervisee</th>
+                            <th>Department</th>
+                            <th>Meetings</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>Alex Rivera</td>
+                            <td>Priya Sharma</td>
+                            <td>Engineering</td>
+                            <td>4</td>
+                          </tr>
+                          <tr>
+                            <td>Priya Sharma</td>
+                            <td>Grace Okafor</td>
+                            <td>Engineering</td>
+                            <td>4</td>
+                          </tr>
+                          <tr>
+                            <td>Alex Rivera</td>
+                            <td>Kenji Mori</td>
+                            <td>Operations</td>
+                            <td>2</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="example-caption">
+                      Any column names work; you pick which is which after loading.
+                    </p>
+                    <button type="button" className="dropzone" onClick={pickAnyFile}>
+                      <strong>Drop a file here or click to browse</strong>
+                      <span className="hint">
+                        .csv · .xlsx · .parquet · .json · .gexf · .graphml · .dot
+                      </span>
+                    </button>
+                    <p className="example-caption">
+                      Or copy cells in Excel or Google Sheets and paste them here (Ctrl+V or ⌘V).
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => handleSample(SAMPLES[0])}
+                    >
+                      Try the sample supervision network
+                    </button>
+                    <p className="example-caption">Or one of these:</p>
+                    <SampleList onPick={handleSample} />
+                    {/* The last way in that is not a file. It lives here as well
                       as in the sidebar because on a narrow screen this card is
                       the whole app: the sidebar is not reachable until there is
                       something for its other steps to work on. */}
-                  <p className="example-caption">Or load a GitHub gist:</p>
-                  <GistLoad onLoad={(reference) => void handleGist(reference)} />
-                </div>
+                    <p className="example-caption">Or load a GitHub gist:</p>
+                    <GistLoad onLoad={(reference) => void handleGist(reference)} />
+                    <p className="example-caption">
+                      Or open a remote CSV or parquet file, however large:
+                    </p>
+                    <UrlLoad onOpen={(url) => void handleOpenUrl(url)} />
+                  </div>
+                )}
               </div>
             </>
           )}
           {(error ||
             notice ||
             heldBackImages > 0 ||
+            (src.opening && doc !== null) ||
             (rendererPrompt !== null && !rendererGate)) && (
             <div className="toast-stack">
+              {/* Between the drop and the card there is an engine to start;
+                  with a graph on stage the card will land in the sidebar, so
+                  this is the only sign anything is happening. */}
+              {src.opening && doc !== null && (
+                <div className="toast" role="status">
+                  <span>Opening the file as a source; starting the query engine…</span>
+                </div>
+              )}
               {rendererPrompt !== null && !rendererGate && base !== null && doc !== null && (
                 <div className="toast" role="status">
                   <span>

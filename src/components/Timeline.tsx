@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Corner, GraphDoc } from "../types";
 import type { FilterStep } from "../lib/filter";
-import { computeBins } from "../lib/histogram";
-import { formatTime, timeValues, type TimeColumnOption } from "../lib/timeline";
+import { timeBinsOf } from "../lib/stats";
+import { formatTime, type TimeColumnOption } from "../lib/timeline";
 import { useCornerDrag } from "../useCornerDrag";
 import { Histogram } from "./Histogram";
 
@@ -63,7 +63,7 @@ export function Timeline({
   const bins = useMemo(() => {
     if (step === null) return null;
     const rows = step.table === "edges" ? doc.edges.rows : doc.nodes.rows;
-    return computeBins(timeValues(rows, step.column));
+    return timeBinsOf(rows, step.column);
   }, [doc, step]);
 
   const window_: TimeWindow | null = draft ?? (step ? { min: step.min, max: step.max } : null);

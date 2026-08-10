@@ -1,6 +1,7 @@
 import type { BaseGraph, CellValue, GraphDoc } from "../../types";
 import { cellToId, edgeKey } from "../cells";
 import { endpointId } from "../graph";
+import { incidenceOf, nodeIndex } from "../graphIndex";
 import { emptyValues } from "../metrics";
 
 /**
@@ -16,15 +17,23 @@ export interface ScriptGraph {
 }
 
 export function toScriptGraph(graph: BaseGraph, doc: GraphDoc): ScriptGraph {
-  const neighbors: Record<string, string[]> = {};
-  for (const node of graph.nodes) neighbors[node.id] = [];
+  // Neighbour lists come off the shared incidence, which fills each node's
+  // entries in link order: a script reads this as a list, so the order it had
+  // when it was built link by link is the order it keeps.
+  const { ids } = nodeIndex(graph);
+  const { offsets, neighbor } = incidenceOf(graph);
+  // Keyed by node ids, which a file can name `__proto__` like anything else.
+  const neighbors = emptyValues<string[]>();
+  for (let v = 0; v < ids.length; v++) {
+    const list: string[] = [];
+    for (let p = offsets[v]; p < offsets[v + 1]; p++) list.push(ids[neighbor[p]]);
+    neighbors[ids[v]] = list;
+  }
 
   const edges: ScriptGraph["edges"] = [];
   for (const link of graph.links) {
     const source = endpointId(link.source);
     const target = endpointId(link.target);
-    neighbors[source]?.push(target);
-    neighbors[target]?.push(source);
 
     const row = link.rows[0] ?? {};
     const attrs: Record<string, CellValue> = {};

@@ -24,6 +24,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "#worker": src("./src/workers/spawn.inline.ts"),
+      "#duckdb": src("./src/lib/source/duckdb.absent.ts"),
       "@jitl/quickjs-wasmfile-release-sync": "@jitl/quickjs-singlefile-browser-release-sync",
       // cosmos.gl's FPS monitor dependency points `browser` at a plain script
       // with no exports; its ESM build is the importable one.

@@ -2,20 +2,22 @@ import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import type { BaseGraph, GraphDoc, Row, Table } from "../types";
 import {
   chainInputBefore,
+  compileWhere,
   defaultStep,
   describeStep,
   FILTER_KINDS,
   isFilterStep,
   neutralCondition,
   newStepId,
+  splitSeedList,
   type ChainStepResult,
   type FilterSpec,
   type FilterStep,
 } from "../lib/filter";
 import { edgeStyleColumns } from "../lib/doc";
-import { distinctValues } from "../lib/graph";
 import { computeBins } from "../lib/histogram";
-import { formatTime, timeColumns, timeValues } from "../lib/timeline";
+import { distinctsOf, timeBinsOf } from "../lib/stats";
+import { formatTime, timeColumns } from "../lib/timeline";
 import { ColumnCondition } from "./ColumnCondition";
 import { Histogram } from "./Histogram";
 
@@ -25,6 +27,8 @@ interface FilterChainProps {
   results: ChainStepResult[];
   /** Node currently selected on the canvas, offered as an ego-network centre. */
   selectedId: string | null;
+  /** Every node's display name, so a centre reads as its name and not its key. */
+  labels: ReadonlyMap<string, string>;
   /** The chain's own setting, so a step editor sees what the step sees. */
   showIsolated: boolean;
   /** Whether the pane is on screen; the histograms stand down while it is not. */
@@ -91,6 +95,7 @@ export function FilterChain({
   chain,
   results,
   selectedId,
+  labels,
   showIsolated,
   active,
   onChange,
@@ -107,6 +112,10 @@ export function FilterChain({
   }, [savedSteps]);
 
   const resultFor = useMemo(() => new Map(results.map((r) => [r.id, r])), [results]);
+  // Steps name themselves with the labels on screen. The library's entries are
+  // keyed on the plain description, so saving and matching stay id-based: a
+  // saved step outlives the document whose labels it was described with.
+  const describe = (step: FilterStep) => describeStep(step, (id) => labels.get(id) ?? id);
 
   const update = (id: string, patch: Partial<FilterStep>) => {
     onChange(chain.map((s) => (s.id === id ? ({ ...s, ...patch } as FilterStep) : s)));
@@ -173,9 +182,9 @@ export function FilterChain({
                   type="checkbox"
                   checked={step.enabled}
                   onChange={(e) => update(step.id, { enabled: e.target.checked })}
-                  aria-label={`Enable ${describeStep(step)}`}
+                  aria-label={`Enable ${describe(step)}`}
                 />
-                <span className="chain-name">{describeStep(step)}</span>
+                <span className="chain-name">{describe(step)}</span>
                 <span className="chain-count">
                   {result ? `${result.nodes}n · ${result.links}e` : ""}
                 </span>
@@ -187,7 +196,7 @@ export function FilterChain({
                     onClick={() =>
                       update(step.id, { invert: step.invert === true ? undefined : true })
                     }
-                    aria-label={`Invert ${describeStep(step)}`}
+                    aria-label={`Invert ${describe(step)}`}
                     title="Keep what this step would drop"
                   >
                     not
@@ -245,6 +254,7 @@ export function FilterChain({
                 active={active}
                 step={step}
                 selectedId={selectedId}
+                labels={labels}
                 onChange={(patch) => update(step.id, patch)}
               />
             </li>
@@ -312,6 +322,7 @@ function StepBody({
   active,
   step,
   selectedId,
+  labels,
   onChange,
 }: {
   doc: GraphDoc;
@@ -320,6 +331,7 @@ function StepBody({
   active: boolean;
   step: FilterStep;
   selectedId: string | null;
+  labels: ReadonlyMap<string, string>;
   onChange: (patch: Partial<FilterStep>) => void;
 }) {
   switch (step.kind) {
@@ -386,35 +398,16 @@ function StepBody({
     case "ego":
       return (
         <div className="chain-body">
-          <div className="chain-centres">
-            {step.centers.map((centre) => (
-              <button
-                key={centre}
-                type="button"
-                className="chain-chip"
-                onClick={() => onChange({ centers: step.centers.filter((c) => c !== centre) })}
-                title={`Remove ${centre}`}
-              >
-                {centre} ×
-              </button>
-            ))}
-            {step.centers.length === 0 && <span className="note">No centre chosen.</span>}
-          </div>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={selectedId === null || step.centers.includes(selectedId)}
-            onClick={() => selectedId && onChange({ centers: [...step.centers, selectedId] })}
-          >
-            {selectedId ? `Add ${selectedId}` : "Select a node to add"}
-          </button>
+          <EgoCentres step={step} selectedId={selectedId} labels={labels} onChange={onChange} />
           <div className="chain-body-row">
             <label className="field">
-              <span className="field-label">Depth {step.depth}</span>
+              <span className="field-label">
+                {step.depth === 0 ? "Centres only" : `Depth ${step.depth}`}
+              </span>
               <input
                 type="range"
                 className="range"
-                min={1}
+                min={0}
                 max={6}
                 step={1}
                 value={step.depth}
@@ -432,6 +425,14 @@ function StepBody({
             </select>
           </div>
           <EgoWhere doc={doc} step={step} onChange={onChange} />
+          <label className="check-item">
+            <input
+              type="checkbox"
+              checked={step.walkedOnly === true}
+              onChange={(e) => onChange({ walkedOnly: e.target.checked ? true : undefined })}
+            />
+            <span className="check-name">Only the edges walked</span>
+          </label>
         </div>
       );
 
@@ -480,7 +481,7 @@ function TimewindowStep({
   const bins = useMemo(() => {
     if (!input) return null;
     const rows = step.table === "edges" ? input.rows : input.graph.nodes.map((n) => n.row);
-    return computeBins(timeValues(rows, step.column));
+    return timeBinsOf(rows, step.column);
   }, [input, step.table, step.column]);
   const chosen = options.find((o) => o.table === step.table && o.column === step.column);
   const dates = chosen?.dates ?? false;
@@ -546,6 +547,161 @@ function TimewindowStep({
   );
 }
 
+const MAX_SEED_MATCHES = 8;
+
+/**
+ * The ego step's centres: the chips already chosen, and the way to add more.
+ *
+ * Clicking a node on the canvas was the only way in, which made a second
+ * centre cost a hunt for something that may not be drawn yet, and left the
+ * chips reading as raw ids. This searches the **document**, so a node the
+ * chain has filtered off the stage is still nameable, which is exactly the
+ * node someone reaches for when widening an exploration. A pasted list is
+ * taken as ids, since that is what a list of nodes from somewhere else is.
+ */
+function EgoCentres({
+  step,
+  selectedId,
+  labels,
+  onChange,
+}: {
+  step: Extract<FilterStep, { kind: "ego" }>;
+  selectedId: string | null;
+  labels: ReadonlyMap<string, string>;
+  onChange: (patch: Partial<FilterStep>) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const deferred = useDeferredValue(query);
+
+  const add = (ids: string[]) => {
+    const next = [...step.centers];
+    for (const id of ids) if (!next.includes(id)) next.push(id);
+    if (next.length !== step.centers.length) onChange({ centers: next });
+    return next.length - step.centers.length;
+  };
+
+  const matches = useMemo(() => {
+    const q = deferred.trim().toLowerCase();
+    if (q === "") return [];
+    const chosen = new Set(step.centers);
+    const starts: string[] = [];
+    const contains: string[] = [];
+    for (const [id, label] of labels) {
+      if (chosen.has(id)) continue;
+      const lowId = id.toLowerCase();
+      const lowLabel = label.toLowerCase();
+      if (lowId.startsWith(q) || lowLabel.startsWith(q)) {
+        starts.push(id);
+        if (starts.length >= MAX_SEED_MATCHES) break;
+      } else if (
+        contains.length < MAX_SEED_MATCHES &&
+        (lowId.includes(q) || lowLabel.includes(q))
+      ) {
+        contains.push(id);
+      }
+    }
+    return [...starts, ...contains].slice(0, MAX_SEED_MATCHES);
+  }, [labels, deferred, step.centers]);
+
+  /**
+   * A pasted list of ids, split by the shared rules: a paste of one name is
+   * not a list and falls through to ordinary typing.
+   */
+  const addList = (text: string): boolean => {
+    const parts = splitSeedList(text);
+    if (parts === null) return false;
+    const known = parts.filter((id) => labels.has(id));
+    const added = add(known);
+    const missing = parts.length - known.length;
+    setNote(
+      missing === 0
+        ? `Added ${added} of ${parts.length}.`
+        : `Added ${added}; ${missing} not in this graph.`,
+    );
+    setQuery("");
+    return true;
+  };
+
+  return (
+    <>
+      <div className="chain-centres">
+        {step.centers.map((centre) => (
+          <button
+            key={centre}
+            type="button"
+            className="chain-chip"
+            onClick={() => onChange({ centers: step.centers.filter((c) => c !== centre) })}
+            title={`Remove ${centre}`}
+          >
+            {labels.get(centre) ?? centre} ×
+          </button>
+        ))}
+        {step.centers.length === 0 && <span className="note">No centre chosen.</span>}
+      </div>
+      <div className="chain-seed">
+        <input
+          type="text"
+          className="control"
+          placeholder="Find a node, or paste a list"
+          aria-label="Add a centre"
+          value={query}
+          onChange={(e) => {
+            setNote(null);
+            setQuery(e.target.value);
+          }}
+          // A list arrives by being pasted, never by being typed. Splitting
+          // what is typed would take a two-word name apart between the two
+          // words, which is most of the way through typing it.
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text");
+            setNote(null);
+            if (addList(text)) e.preventDefault();
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            const first = matches[0];
+            if (first !== undefined) {
+              add([first]);
+              setQuery("");
+            }
+          }}
+        />
+        {selectedId !== null && !step.centers.includes(selectedId) && (
+          <button type="button" className="btn btn-quiet" onClick={() => add([selectedId])}>
+            Add {labels.get(selectedId) ?? selectedId}
+          </button>
+        )}
+      </div>
+      {matches.length > 0 && (
+        // A plain list of buttons on purpose: the combobox pattern needs
+        // aria-activedescendant wiring these plain buttons do not have, and a
+        // listbox role without it reads worse than no role at all.
+        <ul className="chain-seed-menu" aria-label="Matching nodes">
+          {matches.map((id) => (
+            <li key={id}>
+              <button
+                type="button"
+                className="chain-seed-opt"
+                title={id}
+                onClick={() => {
+                  add([id]);
+                  setQuery("");
+                }}
+              >
+                <span className="node-opt-label">{labels.get(id) ?? id}</span>
+                {labels.get(id) !== id && <span className="node-opt-id">{id}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {note !== null && <p className="note">{note}</p>}
+    </>
+  );
+}
+
 /**
  * The ego step's edge constraint: only edges matching one of the ticked
  * values are walked. Choosing a column starts with every value ticked, so
@@ -563,28 +719,36 @@ function EgoWhere({
   const columns = useMemo(() => edgeStyleColumns(doc).filter((c) => c.type === "text"), [doc]);
   const where = step.where;
   const values = useMemo(
-    () => (where === undefined ? [] : distinctValues(doc.edges.rows, where.column)),
+    () => (where === undefined ? [] : distinctsOf(doc.edges.rows, where.column)),
     [doc.edges.rows, where],
   );
   if (columns.length === 0) return null;
 
+  // Choosing a column starts as no constraint at all, which used to mean
+  // reading every distinct value into the step first. The exclusion form says
+  // the same thing by naming nothing.
   const setColumn = (column: string) => {
-    if (column === "") {
-      onChange({ where: undefined });
-      return;
-    }
-    onChange({
-      where: { column, values: distinctValues(doc.edges.rows, column).map((v) => v.key) },
-    });
+    onChange({ where: column === "" ? undefined : { column, excluded: [] } });
   };
 
   const toggle = (key: string) => {
     if (where === undefined) return;
-    const selected = where.values.includes(key)
+    if ("excluded" in where) {
+      const next = where.excluded.includes(key)
+        ? where.excluded.filter((v) => v !== key)
+        : [...where.excluded, key];
+      onChange({ where: { column: where.column, excluded: next } });
+      return;
+    }
+    const next = where.values.includes(key)
       ? where.values.filter((v) => v !== key)
       : [...where.values, key];
-    onChange({ where: { ...where, values: selected } });
+    onChange({ where: { column: where.column, values: next } });
   };
+
+  // Compiled once per render rather than once per checkbox: the compile
+  // builds a Set, and a long value list would build it fifty times over.
+  const walks = compileWhere(where);
 
   return (
     <>
@@ -607,7 +771,7 @@ function EgoWhere({
             <label key={key} className="check-item">
               <input
                 type="checkbox"
-                checked={where.values.includes(key)}
+                checked={walks === null || walks(key)}
                 onChange={() => toggle(key)}
               />
               <span className="check-name">{key === "" ? "(blank)" : key}</span>

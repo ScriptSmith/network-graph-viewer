@@ -11,7 +11,7 @@ import type { ImportedGraph } from "./types";
 import { dataLink, encodePayload } from "./url";
 
 export type { ImportedGraph, Position } from "./types";
-export type { Workspace, WorkspaceInput } from "./ngv";
+export type { SavedSource, Workspace, WorkspaceInput } from "./ngv";
 export { NGV_EXTENSION, writeWorkspace } from "./ngv";
 export { parseWorkspace, looksLikeWorkspace } from "./ngv";
 export { writeGexf } from "./gexf";

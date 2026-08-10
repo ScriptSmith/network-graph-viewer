@@ -196,6 +196,11 @@ export function SvgScene({
           event.stopPropagation();
           shared.callbacks.onSelect({ kind: "node", id: d.id });
         })
+        .on("dblclick", (event: MouseEvent, d) => {
+          // Stopped here, so the background's own "fit" does not also fire.
+          event.stopPropagation();
+          shared.callbacks.onNodeDblClick(d);
+        })
         // Focus does what hover does, so the graph reads the same whether it is
         // being pointed at or tabbed through.
         .on("focus", (_event: FocusEvent, d) => shared.callbacks.onNodeFocus(d))
@@ -309,8 +314,8 @@ export function SvgScene({
     sel.on("click", (event: MouseEvent) => {
       if (event.target === svg) shared.callbacks.onBackgroundClick();
     });
-    // The background is the only thing a double-click reaches, d3's own
-    // dblclick zoom having been unhooked above, so it is free to mean "fit".
+    // d3's own dblclick zoom is unhooked above, so a double-click means what
+    // it landed on: a node expands from there, and the background fits.
     sel.on("dblclick", (event: MouseEvent) => {
       if (event.target === svg) shared.callbacks.onBackgroundDblClick();
     });

@@ -262,7 +262,9 @@ export function CanvasScene({ shared, ref }: CanvasSceneProps) {
     };
     const onDblClick = (event: MouseEvent) => {
       const w = worldPoint(event);
-      if (pickNode(w.x, w.y) === null) shared.callbacks.onBackgroundDblClick();
+      const node = pickNode(w.x, w.y);
+      if (node === null) shared.callbacks.onBackgroundDblClick();
+      else shared.callbacks.onNodeDblClick(node);
     };
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mouseleave", onLeave);

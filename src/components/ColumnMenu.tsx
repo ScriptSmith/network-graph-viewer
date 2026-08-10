@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CellValue, Column, ColumnRole, ColumnType, GraphDoc, Row, Table } from "../types";
 import type { EditTarget } from "../lib/edit";
 import { cellKey, parseCell } from "../lib/cells";
-import { distinctValues } from "../lib/graph";
+import { distinctsOf } from "../lib/stats";
 import {
   compileReplace,
   duplicateColumn,
@@ -361,7 +361,7 @@ function Facets({
   onRename: () => void;
 }) {
   const [needle, setNeedle] = useState("");
-  const values = useMemo(() => distinctValues(table.rows, column.name), [table.rows, column.name]);
+  const values = useMemo(() => distinctsOf(table.rows, column.name), [table.rows, column.name]);
   const shown = useMemo(() => {
     const lowered = needle.trim().toLowerCase();
     const matching =

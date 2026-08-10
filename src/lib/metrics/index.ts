@@ -3,7 +3,7 @@ import { centrality, hits, type CentralityKind } from "./centrality";
 import { DEFAULT_RESOLUTION, louvain, louvainStability } from "./community";
 import { edgeMetrics } from "./edges";
 import { components, coreness, networkMetrics, triangles } from "./structure";
-import { bfsDistances, toMetricGraph, undirected, type MetricGraph } from "./model";
+import { bfsDistances, indexOfId, toMetricGraph, undirected, type MetricGraph } from "./model";
 import { edgeKey } from "../cells";
 
 export { CENTRALITY_NAMES, type CentralityKind } from "./centrality";
@@ -186,8 +186,8 @@ export interface ComputedColumn {
 }
 
 /** A map keyed by data. See `ComputedColumn.values` for why it is not `{}`. */
-export function emptyValues(): Record<string, CellValue> {
-  return Object.create(null) as Record<string, CellValue>;
+export function emptyValues<T = CellValue>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
 }
 
 export interface MetricRunResult {
@@ -203,7 +203,7 @@ export interface MetricRunResult {
  * for free. Unreachable nodes stay blank rather than wearing a fake number.
  */
 export function hopsColumn(graph: MetricGraph, from: string, name: string): ComputedColumn | null {
-  const at = graph.ids.indexOf(from);
+  const at = indexOfId(graph, from);
   if (at === -1) return null;
   const dist = new Int32Array(graph.ids.length);
   bfsDistances(undirected(graph).neighbors, at, dist);

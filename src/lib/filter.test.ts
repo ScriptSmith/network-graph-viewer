@@ -6,6 +6,9 @@ import {
   chainInputBefore,
   describeStep,
   isFilterStep,
+  narrows,
+  neutralCondition,
+  type EgoWhere,
   retargetChain,
   type FilterSpec,
   type FilterStep,
@@ -498,4 +501,257 @@ test("timewindow validates, describes, inverts and follows renames", () => {
       .graph.nodes.map((n) => n.id)
       .sort(),
   ).toEqual(["B", "C"]);
+});
+
+test("an empty exclusion is a no-op that hands its rows back untouched", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+  ]);
+  const chain = [
+    step({
+      kind: "column",
+      table: "edges",
+      column: "Source",
+      op: { kind: "values", excluded: [] },
+    }),
+  ];
+  expect(idsOf(doc, chain)).toEqual(["A", "B", "C"]);
+  // Identity, not a copy: the arrays downstream caches key on must survive a
+  // step that decided nothing. Asked for the input to a step sitting *after*
+  // the no-op, so the no-op has actually run by the time the rows come back.
+  const after = step({ kind: "mutual" });
+  expect(chainInputBefore(doc, [...chain, after], after.id, { showIsolated: true }).rows).toBe(
+    doc.edges.rows,
+  );
+});
+
+test("an exclusion drops exactly the values it names", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "D"],
+  ]);
+  const chain = [
+    step({
+      kind: "column",
+      table: "edges",
+      column: "Source",
+      op: { kind: "values", excluded: ["B"] },
+    }),
+  ];
+  expect(run(doc, chain, false).graph.links).toHaveLength(2);
+  expect(idsOf(doc, chain, false)).toEqual(["A", "B", "C", "D"]);
+});
+
+test("inverting a no-op exclusion is the empty set, not everything", () => {
+  // The trap the stated-half rule exists for. Read off array identity, a step
+  // that let everything through looks like a step that never ran, and the
+  // complement gets skipped: the whole graph comes back where nothing should.
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+  ]);
+  const inverted = step({
+    kind: "column",
+    table: "edges",
+    column: "Source",
+    op: { kind: "values", excluded: [] },
+    invert: true,
+  });
+  expect(run(doc, [inverted], false).graph.links).toHaveLength(0);
+
+  // And the same condition on the node side complements the same way.
+  const nodeSide = step({
+    kind: "column",
+    table: "nodes",
+    column: "Source",
+    op: { kind: "values", excluded: [] },
+    invert: true,
+  });
+  expect(idsOf(doc, [nodeSide], false)).toEqual([]);
+});
+
+test("an inverted exclusion keeps exactly what the plain one dropped", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+    ["C", "D"],
+  ]);
+  const plain = step({
+    kind: "column",
+    table: "edges",
+    column: "Source",
+    op: { kind: "values", excluded: ["B"] },
+  });
+  expect(idsOf(doc, [{ ...plain, invert: true }], false)).toEqual(["B", "C"]);
+});
+
+test("a values condition is one form or the other, never both", () => {
+  const base = { id: "v", enabled: true, kind: "column", table: "edges", column: "Source" };
+  expect(isFilterStep({ ...base, op: { kind: "values", selected: ["a"] } })).toBe(true);
+  expect(isFilterStep({ ...base, op: { kind: "values", excluded: ["a"] } })).toBe(true);
+  expect(isFilterStep({ ...base, op: { kind: "values", excluded: [] } })).toBe(true);
+  // Two answers about one column, with no rule for picking a winner.
+  expect(isFilterStep({ ...base, op: { kind: "values", selected: [], excluded: [] } })).toBe(false);
+  expect(isFilterStep({ ...base, op: { kind: "values", excluded: [3] } })).toBe(false);
+  expect(isFilterStep({ ...base, op: { kind: "values" } })).toBe(false);
+});
+
+test("a fresh condition names no values at all", () => {
+  const doc = docOf([
+    ["A", "B"],
+    ["B", "C"],
+  ]);
+  // The landmine: seeding the whitelist form read every distinct value into
+  // the step, so opening the editor scanned the column and the list rode along
+  // in every share link.
+  const fresh = neutralCondition(doc.edges, "Source");
+  expect(fresh).toEqual({ kind: "values", excluded: [] });
+  expect(narrows(doc.edges.rows, "Source", fresh)).toBe(false);
+  expect(narrows(doc.edges.rows, "Source", { kind: "values", excluded: ["A"] })).toBe(true);
+  expect(narrows(doc.edges.rows, "Source", { kind: "values", selected: ["A"] })).toBe(true);
+});
+
+test("depth 0 is the centres and nothing else", () => {
+  const doc = branchy();
+  expect(idsOf(doc, [step({ kind: "ego", centers: ["B"], depth: 0, direction: "any" })])).toEqual([
+    "B",
+  ]);
+  // Two centres, still just the two, whether or not an edge joins them.
+  expect(
+    idsOf(doc, [step({ kind: "ego", centers: ["B", "C"], depth: 0, direction: "any" })]),
+  ).toEqual(["B", "C"]);
+});
+
+test("walkedOnly keeps the steps taken rather than the region reached", () => {
+  // A triangle hanging off a centre: at depth 1 from A, both B and C arrive,
+  // and the B-C edge sits between two reached nodes without being a step.
+  const doc = docOf([
+    ["A", "B"],
+    ["A", "C"],
+    ["B", "C"],
+  ]);
+  const plain = step({ kind: "ego", centers: ["A"], depth: 1, direction: "any" });
+  expect(run(doc, [plain], false).graph.links).toHaveLength(3);
+
+  const walked = step({
+    kind: "ego",
+    centers: ["A"],
+    depth: 1,
+    direction: "any",
+    walkedOnly: true,
+  });
+  const { graph } = run(doc, [walked], false);
+  expect(graph.nodes.map((n) => n.id).sort()).toEqual(["A", "B", "C"]);
+  expect(graph.links).toHaveLength(2);
+});
+
+test("walkedOnly keeps every route that ties for shortest, not one of them", () => {
+  // Two ways to reach D in two steps. A spanning tree would drop one; the
+  // walk keeps both, because both are steps from depth 1 to depth 2.
+  const doc = docOf([
+    ["A", "B"],
+    ["A", "C"],
+    ["B", "D"],
+    ["C", "D"],
+  ]);
+  const walked = step({
+    kind: "ego",
+    centers: ["A"],
+    depth: 2,
+    direction: "any",
+    walkedOnly: true,
+  });
+  expect(run(doc, [walked], false).graph.links).toHaveLength(4);
+});
+
+test("walkedOnly narrows to the constraint's own edges", () => {
+  const rows: Row[] = [
+    { Source: "A", Target: "B", Line: "rail" },
+    { Source: "A", Target: "B", Line: "bus" },
+  ];
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "Source", type: "text" },
+      { name: "Target", type: "text" },
+      { name: "Line", type: "text" },
+    ],
+    rows,
+  };
+  const doc = buildDoc("lines", edges, {
+    mapping: { source: "Source", target: "Target", attrs: ["Line"] },
+  });
+  const spec = {
+    kind: "ego" as const,
+    centers: ["A"],
+    depth: 1,
+    direction: "any" as const,
+    where: { column: "Line", values: ["rail"] },
+  };
+  // The pair is one link either way; what changes is how many rows survive.
+  expect(run(doc, [step(spec)], false).graph.links[0].rows).toHaveLength(2);
+  expect(run(doc, [step({ ...spec, walkedOnly: true })], false).graph.links[0].rows).toHaveLength(
+    1,
+  );
+});
+
+test("an inverted ego step ignores walkedOnly, having walked nothing", () => {
+  const doc = branchy();
+  const plain = step({ kind: "ego", centers: ["B"], depth: 1, direction: "any" });
+  const outside = idsOf(doc, [{ ...plain, invert: true }]);
+  const walked = step({
+    kind: "ego",
+    centers: ["B"],
+    depth: 1,
+    direction: "any",
+    walkedOnly: true,
+    invert: true,
+  });
+  expect(idsOf(doc, [walked])).toEqual(outside);
+});
+
+test("an ego walk constraint reads either form, and empty exclusion is no constraint", () => {
+  const rows: Row[] = [
+    { Source: "A", Target: "B", Line: "rail" },
+    { Source: "A", Target: "Y", Line: "bus" },
+  ];
+  const edges: Table = {
+    name: "Edges",
+    columns: [
+      { name: "Source", type: "text" },
+      { name: "Target", type: "text" },
+      { name: "Line", type: "text" },
+    ],
+    rows,
+  };
+  const doc = buildDoc("lines", edges, {
+    mapping: { source: "Source", target: "Target", attrs: ["Line"] },
+  });
+  const along = (where: EgoWhere) =>
+    idsOf(doc, [step({ kind: "ego", centers: ["A"], depth: 1, direction: "any", where })]);
+
+  expect(along({ column: "Line", values: ["rail"] })).toEqual(["A", "B"]);
+  expect(along({ column: "Line", excluded: ["bus"] })).toEqual(["A", "B"]);
+  expect(along({ column: "Line", excluded: [] })).toEqual(["A", "B", "Y"]);
+
+  // Both forms validate; carrying both does not.
+  const base = { id: "e", enabled: true, kind: "ego", centers: [], depth: 1, direction: "any" };
+  expect(isFilterStep({ ...base, where: { column: "Line", excluded: [] } })).toBe(true);
+  expect(isFilterStep({ ...base, where: { column: "Line", values: [], excluded: [] } })).toBe(
+    false,
+  );
+  expect(isFilterStep({ ...base, walkedOnly: true })).toBe(true);
+  expect(isFilterStep({ ...base, walkedOnly: "yes" })).toBe(false);
+});
+
+test("a step describes itself with the names on screen", () => {
+  const label = (id: string) => (id === "B" ? "Beatrice" : id);
+  const ego = (extra: Partial<Extract<FilterSpec, { kind: "ego" }>> = {}) =>
+    step({ kind: "ego", centers: ["B"], depth: 2, direction: "any", ...extra });
+  expect(describeStep(ego())).toBe("2 steps from B");
+  expect(describeStep(ego(), label)).toBe("2 steps from Beatrice");
+  expect(describeStep(ego({ depth: 0 }), label)).toBe("Beatrice");
+  expect(describeStep(ego({ walkedOnly: true }), label)).toBe("2 steps from Beatrice, walked only");
 });

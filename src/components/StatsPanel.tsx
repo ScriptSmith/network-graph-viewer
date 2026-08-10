@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { BaseGraph, Graph, GraphDoc, GraphSelection, GraphStyle, Row } from "../types";
 import { findValueStep, type FilterStep } from "../lib/filter";
-import { cellKey } from "../lib/cells";
-import { componentCount, distinctValues } from "../lib/graph";
+import { cellKey, edgeKey } from "../lib/cells";
+import { componentCount } from "../lib/graph";
+import type { EgoWhere } from "../lib/filter";
+import { groupable as isGroupable } from "../lib/stats";
 import { CENTRALITY_NAMES, graphMetrics, toMetricGraph, type CentralityKind } from "../lib/metrics";
 import { computeCentrality } from "../lib/metrics/runner";
 import { maxOf } from "../lib/numbers";
@@ -81,8 +83,8 @@ interface StatsPanelProps {
   onEgoDepthChange: (depth: number) => void;
   onClearExpand: () => void;
   /** The exploration's edge constraint, when its ego step carries one. */
-  egoWhere: { column: string; values: string[] } | undefined;
-  onEgoWhereChange: (where: { column: string; values: string[] } | undefined) => void;
+  egoWhere: EgoWhere | undefined;
+  onEgoWhereChange: (where: EgoWhere | undefined) => void;
   /** Whether the path tool is waiting for its far end to be picked. */
   pathArmed: boolean;
   onPathFrom: (id: string) => void;
@@ -201,7 +203,8 @@ export function StatsPanel({
 
   const groupable = useMemo(() => {
     const cols = [mapping.source, mapping.target, ...mapping.attrs];
-    return cols.filter((c) => distinctValues(rows, c).length <= Math.max(40, rows.length / 2));
+    const limit = Math.max(40, rows.length / 2);
+    return cols.filter((c) => isGroupable(rows, c, limit));
   }, [rows, mapping]);
 
   // The color column can live on the node table, which these edge-row pivots
@@ -347,6 +350,7 @@ export function StatsPanel({
 
         {selection?.kind === "edge" && (
           <EdgeDetails
+            key={edgeKey(selection.source, selection.target)}
             doc={doc}
             graph={graph}
             style={style}

@@ -163,8 +163,8 @@ export function ViewMenu({
             </label>
           ))}
 
-          <p className="view-menu-title">Colours</p>
-          <div className="view-menu-choice" role="group" aria-label="Colour scheme">
+          <p className="view-menu-title">Theme</p>
+          <div className="view-menu-choice" role="group" aria-label="Theme">
             {THEME_PREFERENCES.map((option) => (
               <button
                 key={option}

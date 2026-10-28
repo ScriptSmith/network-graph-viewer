@@ -42,6 +42,7 @@ import {
   gistLink,
   matchesFileHint,
   parseText,
+  parseWorkspace,
   readUrlSource,
   TEXT_EXTENSIONS,
   withoutUrlSource,
@@ -131,6 +132,8 @@ import { TableDrawer } from "./components/TableDrawer";
 import { Legend } from "./components/Legend";
 import { ViewMenu } from "./components/ViewMenu";
 import iconUrl from "../docs/icon.svg";
+import { kioskAllows, readKiosk } from "./lib/kiosk";
+import { parseHostCommand, sendToHost } from "./lib/hostBridge";
 
 const AMBIENT_TABLE = SAMPLE_DATASET.tables[0];
 const AMBIENT_DOC = buildDoc(SAMPLE_DATASET.fileName, AMBIENT_TABLE);
@@ -186,6 +189,11 @@ const WEBGL_SUGGESTION = 20_000;
  * panel instead of the thing the panel is about: the graph, or, with nothing
  * loaded yet, the onboarding. They are asked for at that width.
  */
+const KIOSK_PANELS: ReadonlySet<Panel> = new Set(PANELS);
+/** The panels a kiosk at the "panels" step keeps shut: the ones that edit. */
+const KIOSK_EDIT_PANELS: readonly Panel[] = ["sidebar", "table"];
+const KIOSK_OVERLAYS: ReadonlySet<Overlay> = new Set(OVERLAYS);
+
 function defaultCollapsed(): Set<Panel> {
   return isNarrow() ? new Set(PANELS) : new Set<Panel>();
 }
@@ -338,7 +346,13 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // Overlays the user has dismissed, so the graph can be presented or
   // screenshotted clean. Nothing underneath changes: showing them again brings
   // each one back as it was.
-  const [hiddenOverlays, setHiddenOverlays] = useState<ReadonlySet<Overlay>>(() => new Set());
+  // A kiosk is read from the address once and stays what it was: nothing in
+  // the page can turn it off, so the panels below never come back.
+  const [kiosk] = useState(() => (embed ? null : readKiosk()));
+  const [hiddenOverlaysState, setHiddenOverlays] = useState<ReadonlySet<Overlay>>(() => new Set());
+  const hiddenOverlays: ReadonlySet<Overlay> = !kioskAllows(kiosk, "panels")
+    ? KIOSK_OVERLAYS
+    : hiddenOverlaysState;
   // Both stage overlays can be dragged between corners, so either can be moved
   // off whatever part of the graph it happens to be sitting on.
   const [toolbarCorner, setToolbarCorner] = useState<Corner>("top-left");
@@ -347,11 +361,16 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // Panels are only ever hidden with CSS, never unmounted, so a collapse does
   // not throw away a half-written script, an unsaved gist token, or the search
   // and grouping set up over the table.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<Panel>>(() => {
+  const [collapsedState, setCollapsed] = useState<ReadonlySet<Panel>>(() => {
     if (!embed) return defaultCollapsed();
     const open = new Set(embed.panels ?? []);
     return new Set(PANELS.filter((p) => !open.has(p)));
   });
+  const collapsed = useMemo<ReadonlySet<Panel>>(() => {
+    if (kioskAllows(kiosk, "app")) return collapsedState;
+    if (!kioskAllows(kiosk, "panels")) return KIOSK_PANELS;
+    return new Set([...collapsedState, ...KIOSK_EDIT_PANELS]);
+  }, [kiosk, collapsedState]);
   const sidebar = usePanelSize(SIDEBAR_SIZE);
   const drawer = usePanelSize(DRAWER_SIZE);
   const stats = usePanelSize(STATS_SIZE);
@@ -448,9 +467,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
    */
   const [themePref, setThemePref] = usePreference<ThemePreference>({
     key: "ngv:theme",
-    fallback: embed?.theme ?? (embed ? "auto" : "dark"),
+    fallback: embed?.theme ?? kiosk?.theme ?? (embed ? "auto" : "dark"),
     isValid: isThemePreference,
-    remember: !embedded,
+    remember: !embedded && !kiosk,
   });
   const [hostTheme, setHostTheme] = useState<ThemeMode>(() => detectHostTheme());
   const themeRoot = root instanceof Document ? root.documentElement : (root.host as HTMLElement);
@@ -485,7 +504,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     key: "ngv:motion",
     fallback: "auto",
     isValid: isMotionPreference,
-    remember: !embedded,
+    remember: !embedded && !kiosk,
   });
   const systemReducedMotion = useReducedMotion();
   const reducedMotion = motionPref === "auto" ? systemReducedMotion : motionPref === "reduced";
@@ -505,9 +524,9 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
    */
   const [rendererPref, setRendererPref] = usePreference<RendererId>({
     key: "ngv:renderer",
-    fallback: embed?.renderer ?? "svg",
+    fallback: embed?.renderer ?? kiosk?.renderer ?? "svg",
     isValid: isRendererId,
-    remember: !embedded,
+    remember: !embedded && !kiosk,
   });
   const webglAvailable = useMemo(() => webglSupported(), []);
   // A remembered choice can outlive the machine that could honour it.
@@ -1080,6 +1099,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // Cells copied in Excel or Google Sheets arrive as tab-separated text, so
   // pasting anywhere outside a form control loads them like a dropped file.
   useEffect(() => {
+    if (kiosk) return;
     const onPaste = (e: ClipboardEvent) => {
       if (
         e.target instanceof HTMLElement &&
@@ -1111,7 +1131,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       }
     };
     return listen(root, "paste", onPaste);
-  }, [adoptDataset, adoptImported, handleFile, forgetUrlSource, root]);
+  }, [adoptDataset, adoptImported, handleFile, forgetUrlSource, root, kiosk]);
 
   const setOverlayVisible = useCallback((key: Overlay, visible: boolean) => {
     setHiddenOverlays((current) => {
@@ -1379,6 +1399,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
   // have to give way to whatever currently has focus (WCAG 2.1.4), and someone
   // arrowing around the network is not asking for the window to be cleared.
   useEffect(() => {
+    if (!kioskAllows(kiosk, "app")) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const inField =
         e.target instanceof Element &&
@@ -1420,6 +1441,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     };
     return listen(root, "keydown", onKeyDown);
   }, [
+    kiosk,
     root,
     anythingHidden,
     panelsHidden,
@@ -1576,6 +1598,123 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     const timer = setTimeout(() => onDocChange(doc), 250);
     return () => clearTimeout(timer);
   }, [doc, onDocChange]);
+
+  /**
+   * The page around a kiosk drives it through messages (see `hostBridge.ts`).
+   * Only the parent window is heard, and only here: a page that is not a kiosk
+   * takes its graphs from files and links, as ever.
+   */
+  const bridgeRef = useRef({ adoptImported, handleUrlSource, handleSample, handleSelectNode });
+  bridgeRef.current = { adoptImported, handleUrlSource, handleSample, handleSelectNode };
+  useEffect(() => {
+    if (!kiosk) return;
+    const fail = (e: unknown, fallback: string) =>
+      sendToHost({ type: "error", message: e instanceof Error ? e.message : fallback });
+    const onMessage = (e: MessageEvent) => {
+      if (e.source === null || e.source !== window.parent) return;
+      const command = parseHostCommand(e.data);
+      if (!command) return;
+      const bridge = bridgeRef.current;
+      switch (command.type) {
+        case "load":
+          try {
+            const { workspace } = parseWorkspace(command.workspace, "Graph");
+            const positions = new Map(Object.entries(workspace.positions ?? {}));
+            bridge.adoptImported({
+              doc: workspace.doc,
+              positions: positions.size > 0 ? positions : undefined,
+              workspace,
+            });
+          } catch (err) {
+            fail(err, "That workspace could not be read.");
+          }
+          break;
+        case "link":
+          void bridge
+            .handleUrlSource({ kind: "data", payload: command.payload })
+            .catch((err) => fail(err, "That link could not be read."));
+          break;
+        case "sample": {
+          const network = SAMPLES.find((n) => n.id === command.id);
+          if (network) bridge.handleSample(network);
+          else sendToHost({ type: "error", message: `No sample called ${command.id}.` });
+          break;
+        }
+        case "select":
+          bridge.handleSelectNode(command.id);
+          if (command.id !== null && command.center) canvasRef.current?.center(command.id);
+          break;
+        case "fit":
+          canvasRef.current?.fit();
+          break;
+        case "reheat":
+          canvasRef.current?.reheat();
+          break;
+        case "layout":
+          setLayout(command.id);
+          break;
+        case "theme":
+          setThemePref(command.theme);
+          break;
+        case "ping":
+          sendToHost({ type: "ready", samples: SAMPLES.map((n) => n.id) });
+          break;
+      }
+    };
+    let lastActivity = 0;
+    const onActivity = () => {
+      const now = performance.now();
+      if (now - lastActivity < 250) return;
+      lastActivity = now;
+      sendToHost({ type: "activity" });
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("pointerdown", onActivity, true);
+    window.addEventListener("pointermove", onActivity, true);
+    sendToHost({ type: "ready", samples: SAMPLES.map((n) => n.id) });
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("pointerdown", onActivity, true);
+      window.removeEventListener("pointermove", onActivity, true);
+    };
+  }, [kiosk, setThemePref]);
+
+  // What the host hears back: that a graph arrived, and what is picked.
+  const kioskNodes = graph?.nodes.length ?? null;
+  const kioskEdges = graph?.links.length ?? 0;
+  useEffect(() => {
+    if (kiosk && kioskNodes !== null) {
+      sendToHost({ type: "loaded", nodes: kioskNodes, edges: kioskEdges });
+    }
+  }, [kiosk, kioskNodes, kioskEdges]);
+
+  const picked = useMemo(() => {
+    if (!kiosk || !graph || selectedId === null) return null;
+    const node = graph.nodes.find((n) => n.id === selectedId);
+    if (!node) return null;
+    const names = new Map(graph.nodes.map((n) => [n.id, n.label]));
+    const neighbors = new Set<string>();
+    for (const link of graph.links) {
+      const a = endpointId(link.source);
+      const b = endpointId(link.target);
+      if (a === selectedId) neighbors.add(names.get(b) ?? b);
+      else if (b === selectedId) neighbors.add(names.get(a) ?? a);
+    }
+    return { id: node.id, label: node.label, neighbors: [...neighbors] };
+  }, [kiosk, graph, selectedId]);
+
+  useEffect(() => {
+    if (!kiosk) return;
+    if (picked) {
+      sendToHost({
+        type: "select",
+        id: picked.id,
+        label: picked.label,
+        degree: picked.neighbors.length,
+        neighbors: picked.neighbors.slice(0, 24),
+      });
+    } else sendToHost({ type: "select", id: null, label: "", degree: 0, neighbors: [] });
+  }, [kiosk, picked]);
 
   const handleClear = useCallback(() => {
     forgetUrlSource();
@@ -2260,10 +2399,11 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
     (e: DragEvent) => {
       e.preventDefault();
       setDragOver(false);
+      if (kiosk) return;
       const file = e.dataTransfer.files?.[0];
       if (file) void handleFile(file);
     },
-    [handleFile],
+    [handleFile, kiosk],
   );
 
   // What one mark's tooltip lists. Functions rather than lists, because a
@@ -2361,7 +2501,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
       // `app-empty` is the onboarding showing rather than a graph. Narrow, that
       // is the whole window, and the tabs that would open panels with nothing
       // in them yet go away with it.
-      className={`app${doc === null ? " app-empty" : ""}${
+      className={`app${kiosk ? ` app-kiosk app-kiosk-${kiosk.level}` : ""}${doc === null ? " app-empty" : ""}${
         sidebarCollapsed ? " app-sidebar-collapsed" : ""
       }${tableCollapsed ? " app-table-collapsed" : ""}${
         statsCollapsed ? " app-stats-collapsed" : ""
@@ -2438,7 +2578,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
         gistId={gistId}
         buildLink={buildLink}
         appUrl={embed?.appUrl}
-        embedded={embedded}
+        embedded={embedded || kiosk !== null}
         exportInput={exportInput}
       />
 
@@ -2553,7 +2693,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 nodeAttrsFor={nodeAttrsFor}
                 selection={selection}
                 onSelect={handleSelect}
-                onExpandFrom={handleExpandFrom}
+                onExpandFrom={kiosk && !kiosk.expand ? undefined : handleExpandFrom}
                 highlightPath={pathHighlight}
                 dimmed={timelineDim}
                 seedPositions={seedPositionsRef}
@@ -2564,7 +2704,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 onSimulationRunning={handleSimulationRunning}
                 reducedMotion={reducedMotion}
               />
-              {hiddenOverlays.has("toolbar") && (
+              {hiddenOverlays.has("toolbar") && kioskAllows(kiosk, "panels") && (
                 <button
                   type="button"
                   className={`tool-btn chrome-restore at-${toolbarCorner}`}
@@ -2670,6 +2810,24 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                   onHide={() => setOverlayVisible("timeline", false)}
                 />
               )}
+              {picked && kiosk?.card && statsCollapsed && (
+                <aside className="kiosk-card" aria-live="polite">
+                  <h2 className="kiosk-card-title">{picked.label}</h2>
+                  <p className="kiosk-card-sub">
+                    {picked.neighbors.length === 1
+                      ? "1 connection"
+                      : `${picked.neighbors.length} connections`}
+                  </p>
+                  {picked.neighbors.length > 0 && (
+                    <p className="kiosk-card-list">
+                      {picked.neighbors.slice(0, 8).join(", ")}
+                      {picked.neighbors.length > 8
+                        ? `, and ${picked.neighbors.length - 8} more`
+                        : ""}
+                    </p>
+                  )}
+                </aside>
+              )}
               {graph.nodes.length === 0 && (
                 <div className="no-match">
                   <p>No rows match the current filters.</p>
@@ -2694,7 +2852,7 @@ export default function App({ embed }: { embed?: EmbedProps } = {}) {
                 ambient
                 reducedMotion={reducedMotion}
               />
-              <div className="empty">
+              <div className="empty" inert={kiosk ? true : undefined}>
                 {src.pending !== null ? (
                   <div className="empty-card">
                     <SourceCard

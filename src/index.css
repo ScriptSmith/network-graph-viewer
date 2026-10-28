@@ -4509,3 +4509,63 @@ input.swatch::-moz-color-swatch {
   cursor: default;
   text-decoration: none;
 }
+
+/* Kiosk steps, from `display` to `app` (see lib/kiosk.ts). The app collapses
+   the panels a step does not have; this takes away the tabs that would open
+   them and anything else a finger could land on that is not wanted. */
+.app-kiosk-display {
+  pointer-events: none;
+}
+
+.app-kiosk-display .panel-toggle,
+.app-kiosk-touch .panel-toggle,
+.app-kiosk-panels .sidebar-toggle,
+.app-kiosk-panels .drawer-toggle {
+  display: none;
+}
+
+.app-kiosk .empty,
+.app-kiosk .drop-veil,
+.app-kiosk-display .toast-stack,
+.app-kiosk-touch .toast-stack,
+.app-kiosk-panels .toast-stack {
+  display: none;
+}
+
+.app-kiosk-display,
+.app-kiosk-touch,
+.app-kiosk-panels {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.kiosk-card {
+  position: absolute;
+  left: 50%;
+  bottom: 4%;
+  transform: translateX(-50%);
+  z-index: 2;
+  max-width: min(90%, 36em);
+  padding: 0.6em 1em;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: 0 6px 24px var(--shadow);
+  text-align: center;
+  pointer-events: none;
+}
+
+.kiosk-card-title {
+  margin: 0;
+  font-size: 1.5em;
+}
+
+.kiosk-card-sub,
+.kiosk-card-list {
+  margin: 0.2em 0 0;
+}
+
+.kiosk-card-list {
+  opacity: 0.75;
+}

@@ -118,6 +118,31 @@ access.
 - A link with the whole workspace deflated into its fragment, so sharing the graph is sharing a URL and the data still never reaches a server
 - Save any of it to a GitHub gist with a personal access token, which puts the gist's id in the address bar for a link that stays short whatever the graph weighs
 
+## Kiosk mode
+
+`?kiosk=<step>` (or `#kiosk=<step>`) turns the app into someone's display, in four steps from least to most. None of them can import data: the graph comes from the link (`#data=…`, `?gist=…`) or from the page around it, and the step is read once at load.
+
+| Step      | What is there                                                                                                                   |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `display` | The graph alone, not touchable. The host drives it                                                                              |
+| `touch`   | Plus pan, zoom, drag and tap to select, with a small card for the selected node. `1`, `true`, `on` and an empty value mean this |
+| `panels`  | Plus the read-only panels: find, fit, layout and view buttons, the legend, the timeline and the info panel                      |
+| `app`     | The whole app (data table, filters, style, metrics, export, keyboard shortcuts) minus every way of bringing data in             |
+
+An unrecognised word means `display`. A double tap on a node narrows the graph to its neighbours only from `panels` up, where the info panel can undo it; `expand=1` or `expand=0` overrides that. Other options: `theme=light|dark`, `renderer=svg|canvas|webgl`, `card=0` to leave the node card to the host.
+
+A host page drives a kiosk with `postMessage` to the window the app runs in, as objects tagged `{ ngv: 1, type, … }`. Only messages from the parent window are accepted.
+
+| To the app                                                        | Effect                              |
+| ----------------------------------------------------------------- | ----------------------------------- |
+| `load` with `workspace`                                           | Open a `.ngv.json` text or object   |
+| `link` with `payload`                                             | Open the payload of a `#data=` link |
+| `sample` with `id`                                                | Open a shipped network              |
+| `select` with `id` (or null), `center`                            | Select a node and centre it         |
+| `fit`, `reheat`, `layout` with `id`, `theme` with `theme`, `ping` | View controls                       |
+
+The app sends `ready` (with the sample ids), `loaded` (node and edge counts), `select` (id, label, degree and neighbours; id is null when cleared), `activity` (a pointer is down or moving, at most four a second, since the host cannot see events inside this window) and `error`. The protocol is in `src/lib/hostBridge.ts`.
+
 ## In a Jupyter notebook
 
 The same app runs in a notebook cell, as a widget. Click a node and the kernel

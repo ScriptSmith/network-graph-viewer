@@ -36,3 +36,4 @@ __pycache__/
 .ipynb_checkpoints/
 python/src/network_graph_viewer/static/widget.js
 public/standalone.js
+dist-kiosk

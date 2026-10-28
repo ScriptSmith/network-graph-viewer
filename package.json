@@ -11,6 +11,7 @@
     "test": "pnpm widget && pnpm standalone && vitest run",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
+    "build:kiosk": "tsc -b && pnpm standalone && vite build --config vite.kiosk.config.ts",
     "preview": "vite preview",
     "widget": "vite build --config vite.embed.config.ts",
     "standalone": "vite build --config vite.standalone.config.ts"
